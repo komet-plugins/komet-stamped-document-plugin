@@ -77,6 +77,12 @@
         <!-- komet-bom does not manage the gRPC plugin; the property lets a release retarget it. -->
         <komet-grpc-plugin.version>6-SNAPSHOT</komet-grpc-plugin.version>
         <test.excludedGroups>external</test.excludedGroups>
+        <!-- How many test JVMs run at once, unit tests and integration tests alike; each test class
+             still gets a fresh JVM (reuseForks=false from ike-parent). No class depends on another:
+             each starts its own ephemeral store and writes under its own names. This plugin's tests
+             are the tail of the working-set build, so they decide its length (ike-issues#1351).
+             -Dtests.forkCount=1 runs them one at a time. -->
+        <tests.forkCount>0.5C</tests.forkCount>
         <!-- The unit tests' JVM options, which ike-parent's surefire argLine takes in: JavaFX logs
              through JUL, which goes to stderr unless log4j's JUL manager takes it, as it does in
              the integration tests; the core adapter honors the JUnit provider's setLevel call. -->
@@ -256,6 +262,7 @@
                 <artifactId>maven-surefire-plugin</artifactId>
                 <configuration>
                     <excludedGroups>${test.excludedGroups}</excludedGroups>
+                    <forkCount>${tests.forkCount}</forkCount>
                 </configuration>
             </plugin>
             <plugin>
@@ -327,6 +334,7 @@
                             <goal>verify</goal>
                         </goals>
                         <configuration>
+                            <forkCount>${tests.forkCount}</forkCount>
                             <includes>
                                 <include>**/*IT.java</include>
                             </includes>
