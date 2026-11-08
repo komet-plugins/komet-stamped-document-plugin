@@ -1,0 +1,4 @@
+network.ike.komet.document.EditDocumentBlock
+network.ike.komet.document.EditDocumentSentence
+network.ike.komet.document.AddDocumentBlock
+network.ike.komet.document.DeleteDocumentBlock
