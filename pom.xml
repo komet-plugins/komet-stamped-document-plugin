@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.1.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.1.0 https://maven.apache.org/xsd/maven-4.1.0.xsd">
+    <modelVersion>4.1.0</modelVersion>
+
+    <parent>
+        <groupId>network.ike.platform</groupId>
+        <artifactId>ike-parent</artifactId>
+        <version>213</version>
+        <relativePath/>
+    </parent>
+
+    <groupId>network.ike.komet</groupId>
+    <artifactId>komet-stamped-document-plugin</artifactId>
+    <version>1-SNAPSHOT</version>
+    <packaging>jar</packaging>
+
+    <name>Komet Stamped Document Plugin</name>
+    <description>
+        The stamped document as a Komet plugin: AsciiDoc documents kept in git, read and edited
+        line by line in Komet with each line's STAMP, on a block surface that pages and prints.
+        Komet ships it with or without the assistant; the assistant and the profile plugins
+        (decision tree, ANF, calculator, complex concept) plug into it through its structured
+        block kinds. Moved out of komet-claude-plugin under IKE-Network/ike-issues#1351.
+    </description>
+    <url>https://ike.network/komet-stamped-document-plugin/</url>
+    <inceptionYear>2026</inceptionYear>
+
+    <licenses>
+        <license>
+            <name>Apache License, Version 2.0</name>
+            <url>https://www.apache.org/licenses/LICENSE-2.0.txt</url>
+            <distribution>repo</distribution>
+        </license>
+    </licenses>
+
+    <organization>
+        <name>IKE Network</name>
+        <url>https://ike.network</url>
+    </organization>
+
+    <scm>
+        <connection>scm:git:https://github.com/komet-plugins/komet-stamped-document-plugin.git</connection>
+        <developerConnection>scm:git:git@github.com:komet-plugins/komet-stamped-document-plugin.git</developerConnection>
+        <url>https://github.com/komet-plugins/komet-stamped-document-plugin</url>
+        <tag>HEAD</tag>
+    </scm>
+
+    <!-- Required: ike-parent's enforcer fails an inheriting project whose effective site URL still
+         starts with https://ike.network/ike-platform/ while its groupId is not network.ike.platform. -->
+    <distributionManagement>
+        <site>
+            <id>ike-site</id>
+            <url>https://ike.network/komet-stamped-document-plugin/</url>
+        </site>
+    </distributionManagement>
+
+    <!-- Snapshots of the IKE starter set resolve through here on a machine whose settings
+         enable no snapshot repository, such as the test agent. -->
+    <repositories>
+        <repository>
+            <id>tinkar-nexus</id>
+            <url>https://nexus.tinkar.org/repository/ike-public/</url>
+            <releases><enabled>true</enabled></releases>
+            <snapshots><enabled>true</enabled></snapshots>
+        </repository>
+    </repositories>
+
+    <properties>
+        <!-- Main-line Komet BOM; manages the tinkar-core and komet versions. Matches ike-komet-wsr. -->
+        <komet-bom.version>3.0.12-SNAPSHOT</komet-bom.version>
+        <java.version>27</java.version>
+    </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>dev.ikm.komet</groupId>
+                <artifactId>komet-bom</artifactId>
+                <version>${komet-bom.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+</project>
