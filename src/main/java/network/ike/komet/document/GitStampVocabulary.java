@@ -55,6 +55,16 @@ public final class GitStampVocabulary {
         seedConceptIfAbsent(stamp.path(), null);
     }
 
+    /**
+     * Seeds an annotator named by an annotation's {@code by}, such as the commit narrator, so what it wrote can
+     * carry it as its STAMP's author (IKE-Network/ike-issues#1355).
+     *
+     * @param author the annotator's concept
+     */
+    public static synchronized void seedAuthorIfAbsent(ConceptFacade author) {
+        seedConceptIfAbsent(author, null);
+    }
+
     private static void seedConceptIfAbsent(ConceptFacade concept, ConceptFacade parent) {
         if (!entityAbsent(concept)) {
             if (parent != null && entityAbsent(dev.ikm.tinkar.terms.EntityProxy.Semantic.make(statedAxiomsId(concept)))) {

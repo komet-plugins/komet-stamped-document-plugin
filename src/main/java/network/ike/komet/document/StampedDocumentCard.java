@@ -2615,6 +2615,7 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
                 return "Not committed: " + result.output().replace('\n', ' ');
             }
             GitDocumentMaterializer.Result stored = GitDocumentMaterializer.materialize(root, root.resolve(path), true);
+            DocumentCommits.committed(new DocumentCommits.Committed(root, path, result.sha()));
             return "Committed " + result.sha().substring(0, 7) + " (" + (choice.get().sign() ? "signed" : "unsigned") + ")"
                     + (DocumentEditor.pending(stored.anchor()).isPresent() ? "; " + describe(DocumentEditor.settle(stored.anchor())) : ".");
         })).whenComplete((report, failure) -> Platform.runLater(() -> {
@@ -3363,6 +3364,7 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
                             + " The file in the working tree holds your edit; the edit is still pending in Komet.";
                 }
                 GitDocumentMaterializer.materialize(root, file, true);
+                DocumentCommits.committed(new DocumentCommits.Committed(root, pending.path(), result.sha()));
                 return "Committed " + result.sha().substring(0, 7) + " (" + (sign ? "signed" : "unsigned") + "); "
                         + describe(DocumentEditor.settle(anchor));
             } catch (IOException e) {

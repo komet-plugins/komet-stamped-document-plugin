@@ -27,6 +27,7 @@ import design.knowledge.stamp.adoc.identity.Identity;
 import design.knowledge.stamp.adoc.identity.Uuid5;
 import design.knowledge.stamp.adoc.model.CommitEvent;
 import design.knowledge.stamp.adoc.model.AnnotationKind;
+import design.knowledge.stamp.adoc.model.AnnotationTarget;
 import design.knowledge.stamp.adoc.model.LineId;
 import design.knowledge.stamp.adoc.model.SegmentId;
 import design.knowledge.stamp.adoc.model.StampHistory;
@@ -206,6 +207,7 @@ public final class VertexMaterializer {
             int references = 0;
             int sentences = 0;
             int annotations = 0;
+            int narrations = 0;
             boolean segments = segmentsAvailable();
             int skipped = 0;
             for (CommitEvent event : history.events()) {
@@ -240,6 +242,7 @@ public final class VertexMaterializer {
                 GitStampTerms.GitStamp stamp = GitStampTerms.GitStamp.of(adapter.coordinatesOf(event, component, branch));
                 GitStampVocabulary.seedIfAbsent(stamp);
                 Map<String, Written> now = null;
+                List<GitDocumentMaterializer.Narration> narrated = new ArrayList<>();
                 try (StampedWriter writer = stamp.openWriter("git-vertices " + event.commit().sha().substring(0, 7))) {
                     if (!patternWritten) {
                         writer.pattern(patternId, IkeConcept.DOCUMENT_VERTEX, IkeConcept.DOCUMENT_STRUCTURE,
@@ -272,6 +275,10 @@ public final class VertexMaterializer {
                             continue;                            // already in the store
                         }
                         CommitEvent.AnnotationEvent a = event.annotations().get(i);
+                        if (a.annotation().target() instanceof AnnotationTarget.ChangeSet) {
+                            narrated.add(new GitDocumentMaterializer.Narration(proxy, a));
+                            continue;                            // a comment on a commit's STAMP: written below, by its annotator (#1355)
+                        }
                         Optional<ConceptFacade> meaning = StampedDocumentTerms.meaning(a);
                         if (meaning.isEmpty()) {
                             LOG.warn("{}: annotation {} names {}, which this store does not hold; not written",
@@ -294,6 +301,11 @@ public final class VertexMaterializer {
                         annotations++;
                     }
                     writer.commit();
+                }
+                for (GitDocumentMaterializer.Narration n : narrated) {
+                    if (GitDocumentMaterializer.narrate(stamp, source, n)) {
+                        narrations++;
+                    }
                 }
                 annotations += GitDocumentMaterializer.retract(stamp, event.commit().sha(), retractions);
                 if (now != null) {
@@ -318,8 +330,8 @@ public final class VertexMaterializer {
                 }
             }
             LOG.info("Materialized {} as vertices of '{}': {} commit(s) written, {} already recorded, {} line(s), {} block version(s), "
-                    + "{} reference version(s), {} sentence version(s), {} annotation(s)", path, name, history.events().size() - skipped,
-                    skipped, lines, blocks, references, sentences, annotations);
+                    + "{} reference version(s), {} sentence version(s), {} annotation(s), {} narration(s)", path, name,
+                    history.events().size() - skipped, skipped, lines, blocks, references, sentences, annotations, narrations);
             return new GitDocumentMaterializer.Result(root.publicId(), name, history.events().size() - skipped, lines, annotations,
                     blocks, references, repo.headRevision());
         }

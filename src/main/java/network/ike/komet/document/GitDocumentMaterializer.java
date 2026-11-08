@@ -24,6 +24,7 @@ import design.knowledge.stamp.adoc.identity.GitIdentityAdapter;
 import design.knowledge.stamp.adoc.identity.Identity;
 import design.knowledge.stamp.adoc.identity.Uuid5;
 import design.knowledge.stamp.adoc.model.AnnotationKind;
+import design.knowledge.stamp.adoc.model.AnnotationTarget;
 import design.knowledge.stamp.adoc.model.CommitEvent;
 import design.knowledge.stamp.adoc.model.LineId;
 import design.knowledge.stamp.adoc.model.StampHistory;
@@ -174,6 +175,7 @@ public final class GitDocumentMaterializer {
             boolean anchorWritten = !DocumentVocabulary.entityAbsent(anchor);
             Set<String> recorded = anchorWritten && onlyNew ? recordedCommits(anchor) : Set.of();
             int skipped = 0;
+            int narrations = 0;
             for (CommitEvent event : history.events()) {
                 boolean contentRecorded = !event.touchesFile() || recorded.contains(event.commit().sha());
                 List<Semantic> pendingAnnotations = new ArrayList<>();
@@ -203,6 +205,7 @@ public final class GitDocumentMaterializer {
                 GitStampTerms.GitStamp stamp = GitStampTerms.GitStamp.of(adapter.coordinatesOf(event, component, branch));
                 GitStampVocabulary.seedIfAbsent(stamp);
                 List<Retirement> retirements = new ArrayList<>();
+                List<Narration> narrated = new ArrayList<>();
                 try (StampedWriter writer = stamp.openWriter("git-materialize " + event.commit().sha().substring(0, 7))) {
                     if (!anchorWritten) {
                         writer.concept(anchor.publicId());
@@ -248,6 +251,10 @@ public final class GitDocumentMaterializer {
                             continue;                            // already in the store
                         }
                         CommitEvent.AnnotationEvent a = event.annotations().get(i);
+                        if (a.annotation().target() instanceof AnnotationTarget.ChangeSet) {
+                            narrated.add(new Narration(proxy, a));
+                            continue;                            // a comment on a commit's STAMP: written below, by its annotator
+                        }
                         Optional<ConceptFacade> meaning = StampedDocumentTerms.meaning(a);
                         if (meaning.isEmpty() || a.lines().isEmpty()) {
                             continue;                            // a meaning the store lacks, or words within lines: this model stores lines only
@@ -262,6 +269,11 @@ public final class GitDocumentMaterializer {
                         annotations++;
                     }
                     writer.commit();
+                }
+                for (Narration n : narrated) {
+                    if (narrate(stamp, source, n)) {
+                        narrations++;
+                    }
                 }
                 annotations += retract(stamp, event.commit().sha(), retractions);
                 if (!contentRecorded && (!event.retired().isEmpty() || !retirements.isEmpty())) {
@@ -280,8 +292,8 @@ public final class GitDocumentMaterializer {
                 }
                 structure.adopt(now);
             }
-            LOG.info("Materialized {} as '{}': {} commit(s) written, {} already recorded, {} line(s), {} block version(s), {} reference version(s), {} annotation(s)",
-                    path, name, history.events().size() - skipped, skipped, lines, blocks, references, annotations);
+            LOG.info("Materialized {} as '{}': {} commit(s) written, {} already recorded, {} line(s), {} block version(s), {} reference version(s), {} annotation(s), {} narration(s)",
+                    path, name, history.events().size() - skipped, skipped, lines, blocks, references, annotations, narrations);
             return new Result(anchor.publicId(), name, history.events().size() - skipped, lines, annotations, blocks, references, repo.headRevision());
         }
     }
@@ -582,6 +594,63 @@ public final class GitDocumentMaterializer {
             writer.commit();
         }
         return targets.size();
+    }
+
+    /** A comment on a commit's STAMP read from git, and the identity its trailer gives it. */
+    record Narration(Semantic proxy, CommitEvent.AnnotationEvent event) { }
+
+    /**
+     * Writes a comment on a commit's STAMP, such as the commit narrator's, as git contains it
+     * (IKE-Network/ike-issues#1355): a Comment semantic, with the identity its trailer names, on the STAMP of
+     * the commit it is about, authored by its annotator at its time, under the document's module. Rebuilt
+     * from git, it is the same semantic with the same STAMP, so a rebuild adds nothing.
+     *
+     * @param stamp  the annotation commit's STAMP: its module and path
+     * @param source the document's git-source semantic, which finds the narrated commit's STAMP
+     * @param n      the comment
+     * @return whether it was written: not when the narrated commit's STAMP is not in the store
+     */
+    static boolean narrate(GitStampTerms.GitStamp stamp, Semantic source, Narration n) {
+        CommitEvent.AnnotationEvent a = n.event();
+        java.util.OptionalLong about = stampOfCommit(source, a.reviewedSha());
+        if (about.isEmpty()) {
+            LOG.warn("A comment in {} is about commit {}, which this document's history in the store does not contain",
+                    a.annotation().value(), a.reviewedSha());
+            return false;
+        }
+        design.knowledge.stamp.adoc.model.KonceptRef by = a.annotation().by();
+        ConceptFacade author = by == null ? stamp.author() : Concept.make(by.label(), by.uuid());
+        if (by != null) {
+            GitStampVocabulary.seedAuthorIfAbsent(author);
+        }
+        long time = a.annotation().at() == null ? stamp.time() : a.annotation().at().toEpochMilli();
+        try (StampedWriter writer = StampedWriter.open("git-narration " + a.reviewedSha().substring(0, 7), State.ACTIVE, time,
+                author, stamp.module(), stamp.path())) {
+            writer.semantic(n.proxy(), dev.ikm.tinkar.terms.KernelPattern.COMMENT_PATTERN.publicId(),
+                    EntityProxy.make(about.getAsLong()), a.text());
+            writer.commit();
+        }
+        return true;
+    }
+
+    /**
+     * The STAMP the store wrote a commit's content under, found by the git-source version that names it.
+     *
+     * @param source the document's git-source semantic
+     * @param sha    the commit
+     * @return its STAMP; empty when no git-source version names it
+     */
+    static java.util.OptionalLong stampOfCommit(Semantic source, String sha) {
+        if (DocumentVocabulary.entityAbsent(source)) {
+            return java.util.OptionalLong.empty();
+        }
+        for (EntityVersion version : EntityHandle.get(source.nid()).expectEntity().versions()) {
+            SemanticEntityVersion v = (SemanticEntityVersion) version;
+            if (v.time() != Long.MAX_VALUE && sha.equals(String.valueOf(v.fieldValues().get(1)))) {
+                return java.util.OptionalLong.of(v.stampNid());
+            }
+        }
+        return java.util.OptionalLong.empty();
     }
 
     static long reviewedStampNid(Semantic source, String sha) {
