@@ -51,3 +51,36 @@
 .claude-doc-stack .doc-turn-header {
     -fx-padding: 2 0 0 0;
 }
+
+/*
+ * A table in the Reading view: each row is a grid of its cells at the table's column widths, so
+ * the columns line up down the table. Ruled between rows and between cells, the header row on a tint.
+ */
+.claude-doc-stack .doc-table-row {
+    -fx-background-color: white;
+    -fx-border-color: #cfcbc4;
+    -fx-border-width: 1 1 0 1;
+}
+
+.claude-doc-stack .doc-table-row.doc-table-last-row {
+    -fx-border-width: 1;
+}
+
+.claude-doc-stack .doc-table-row.doc-table-header-row {
+    -fx-background-color: #eceae6;
+}
+
+.claude-doc-stack .doc-table-cell {
+    -fx-border-color: #cfcbc4;
+    -fx-border-width: 0 1 0 0;
+}
+
+.claude-doc-stack .doc-table-cell.doc-table-last-cell {
+    -fx-border-width: 0;
+}
+
+/* A cell's text draws on its row's ground, the header's tint included. */
+.claude-doc-stack .doc-table-cell-text,
+.claude-doc-stack .doc-table-cell-text .content {
+    -fx-background-color: transparent;
+}

@@ -462,6 +462,8 @@ public final class DocumentSurfaceView {
         Node structuredView;
         /** The kind's editor while one is open on this area. */
         StructuredBlockKind.Editor structuredEditor;
+        /** A table row's cells in the Reading view, each a text of its own in the row's grid; none for any other area. */
+        List<CellText> cells = List.of();
 
         Area(DocumentAssembly.Member member, StoredBlock block, List<StoredLine> lines, LineRunModel.Spec spec, boolean editable, String section) {
             this.member = member;
@@ -477,7 +479,7 @@ public final class DocumentSurfaceView {
             area.setHighlightCurrentParagraph(false);
             area.setContentPadding(new Insets(2, 4, 2, 4));
             area.getStyleClass().add("doc-prose-block");
-            wire(this);
+            wire(this, area, () -> model);
             // A selection held off a window fails every layout of the control, so an area keeps one only while attached.
             area.sceneProperty().addListener((obs, was, is) -> {
                 if (is == null) {
@@ -496,6 +498,9 @@ public final class DocumentSurfaceView {
                 area.setModel(model);
             } finally {
                 applying = false;
+            }
+            for (CellText cell : cells) {
+                cell.decorate();
             }
         }
     }
@@ -909,22 +914,8 @@ public final class DocumentSurfaceView {
                 }
                 if (print) {
                     printedRows(member, block, children, header, depth + 1, section);
-                    break;
-                }
-                int r = 0;
-                for (StoredBlock row : children) {
-                    List<StoredLine> cells = new ArrayList<>();
-                    for (long nid : row.members()) {
-                        document.line(nid).ifPresent(cells::add);
-                    }
-                    if (cells.isEmpty()) {
-                        continue;
-                    }
-                    Area area = add(member, row, cells, paragraphs(cells, " ", header && r == 0 ? st.headerCell() : st.cell(), DocumentSurfaceView::cell), depth + 1, false, section);
-                    if (area != null) {
-                        area.area.setStyle("-fx-background-color: " + (header && r == 0 ? "#ECEAE6" : "#F4F3F1") + ";");
-                    }
-                    r++;
+                } else {
+                    gridRows(member, block, children, header, depth + 1, section);
                 }
             }
             case TABLE_ROW, TABLE_CELL -> renderChildren(member, children, depth, section);
@@ -1094,9 +1085,165 @@ public final class DocumentSurfaceView {
         }
     }
 
-    /** A table line as drawn: the leading bar dropped, the cell bars shown as a light rule. */
-    private static String cell(String text) {
-        return text.strip().replaceFirst("^\\|\\s*", "").replace(" | ", "  │  ").replace("|", " │ ");
+    /**
+     * A table's rows in the Reading view, read as the print model reads them and drawn as a grid:
+     * an area for each row, whose cells stand side by side at the table's column widths, so the
+     * columns line up down the table and a long cell wraps inside its column. A row need not be a
+     * block of the source, which a blank line ends, and a table written a row to a line has no
+     * blank lines at all. The row's own text stays the area's model and is not shown; each cell is
+     * a text over the lines its words come from.
+     */
+    private void gridRows(DocumentAssembly.Member member, StoredBlock table, List<StoredBlock> children, boolean header, int depth, String section) {
+        List<StoredLine> body = new ArrayList<>();
+        Map<Long, StoredBlock> blockOf = new HashMap<>();
+        for (StoredBlock row : children) {
+            for (long nid : row.members()) {
+                member.document().line(nid).ifPresent(line -> {
+                    body.add(line);
+                    blockOf.put(line.nid(), row);
+                });
+            }
+        }
+        List<List<network.ike.komet.document.print.TableCells.Cell>> rows =
+                network.ike.komet.document.print.TableCells.rows(body.stream().map(StoredLine::text).toList(), table.parameters());
+        List<Integer> widths = network.ike.komet.document.print.StoredDocumentModel.widths(table.parameters(),
+                network.ike.komet.document.print.TableCells.columns(rows));
+        double total = Math.max(1, widths.stream().mapToInt(Integer::intValue).sum());
+        TableGrid fit = new TableGrid(widths);
+        int r = 0;
+        for (List<network.ike.komet.document.print.TableCells.Cell> row : rows) {
+            boolean head = header && r == 0;
+            boolean last = ++r == rows.size();
+            List<LineRunModel.Line> drawn = network.ike.komet.document.print.TableCells.drawn(row).stream()
+                    .map(piece -> new LineRunModel.Line(body.get(piece.line()), piece.text())).toList();
+            if (drawn.isEmpty()) {
+                continue;
+            }
+            List<StoredLine> lines = drawn.stream().map(LineRunModel.Line::line).toList();
+            StyleAttributeMap style = head ? st.headerCell() : st.cell();
+            Area area = add(member, blockOf.get(lines.getFirst().nid()), lines,
+                    new LineRunModel.Spec(List.of(new LineRunModel.Paragraph(drawn, " ", style))), depth, false, section);
+            if (area == null) {
+                continue;
+            }
+            javafx.scene.layout.GridPane grid = new javafx.scene.layout.GridPane();
+            grid.getStyleClass().add("doc-table-row");
+            if (head) {
+                grid.getStyleClass().add("doc-table-header-row");
+            }
+            if (last) {
+                grid.getStyleClass().add("doc-table-last-row");
+            }
+            grid.setMaxWidth(Double.MAX_VALUE);
+            List<CellText> cells = new ArrayList<>();
+            for (int c = 0; c < widths.size(); c++) {
+                javafx.scene.layout.ColumnConstraints column = new javafx.scene.layout.ColumnConstraints();
+                column.setPercentWidth(100.0 * widths.get(c) / total);
+                column.setFillWidth(true);
+                grid.getColumnConstraints().add(column);
+                VBox box = new VBox();
+                box.getStyleClass().add("doc-table-cell");
+                if (c == widths.size() - 1) {
+                    box.getStyleClass().add("doc-table-last-cell");
+                }
+                box.setFillWidth(true);
+                box.setMinWidth(0);
+                List<LineRunModel.Line> own = c >= row.size() ? List.<LineRunModel.Line>of() : row.get(c).pieces().stream()
+                        .filter(piece -> !piece.text().isEmpty())
+                        .map(piece -> new LineRunModel.Line(body.get(piece.line()), piece.text())).toList();
+                if (!own.isEmpty()) {
+                    CellText cell = new CellText(area, new LineRunModel.Spec(List.of(new LineRunModel.Paragraph(own, " ", style))));
+                    cells.add(cell);
+                    box.getChildren().add(cell.rta);
+                    for (LineRunModel.Line line : own) {
+                        fit.words(c, line.text(), head);
+                    }
+                }
+                grid.add(box, c, 0);
+            }
+            area.cells = List.copyOf(cells);
+            area.area.setVisible(false);
+            area.area.setManaged(false);
+            area.holder.getChildren().add(area.holder.getChildren().indexOf(area.area) + 1, grid);
+            if (!fit.rows.isEmpty()) {
+                // the rows are blocks of the surface, which stands its blocks apart: a row after the first closes that space
+                VBox.setMargin(grid, new Insets(-DocumentSurface.BLOCK_SPACING, 0, 0, 0));
+            }
+            fit.add(grid);
+        }
+    }
+
+    /**
+     * The rows of one table in the Reading view, which share their columns' widths: each column
+     * its weight's share of the row, but no narrower than its widest word, as
+     * {@link TableColumnFit} shares them. Fitted again whenever the rows' width changes.
+     */
+    private final class TableGrid {
+        /** What a cell's text stands in from its column's edges: the text's own padding and the rule beside it. */
+        private static final double CELL_INSET = 20;
+
+        final List<Integer> weights;
+        final List<javafx.scene.layout.GridPane> rows = new ArrayList<>();
+        /** By column: its words, each with whether a header cell draws it bold. */
+        final List<Map<String, Boolean>> words = new ArrayList<>();
+        /** Measures a word in the font the cells draw it in, which the scene's stylesheets name. */
+        final javafx.scene.text.Text probe = new javafx.scene.text.Text();
+        /** Each column's least width, once measured in a scene. */
+        double[] least;
+        double fitted = -1;
+
+        TableGrid(List<Integer> weights) {
+            this.weights = weights;
+            for (int c = 0; c < weights.size(); c++) {
+                words.add(new HashMap<>());
+            }
+            probe.setManaged(false);
+            probe.setVisible(false);
+        }
+
+        void words(int column, String text, boolean bold) {
+            for (String word : text.strip().split("\\s+")) {
+                if (!word.isEmpty()) {
+                    words.get(column).merge(word, bold, Boolean::logicalOr);
+                }
+            }
+        }
+
+        void add(javafx.scene.layout.GridPane row) {
+            if (rows.isEmpty()) {
+                row.getChildren().add(probe);
+                row.widthProperty().addListener((obs, was, is) -> fit());
+                row.sceneProperty().addListener((obs, was, is) -> fit());
+            }
+            rows.add(row);
+        }
+
+        private void fit() {
+            javafx.scene.layout.GridPane first = rows.getFirst();
+            double width = first.getWidth() - first.snappedLeftInset() - first.snappedRightInset();
+            if (first.getScene() == null || width <= 0 || Math.abs(width - fitted) < 0.5) {
+                return;
+            }
+            if (least == null) {
+                least = new double[weights.size()];
+                for (int c = 0; c < least.length; c++) {
+                    for (Map.Entry<String, Boolean> word : words.get(c).entrySet()) {
+                        probe.setText(word.getKey());
+                        probe.setStyle("-fx-font-size: " + st.cell().getFontSize() + "px;" + (word.getValue() ? " -fx-font-weight: bold;" : ""));
+                        probe.applyCss();
+                        least[c] = Math.max(least[c], Math.ceil(probe.getLayoutBounds().getWidth()) + CELL_INSET);
+                    }
+                }
+                probe.setText("");
+            }
+            fitted = width;
+            double[] share = TableColumnFit.shares(weights, least, width);
+            for (javafx.scene.layout.GridPane row : rows) {
+                for (int c = 0; c < share.length; c++) {
+                    row.getColumnConstraints().get(c).setPercentWidth(100.0 * share[c] / width);
+                }
+            }
+        }
     }
 
     /** One paragraph per line, or one paragraph of all lines joined by the separator. */
@@ -1982,15 +2129,54 @@ public final class DocumentSurfaceView {
         stack();
     }
 
+    /**
+     * One cell of a table row in the Reading view: a text of its own over the source lines the
+     * cell's text comes from, so a cell hovers, selects and copies as a line does anywhere else.
+     */
+    private final class CellText {
+        final Area row;
+        final LineRunModel.Spec spec;
+        final RichTextArea rta = new RichTextArea();
+        LineRunModel model;
+
+        CellText(Area row, LineRunModel.Spec spec) {
+            this.row = row;
+            this.spec = spec;
+            rta.setEditable(false);
+            rta.setWrapText(true);
+            rta.setUseContentHeight(true);
+            rta.setDisplayCaret(false);
+            rta.setHighlightCurrentParagraph(false);
+            rta.setContentPadding(new Insets(3, 6, 3, 6));
+            rta.getStyleClass().addAll("doc-prose-block", "doc-table-cell-text");
+            wire(row, rta, () -> model);
+            decorate();
+        }
+
+        void decorate() {
+            model = spec.build(decoration(row));
+            applying = true;
+            try {
+                rta.setModel(model);
+            } finally {
+                applying = false;
+            }
+        }
+    }
+
     // ── hover ─────────────────────────────────────────────────────────────────
 
-    private void wire(Area area) {
-        RichTextArea rta = area.area;
+    /**
+     * Wires a text of an area to the surface's gestures: the area's own, or a table cell's.
+     *
+     * @param model the text's model as it stands when a gesture arrives, since redrawing replaces it
+     */
+    private void wire(Area area, RichTextArea rta, java.util.function.Supplier<LineRunModel> model) {
         rta.addEventHandler(MouseEvent.MOUSE_MOVED, e -> {
             if (area == editing) {
                 return;
             }
-            Optional<LineRun> run = area.model.runAt(rta.getTextPosition(e.getScreenX(), e.getScreenY()));
+            Optional<LineRun> run = model.get().runAt(rta.getTextPosition(e.getScreenX(), e.getScreenY()));
             if (run.isEmpty()) {
                 hidePopover();
                 return;
@@ -2005,7 +2191,7 @@ public final class DocumentSurfaceView {
         });
         rta.addEventHandler(MouseEvent.MOUSE_EXITED, e -> hidePopover());
         rta.addEventHandler(MouseEvent.MOUSE_PRESSED, e -> hidePopover());
-        rta.selectionProperty().addListener((obs, was, is) -> snap(area, is));
+        rta.selectionProperty().addListener((obs, was, is) -> snap(area, model.get(), is));
         rta.addEventFilter(MouseEvent.MOUSE_PRESSED, e -> {
             if (area == editing) {
                 return;
@@ -2015,7 +2201,7 @@ public final class DocumentSurfaceView {
                 return;
             }
             if (e.isShiftDown() && e.getButton() == MouseButton.PRIMARY && selection != null) {
-                Optional<LineRun> run = area.model.runAt(rta.getTextPosition(e.getScreenX(), e.getScreenY()));
+                Optional<LineRun> run = model.get().runAt(rta.getTextPosition(e.getScreenX(), e.getScreenY()));
                 if (run.isPresent()) {
                     selection = selection.extendTo(ordinal(run.get().nid()));
                     render();
@@ -2029,7 +2215,7 @@ public final class DocumentSurfaceView {
                 return;
             }
             hidePopover();
-            Optional<LineRun> run = area.model.runAt(rta.getTextPosition(e.getScreenX(), e.getScreenY()));
+            Optional<LineRun> run = model.get().runAt(rta.getTextPosition(e.getScreenX(), e.getScreenY()));
             if (run.isPresent()) {
                 int o = ordinal(run.get().nid());
                 if (selection == null || !selection.contains(o)) {
@@ -2071,12 +2257,12 @@ public final class DocumentSurfaceView {
     // ── selection ─────────────────────────────────────────────────────────────
 
     /** Snaps a gesture's selection in one area to whole lines and makes it the document's. */
-    private void snap(Area area, SelectionSegment is) {
-        if (applying || area == editing || is == null || area.model == null) {
+    private void snap(Area area, LineRunModel model, SelectionSegment is) {
+        if (applying || area == editing || is == null || model == null) {
             return;
         }
-        Optional<LineRun> anchor = area.model.runAt(is.getAnchor());
-        Optional<LineRun> caret = area.model.runAt(is.getCaret());
+        Optional<LineRun> anchor = model.runAt(is.getAnchor());
+        Optional<LineRun> caret = model.runAt(is.getCaret());
         if (anchor.isEmpty() || caret.isEmpty()) {
             return;
         }
@@ -2112,27 +2298,35 @@ public final class DocumentSurfaceView {
         }
         applying = true;
         try {
-            LineRun first = null;
-            LineRun last = null;
-            if (selection != null) {
-                for (LineRun run : area.model.runs()) {
-                    if (selection.contains(ordinal(run.nid()))) {
-                        if (first == null) {
-                            first = run;
-                        }
-                        last = run;
-                    }
-                }
-            }
-            if (first == null || !inWindow(area.area)) {
-                area.area.clearSelection();
-            } else if (selection.caret() >= selection.anchor()) {
-                area.area.select(first.startPos(), last.endPos());
-            } else {
-                area.area.select(last.endPos(), first.startPos());
+            applySelection(area.area, area.model);
+            for (CellText cell : area.cells) {
+                applySelection(cell.rta, cell.model);
             }
         } finally {
             applying = false;
+        }
+    }
+
+    /** Draws the selection in one text: the runs of its model the selection holds, as one stretch. */
+    private void applySelection(RichTextArea rta, LineRunModel model) {
+        LineRun first = null;
+        LineRun last = null;
+        if (selection != null) {
+            for (LineRun run : model.runs()) {
+                if (selection.contains(ordinal(run.nid()))) {
+                    if (first == null) {
+                        first = run;
+                    }
+                    last = run;
+                }
+            }
+        }
+        if (first == null || !inWindow(rta)) {
+            rta.clearSelection();
+        } else if (selection.caret() >= selection.anchor()) {
+            rta.select(first.startPos(), last.endPos());
+        } else {
+            rta.select(last.endPos(), first.startPos());
         }
     }
 

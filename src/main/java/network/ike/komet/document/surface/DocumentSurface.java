@@ -82,7 +82,7 @@ public final class DocumentSurface extends BorderPane {
     /** The gap between a row's columns, px. */
     private static final double ROW_GAP = 8;
     /** Vertical gap between stacked blocks, px. */
-    private static final double BLOCK_SPACING = 6;
+    public static final double BLOCK_SPACING = 6;
     /** Extra gap above a turn header, px (separates turns more strongly than blocks). */
     private static final double TURN_SPACING = 10;
 

@@ -61,7 +61,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * A table taller than a page on the Stamped Document card's pages, from a stored document through
  * the units, both oracles and the page lines: every row is drawn, and its header at the top of
- * every page the table reaches, by either oracle.
+ * every page the table reaches, by either oracle. And a table in the Reading view, a grid of its
+ * cells however its source lays its rows out.
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class PageTableIT {
@@ -181,6 +182,47 @@ class PageTableIT {
         assertEquals(table.rows().stream().map(row -> String.join(TableCells.BAR, row)).toList(),
                 rows.stream().map(LayoutOracle.Unit::text).toList());
         assertTrue(rows.stream().allMatch(row -> row.columns().equals(List.of(1, 3))), "every row knows its table's columns");
+    }
+
+    @Test
+    void theReadingViewDrawsATableWrittenARowToALineAsAGridOfItsCells() throws Exception {
+        // no blank line between rows: the source's one block of lines is four rows of four cells
+        StoredDocument document = stored("reading-table", """
+                :topic-id: reading-table
+                = Reading Table
+
+                .Two courses
+                [cols="7,4,4,8", options="header"]
+                |===
+                | | None scanned | All scanned | Difference
+                | Angiograms | 0 | 2,140 | 1,960 of them on patients with no reopening
+                | Patients retreated | 0 | 180 |
+                | Ruptures | 36 | 7 | 29 fewer
+                |===
+                """);
+        DocumentSurface body = onFx(() -> new DocumentSurface(new BlockFactory(Calculators.View.Default(), 13)));
+        List<javafx.scene.layout.GridPane> grids = onFx(() -> {
+            new DocumentSurfaceView(host(), body).show(DocumentAssembly.single(document, "reading-table.adoc"));
+            // block by block: a scroll pane with no skin yet has no children to look through
+            List<javafx.scene.layout.GridPane> rows = new ArrayList<>();
+            for (int b = 0; b < body.blockCount(); b++) {
+                body.block(b).node().lookupAll(".doc-table-row").forEach(row -> rows.add((javafx.scene.layout.GridPane) row));
+            }
+            return rows;
+        });
+        List<List<String>> drawn = onFx(() -> grids.stream().map(grid -> grid.getChildren().stream()
+                .filter(cell -> cell.getStyleClass().contains("doc-table-cell"))
+                .map(cell -> ((javafx.scene.layout.Pane) cell).getChildren().stream().filter(RichTextArea.class::isInstance).map(RichTextArea.class::cast)
+                        .map(text -> text.getModel().getPlainText(0)).findFirst().orElse(""))
+                .toList()).toList());
+        assertEquals(List.of(List.of("", "None scanned", "All scanned", "Difference"),
+                List.of("Angiograms", "0", "2,140", "1,960 of them on patients with no reopening"),
+                List.of("Patients retreated", "0", "180", ""),
+                List.of("Ruptures", "36", "7", "29 fewer")), drawn);
+        assertTrue(grids.stream().allMatch(grid -> grid.getColumnConstraints().size() == 4), "every row has the table's four columns");
+        assertTrue(grids.getFirst().getStyleClass().contains("doc-table-header-row"), "the first row is the header");
+        assertTrue(grids.stream().skip(1).noneMatch(grid -> grid.getStyleClass().contains("doc-table-header-row")));
+        assertTrue(grids.getLast().getStyleClass().contains("doc-table-last-row"), "the last row closes the grid");
     }
 
     /** A document committed and stored, as the card reads it. */
