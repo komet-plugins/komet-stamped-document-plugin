@@ -107,6 +107,32 @@ class CaptionsTest {
     }
 
     @Test
+    void headingsAreNumberedToTheDepthAsked() {
+        StoredDocument document = StoredFixture.parse(TEXT);
+        DocumentAssembly assembly = DocumentAssembly.single(document, "doc.adoc");
+        Captions three = Captions.of(assembly, CaptionsTest::figure, 3);
+        assertEquals(List.of("1", "1.1", "2"), three.headings().stream().map(Captions.Heading::number).toList());
+        assertEquals(List.of("1 First section", "1.1 Deeper", "2 Second section"), three.headings().stream().map(Captions.Heading::read).toList());
+        Captions one = Captions.of(assembly, CaptionsTest::figure, 1);
+        assertEquals(List.of("1", "", "2"), one.headings().stream().map(Captions.Heading::number).toList(), "a deeper heading than the depth has no number");
+        assertEquals("Deeper", one.heading(document.blocks().values().stream().filter(b -> b.title().equals("Deeper")).findFirst().orElseThrow(), "Deeper"));
+        Captions none = Captions.of(assembly, CaptionsTest::figure);
+        assertTrue(none.headings().stream().allMatch(h -> h.number().isEmpty()), "no numbers unless asked");
+        assertEquals("", none.number(123456L), "a block that is no heading has no number");
+    }
+
+    @Test
+    void theHeaderSaysWhetherSectionsAreNumbered() {
+        DocumentModel.Lists lists = StoredDocumentModel.lists(StoredFixture.parse("= Doc\n:sectnums:\n:sectnumlevels: 2\n\nText.\n"));
+        assertTrue(lists.sectionNumbers());
+        assertEquals(2, lists.sectionLevels());
+        DocumentModel.Lists off = StoredDocumentModel.lists(StoredFixture.parse("= Doc\n:sectnums:\n:sectnums!:\n\nText.\n"));
+        assertFalse(off.sectionNumbers());
+        assertEquals(3, StoredDocumentModel.lists(StoredFixture.parse(TEXT)).sectionLevels(), "three levels by default");
+        assertFalse(StoredDocumentModel.lists(StoredFixture.parse(TEXT)).sectionNumbers());
+    }
+
+    @Test
     void theHeaderSaysWhichListsTheDocumentAsksFor() {
         DocumentModel.Lists lists = StoredDocumentModel.lists(StoredFixture.parse(TEXT));
         assertTrue(lists.contents());

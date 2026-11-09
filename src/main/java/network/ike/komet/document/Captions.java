@@ -86,7 +86,12 @@ public final class Captions {
      * @param block  the heading block's nid
      * @param member the document it is in
      */
-    public record Heading(int level, String text, long block, DocumentAssembly.Member member) {
+    public record Heading(int level, String text, long block, DocumentAssembly.Member member, String number) {
+
+        /** @return the heading as read: its number before its text when it has one */
+        public String read() {
+            return number.isEmpty() ? text : number + " " + text;
+        }
     }
 
     private static final Captions NONE = new Captions(Map.of(), List.of(), List.of());
@@ -114,9 +119,37 @@ public final class Captions {
      * @return the captions
      */
     public static Captions of(DocumentAssembly assembly, Predicate<StoredBlock> isFigure) {
-        Walk walk = new Walk(assembly, isFigure);
+        return of(assembly, isFigure, 0);
+    }
+
+    /**
+     * Numbers the titled figures and tables of an assembly, and its headings to a depth.
+     *
+     * @param assembly      the assembly
+     * @param isFigure      whether a block is a figure
+     * @param numberedLevels how many heading levels take a section number, {@code 1}, {@code 1.1}, {@code 1.1.1}; 0 for none
+     * @return the captions
+     */
+    public static Captions of(DocumentAssembly assembly, Predicate<StoredBlock> isFigure, int numberedLevels) {
+        Walk walk = new Walk(assembly, isFigure, numberedLevels);
         walk.member(assembly.host());
         return new Captions(Map.copyOf(walk.byBlock), List.copyOf(walk.all), List.copyOf(walk.headings));
+    }
+
+    /** @return a heading's section number, {@code 1.2}, or an empty string for a heading with none */
+    public String number(long blockNid) {
+        for (Heading heading : headings) {
+            if (heading.block() == blockNid) {
+                return heading.number();
+            }
+        }
+        return "";
+    }
+
+    /** @return a heading as read: its number before its text when it has one */
+    public String heading(StoredBlock block, String text) {
+        String number = number(block.nid());
+        return number.isEmpty() ? text : number + " " + text;
     }
 
     /** @return the headings in reading order, an included document's title among them at its depth */
@@ -157,12 +190,32 @@ public final class Captions {
         final List<Caption> all = new ArrayList<>();
         final List<Heading> headings = new ArrayList<>();
         final Set<String> walked = new HashSet<>();
+        final int numberedLevels;
+        /** The section counters by level, 1 the first. */
+        final int[] counters = new int[16];
         int figures;
         int tables;
 
-        Walk(DocumentAssembly assembly, Predicate<StoredBlock> isFigure) {
+        Walk(DocumentAssembly assembly, Predicate<StoredBlock> isFigure, int numberedLevels) {
             this.assembly = assembly;
             this.isFigure = isFigure;
+            this.numberedLevels = numberedLevels;
+        }
+
+        /** The next section number at a level: this level counts up, the levels beneath start again. */
+        private String number(int level) {
+            if (level < 1 || level > numberedLevels || level >= counters.length) {
+                return "";
+            }
+            counters[level]++;
+            for (int deeper = level + 1; deeper < counters.length; deeper++) {
+                counters[deeper] = 0;
+            }
+            StringBuilder number = new StringBuilder();
+            for (int at = 1; at <= level; at++) {
+                number.append(at > 1 ? "." : "").append(counters[at]);
+            }
+            return number.toString();
         }
 
         void member(DocumentAssembly.Member member) {
@@ -175,9 +228,11 @@ public final class Captions {
         private void block(DocumentAssembly.Member member, StoredBlock block) {
             StoredDocument document = member.document();
             if (block.kind() == Block.Kind.SECTION && !block.title().isEmpty()) {
-                headings.add(new Heading(block.level() + member.depth(), block.title(), block.nid(), member));
+                int level = block.level() + member.depth();
+                headings.add(new Heading(level, block.title(), block.nid(), member, number(level)));
             } else if (block.kind() == Block.Kind.DOCUMENT && !member.host() && !block.title().isEmpty()) {
-                headings.add(new Heading(Math.max(1, member.depth()), block.title(), block.nid(), member));
+                int level = Math.max(1, member.depth());
+                headings.add(new Heading(level, block.title(), block.nid(), member, number(level)));
             }
             if (!block.title().isEmpty() && block.kind() != Block.Kind.SECTION && block.kind() != Block.Kind.DOCUMENT) {
                 Kind kind = block.kind() == Block.Kind.TABLE ? Kind.TABLE : isFigure.test(block) ? Kind.FIGURE : null;

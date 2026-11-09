@@ -42,10 +42,17 @@ public record DocumentModel(String title, List<Block> blocks, Lists lists) {
      * @param depth    how many heading levels it lists, {@code :toclevels:}, 2 by default
      * @param figures  whether it asks for a list of figures, {@code :list-of-figures:}
      * @param tables   whether it asks for a list of tables, {@code :list-of-tables:}
+     * @param sectionNumbers whether its headings are numbered, {@code :sectnums:}, as {@code 1}, {@code 1.1}, {@code 1.1.1}
+     * @param sectionLevels  how many heading levels are numbered, {@code :sectnumlevels:}, 3 by default
      */
-    public record Lists(boolean contents, int depth, boolean figures, boolean tables) {
-        /** No lists. */
-        public static final Lists NONE = new Lists(false, 2, false, false);
+    public record Lists(boolean contents, int depth, boolean figures, boolean tables, boolean sectionNumbers, int sectionLevels) {
+        /** No lists, and no section numbers. */
+        public static final Lists NONE = new Lists(false, 2, false, false, false, 3);
+
+        /** Lists alone, with no section numbers. */
+        public Lists(boolean contents, int depth, boolean figures, boolean tables) {
+            this(contents, depth, figures, tables, false, 3);
+        }
 
         /** @return whether any list is asked for */
         public boolean any() {

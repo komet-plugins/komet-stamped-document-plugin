@@ -117,6 +117,19 @@ public final class StoredDocumentModel {
         default String caption(StoredDocument document, StoredBlock block) {
             return block.title();
         }
+
+        /**
+         * A heading as the document reads it: its number before its text where the document
+         * numbers its sections, {@code 1.2 The structure}; the text alone by default.
+         *
+         * @param document the heading's document
+         * @param block    the heading block
+         * @param text     the heading's text
+         * @return the heading as read
+         */
+        default String heading(StoredDocument document, StoredBlock block, String text) {
+            return text;
+        }
     }
 
     private final StoredDocument document;
@@ -173,6 +186,7 @@ public final class StoredDocumentModel {
     }
 
     private static final Pattern TOC_LEVELS = Pattern.compile("^:toclevels:\\s*(\\d+)\\s*$");
+    private static final Pattern SECTION_LEVELS = Pattern.compile("^:sectnumlevels:\\s*(\\d+)\\s*$");
 
     /**
      * The lists a document asks for in its header: {@code :toc:}, with {@code :toclevels:}, and
@@ -185,7 +199,9 @@ public final class StoredDocumentModel {
         boolean contents = false;
         boolean figures = false;
         boolean tables = false;
+        boolean sectionNumbers = false;
         int depth = 2;
+        int sectionLevels = 3;
         for (StoredLine line : document.lines()) {
             String text = line.text().strip();
             if (text.startsWith(":toc:") && !text.startsWith(":toc!:")) {
@@ -194,14 +210,22 @@ public final class StoredDocumentModel {
                 figures = true;
             } else if (text.startsWith(":list-of-tables:")) {
                 tables = true;
+            } else if (text.startsWith(":sectnums:")) {
+                sectionNumbers = true;
+            } else if (text.startsWith(":sectnums!:")) {
+                sectionNumbers = false;
             } else {
                 Matcher levels = TOC_LEVELS.matcher(text);
                 if (levels.matches()) {
                     depth = Integer.parseInt(levels.group(1));
                 }
+                Matcher sections = SECTION_LEVELS.matcher(text);
+                if (sections.matches()) {
+                    sectionLevels = Integer.parseInt(sections.group(1));
+                }
             }
         }
-        return new DocumentModel.Lists(contents, depth, figures, tables);
+        return new DocumentModel.Lists(contents, depth, figures, tables, sectionNumbers, sectionLevels);
     }
 
     /** Reads this document's blocks onto the list; returns its title. A child's title is a heading; the host's is the model's title. */
@@ -218,7 +242,7 @@ public final class StoredDocumentModel {
             title = document.root().title();
         }
         if (!isRoot && !title.isEmpty()) {
-            out.add(new Heading(levelOffset, title));
+            out.add(new Heading(levelOffset, figures.heading(document, document.root(), title)));
         }
         for (Member member : members(document.root())) {
             if (member.block() != null) {
@@ -278,7 +302,7 @@ public final class StoredDocumentModel {
             case SECTION -> {
                 String heading = own.stream().map(StoredLine::text).filter(t -> t.matches("^=+\\s.*")).findFirst()
                         .map(t -> t.replaceFirst("^=+\\s*", "").strip()).orElse(block.title());
-                out.add(new Heading(block.level() + levelOffset, heading));
+                out.add(new Heading(block.level() + levelOffset, figures.heading(document, block, heading)));
                 children(children, out);
             }
             case PARAGRAPH -> {

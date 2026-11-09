@@ -560,7 +560,9 @@ public final class DocumentSurfaceView {
         }
         StoredDocument document = shown.host().document();
         String title = document.attributes().isEmpty() ? "" : document.attributes().getFirst();
-        captions = Captions.of(shown, DocumentSurfaceView::isFigure);
+        network.ike.komet.document.print.DocumentModel.Lists matter = network.ike.komet.document.print.StoredDocumentModel.lists(document);
+        captions = Captions.of(shown, DocumentSurfaceView::isFigure, matter.sectionNumbers() ? matter.sectionLevels() : 0);
+        notedStamps.clear();
         renderMember(shown.host(), 0, "");
         if (title.isEmpty() && document.root() != null) {
             title = document.root().title();
@@ -808,13 +810,15 @@ public final class DocumentSurfaceView {
                         // The print model: the host's title is the document title, a child's a heading at its include offset.
                         modelOrdinal++;
                         StyleAttributeMap style = member.host() ? st.title() : st.heading(Math.max(1, offsetOf(member)));
-                        Area title = add(member, block, heading, paragraphs(heading, " ", style, t -> t.startsWith("= ") ? t.substring(2) : t), depth, false, under);
+                        Area title = add(member, block, heading, paragraphs(heading, " ", style,
+                                t -> captions.heading(block, t.startsWith("= ") ? t.substring(2) : t)), depth, false, under);
                         if (title != null) {
                             title.heading = true;
                             title.splittable = false;
                         }
                     } else {
-                        add(member, block, heading, paragraphs(heading, " ", st.title(), t -> t.startsWith("= ") ? t.substring(2) : t), depth, false, under);
+                        add(member, block, heading, paragraphs(heading, " ", st.title(),
+                                t -> captions.heading(block, t.startsWith("= ") ? t.substring(2) : t)), depth, false, under);
                     }
                 }
                 List<StoredLine> front = own.stream().filter(l -> !l.text().startsWith("= "))
@@ -840,7 +844,7 @@ public final class DocumentSurfaceView {
                     modelOrdinal++;
                 }
                 add(member, block, heading.isEmpty() ? own : heading, paragraphs(heading.isEmpty() ? own : heading, " ", style,
-                        t -> t.replaceFirst("^=+\\s*", "")), depth, false, block.title());
+                        t -> captions.heading(block, t.replaceFirst("^=+\\s*", ""))), depth, false, block.title());
                 renderChildren(member, children, depth, block.title());
             }
             case PARAGRAPH -> {
@@ -993,7 +997,7 @@ public final class DocumentSurfaceView {
         box.setPadding(new Insets(6, 0, 2, 0));
         if (lists.contents()) {
             List<Captions.Heading> headings = captions.headings().stream().filter(h -> h.level() <= lists.depth()).toList();
-            generatedList(box, "Contents", headings.stream().map(h -> new Object[] {h.text(), h.block(), h.level() - 1}).toList());
+            generatedList(box, "Contents", headings.stream().map(h -> new Object[] {h.read(), h.block(), h.level() - 1}).toList());
         }
         if (lists.figures()) {
             generatedList(box, "Figures", captions.of(Captions.Kind.FIGURE).stream().map(c -> new Object[] {c.text(), c.block(), 0}).toList());
@@ -1071,6 +1075,11 @@ public final class DocumentSurfaceView {
             @Override
             public String caption(StoredDocument document, StoredBlock block) {
                 return printCaption(block);
+            }
+
+            @Override
+            public String heading(StoredDocument document, StoredBlock block, String text) {
+                return captions.heading(block, text);
             }
         };
     }
