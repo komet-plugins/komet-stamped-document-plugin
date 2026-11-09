@@ -123,6 +123,11 @@ public final class DocumentSurface extends BorderPane {
         footer.setVisible(false);
         footer.setManaged(false);
         getStyleClass().add("claude-doc-frame");
+        // the surface's own sheet, on the surface: a card in another plugin's module has no way to find it
+        java.net.URL css = DocumentSurface.class.getResource("document-surface.css");
+        if (css != null) {
+            getStylesheets().add(css.toExternalForm());
+        }
         setTop(header);
         setCenter(scroll);
         setBottom(footer);

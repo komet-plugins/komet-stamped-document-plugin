@@ -652,15 +652,15 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
         editedBadge.setTooltip(new Tooltip("An edit made in Komet is pending: Commit… records it in git, Discard edit cancels it"));
         commit.setId("stampedDocumentCommit");
         commit.setTooltip(new Tooltip("Write the document with your edit into its working tree and record it there as your own git commit"));
-        commit.getStyleClass().add("claude-card-toolbar-button");
+        commit.getStyleClass().add("stamped-toolbar-button");
         commit.setOnAction(e -> commit());
         discard.setId("stampedDocumentDiscard");
         discard.setTooltip(new Tooltip("Cancel the edit made in Komet, so the document reads as committed again"));
-        discard.getStyleClass().add("claude-card-toolbar-button");
+        discard.getStyleClass().add("stamped-toolbar-button");
         discard.setOnAction(e -> discardPending());
         restore.setId("stampedDocumentRestore");
         restore.setTooltip(new Tooltip("Bring back the lines of a cancelled edit that the commit did not carry, as a pending edit over the document as now committed"));
-        restore.getStyleClass().add("claude-card-toolbar-button");
+        restore.getStyleClass().add("stamped-toolbar-button");
         restore.setOnAction(e -> restorePending());
         HBox pendingGroup = new HBox(4, editedBadge, commit, discard, restore);
         pendingGroup.setId("stampedDocumentPendingGroup");
@@ -804,7 +804,7 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
         host.setBottom(null);
         // On the card's root, not its body: the toolbar is part of the card's chrome, outside the
         // body, and was left in JavaFX's default look while the sheets sat on the body alone.
-        for (String sheet : List.of("/network/ike/komet/claude/claude-card.css", "/network/ike/komet/document/stamped-document.css")) {
+        for (String sheet : List.of("/network/ike/komet/document/stamped-document.css")) {
             URL css = StampedDocumentCard.class.getResource(sheet);
             if (css != null && !fxObject().getStylesheets().contains(css.toExternalForm())) {
                 fxObject().getStylesheets().add(css.toExternalForm());

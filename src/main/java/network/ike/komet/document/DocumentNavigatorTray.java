@@ -56,7 +56,6 @@ import org.slf4j.LoggerFactory;
 import java.awt.Desktop;
 import java.io.File;
 import java.io.IOException;
-import java.net.URL;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -194,10 +193,8 @@ final class DocumentNavigatorTray implements KlSidebarTray {
         footer.getStyleClass().add("footer");
 
         root.getChildren().addAll(header, area, footer);
-        URL css = DocumentNavigatorTray.class.getResource("/dev/ikm/komet/kview/mvvm/view/kview.css");
-        if (css != null) {
-            root.getStylesheets().add(css.toExternalForm());
-        }
+        // The tray takes kview's look from the journal window it sits in: kview's sheet is in
+        // kview's module, where a class of this plugin cannot find it.
         shown();
     }
 

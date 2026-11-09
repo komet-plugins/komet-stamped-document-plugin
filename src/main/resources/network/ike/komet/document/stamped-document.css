@@ -177,3 +177,16 @@
 .stamped-page-line .vflow {
     -fx-background-color: transparent;
 }
+
+/* Commit, Discard edit and Restore, beside the pending-edit badge: translucent white on the card's navy bar. */
+.stamped-toolbar-button {
+    -fx-background-color: rgba(255, 255, 255, 0.20);
+    -fx-text-fill: white;
+    -fx-background-radius: 4;
+    -fx-font-weight: bold;
+    -fx-padding: 3 8;
+}
+
+.stamped-toolbar-button:hover {
+    -fx-background-color: rgba(255, 255, 255, 0.32);
+}
