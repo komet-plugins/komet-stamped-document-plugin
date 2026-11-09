@@ -73,6 +73,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.HashSet;
 import java.util.Set;
 import java.util.UUID;
 import java.util.regex.Pattern;
@@ -156,6 +157,14 @@ public final class DocumentSurfaceView {
 
         /** The member of the assembly whose block is at the top of the viewport. */
         void showingMember(DocumentAssembly.Member member);
+
+        /** Whether an annotation's commit is signed: a standing choice of the card's. */
+        default boolean signsAnnotations() {
+            return false;
+        }
+
+        /** The person changed whether annotations are signed. */
+        default void setSignsAnnotations(boolean sign) { }
 
         /** What the reader has folded in the shown document, as the view's keys, to be given back by {@link #rememberedFolds}. */
         default void rememberFolds(List<String> keys) { }
@@ -297,6 +306,7 @@ public final class DocumentSurfaceView {
     /** The document the folds belong to. */
     private dev.ikm.tinkar.common.id.PublicId foldedDocument;
     private final MenuItem foldItem = new MenuItem("Fold");
+    private final CheckMenuItem signItem = new CheckMenuItem("Sign annotations");
     private final MenuItem editItem = new MenuItem("Edit block");
     private final MenuItem deleteItem = new MenuItem("Delete block…");
     private final Menu insertMenu = new Menu("Insert");
@@ -447,6 +457,8 @@ public final class DocumentSurfaceView {
         final Map<Node, boolean[]> hiddenByFold = new java.util.LinkedHashMap<>();
         LineRunModel model;
         HBox marginalia;
+        /** The right margin's notes: the comments in force on the area's lines, and a note being written. */
+        final VBox notes = new VBox(6);
         Label date;
         DocumentBlock documentBlock;
         long highlightedStamp;
@@ -1599,9 +1611,12 @@ public final class DocumentSurfaceView {
         area.marginalia = new HBox(3);
         area.marginalia.setAlignment(Pos.TOP_LEFT);
         area.marginalia.getStyleClass().add("stamped-document-marginalia");
+        area.notes.getStyleClass().add("stamped-document-notes");
         fillMarginalia(area);
+        VBox right = new VBox(4, area.marginalia, area.notes);
+        right.setFillWidth(true);
         area.documentBlock = DocumentBlock.prose(area.holder, area.area, area.model, spec.lines().stream().map(StoredLine::text).collect(Collectors.joining("\n")))
-                .withMarginalia(dateBox(area), area.marginalia);
+                .withMarginalia(dateBox(area), right);
         return area;
     }
 
@@ -2398,6 +2413,107 @@ public final class DocumentSurfaceView {
                 marginalia.getChildren().add(mark("◦ " + queued, "#b26a00", queued + " line(s) still to review: introduced, affirmed by no one"));
             }
         }
+        fillNotes(area);
+    }
+
+    /** The annotations whose notes are drawn already, so one that covers lines in several blocks is read once, beside its first. */
+    private final Set<Long> notedStamps = new HashSet<>();
+
+    /**
+     * The margin's notes: every comment in force on the area's lines, and every refutation with
+     * a reason, each beside the first block its lines are in, with who wrote it and when.
+     */
+    private void fillNotes(Area area) {
+        area.notes.getChildren().removeIf(n -> !n.getStyleClass().contains("stamped-document-note-composer"));
+        for (StoredLine line : area.lines) {
+            for (GitDocumentMaterializer.StoredAnnotation annotation : line.inForce()) {
+                boolean spoken = annotation.kind() == AnnotationKind.COMMENT
+                        || annotation.kind() == AnnotationKind.REFUTATION && annotation.text() != null && !annotation.text().isBlank();
+                if (!spoken || annotation.stamp() == null || !notedStamps.add(annotation.stamp().nid())) {
+                    continue;
+                }
+                area.notes.getChildren().add(note(annotation, area));
+            }
+        }
+    }
+
+    /** One note: the author's identicon and the day, then the text, on a quiet rule; its tooltip says what it is. */
+    private Node note(GitDocumentMaterializer.StoredAnnotation annotation, Area area) {
+        StampEntity<?> stamp = annotation.stamp();
+        Label when = new Label(DAY.format(Instant.ofEpochMilli(stamp.time())));
+        when.setFont(SMALL);
+        when.setStyle("-fx-text-fill: #8a93a0;");
+        HBox who = new HBox(4, identicon(stamp, 12, area), when);
+        who.setAlignment(Pos.CENTER_LEFT);
+        Label text = new Label(annotation.text() == null ? "" : annotation.text().strip());
+        text.setFont(SMALL);
+        text.setWrapText(true);
+        text.setMaxWidth(Double.MAX_VALUE);
+        text.setStyle("-fx-text-fill: " + (annotation.kind() == AnnotationKind.REFUTATION ? "#a32d2d" : "#4b5563") + ";");
+        VBox note = new VBox(1, who, text);
+        note.setFillWidth(true);
+        note.getStyleClass().add("stamped-document-note");
+        note.setStyle("-fx-border-color: transparent transparent transparent " + (annotation.kind() == AnnotationKind.REFUTATION ? "#e0a0a0" : "#c8ced8")
+                + "; -fx-border-width: 0 0 0 2; -fx-padding: 1 0 1 6;");
+        Tooltip.install(note, new Tooltip((annotation.kind() == AnnotationKind.REFUTATION ? "Refutation" : "Comment") + " by "
+                + StampNames.name(host.view(), stamp.authorNid()) + " · " + DAY.format(Instant.ofEpochMilli(stamp.time()))));
+        return note;
+    }
+
+    /**
+     * Opens a note in the margin beside the selection's first block, for the person to write an
+     * annotation's text where it will live: Enter records it, Shift+Enter breaks a line, Escape
+     * discards it. A note the kind requires does not record empty.
+     *
+     * @param kind     the annotation's kind
+     * @param prompt   what the note asks for
+     * @param required whether the text is required
+     * @param signed   whether the commit will be signed, said quietly in the note
+     * @param record   takes the text when the person is done
+     */
+    public void composeAnnotation(AnnotationKind kind, String prompt, boolean required, boolean signed, java.util.function.Consumer<String> record) {
+        int[] span = selectedAreas();
+        if (span == null) {
+            host.status("Select the lines first, then " + kind.verb().toLowerCase() + " them.");
+            return;
+        }
+        Area area = areas.get(span[0]);
+        area.notes.getChildren().removeIf(n -> n.getStyleClass().contains("stamped-document-note-composer"));
+        javafx.scene.control.TextArea text = new javafx.scene.control.TextArea();
+        text.setId("stampedDocumentNoteText");
+        text.setPromptText(prompt);
+        text.setWrapText(true);
+        text.setPrefRowCount(3);
+        text.setFont(SMALL);
+        text.setMaxWidth(Double.MAX_VALUE);
+        Label hint = new Label((signed ? "signed · " : "") + "Enter records, Esc discards");
+        hint.setFont(Font.font(10));
+        hint.setStyle("-fx-text-fill: #8a93a0;");
+        hint.setWrapText(true);
+        VBox composer = new VBox(2, text, hint);
+        composer.setFillWidth(true);
+        composer.getStyleClass().add("stamped-document-note-composer");
+        composer.setStyle("-fx-border-color: transparent transparent transparent #378add; -fx-border-width: 0 0 0 2; -fx-padding: 1 0 1 6;");
+        Runnable close = () -> area.notes.getChildren().remove(composer);
+        text.setOnKeyPressed(e -> {
+            if (e.getCode() == javafx.scene.input.KeyCode.ESCAPE) {
+                close.run();
+                e.consume();
+            } else if (e.getCode() == javafx.scene.input.KeyCode.ENTER && !e.isShiftDown()) {
+                String body = text.getText().strip();
+                if (required && body.isEmpty()) {
+                    hint.setText("A reason is needed");
+                    hint.setStyle("-fx-text-fill: #a32d2d;");
+                } else {
+                    close.run();
+                    record.accept(body);
+                }
+                e.consume();
+            }
+        });
+        area.notes.getChildren().addFirst(composer);
+        unfoldToShow(span[0]);
+        javafx.application.Platform.runLater(text::requestFocus);   // once it is in the scene and laid out
     }
 
     private static Label mark(String text, String colour, String tooltip) {
@@ -2637,6 +2753,7 @@ public final class DocumentSurfaceView {
             insertMenu.setDisable(structural);
             refreshInsertMenu();
             refreshFoldItem();
+            signItem.setSelected(host.signsAnnotations());
             viewItems.forEach((candidate, item) -> item.setSelected(candidate == view));
             menu.show(rta, e.getScreenX(), e.getScreenY());
             e.consume();
@@ -2802,13 +2919,15 @@ public final class DocumentSurfaceView {
         // Fold: the reader's view of the selected blocks, or of a heading's section
         foldItem.setId("stampedDocumentFold");
         foldItem.setOnAction(e -> toggleSelection());
-        // Record: what the document is and was
+        // Record: what the document is and was, and how an annotation is recorded
         MenuItem history = item("Show history", "stampedDocumentShowHistory", host::showHistory);
         MenuItem print = item("Print to PDF…", "stampedDocumentMenuPrintPdf", host::printPdf);
+        signItem.setId("stampedDocumentSignAnnotations");
+        signItem.setOnAction(e -> host.setSignsAnnotations(signItem.isSelected()));
         menu.getItems().addAll(affirm, refute, comment, retract, new SeparatorMenuItem(), editItem, deleteItem, new SeparatorMenuItem(), insertMenu,
                 new SeparatorMenuItem(), foldItem, new SeparatorMenuItem());
         menu.getItems().addAll(viewItems.values());
-        menu.getItems().addAll(new SeparatorMenuItem(), history, print);
+        menu.getItems().addAll(new SeparatorMenuItem(), history, print, signItem);
     }
 
     /** The Fold item says what it would do to the selection: open a fold, fold a section, or fold the selected blocks. */

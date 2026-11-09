@@ -2181,7 +2181,60 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
             retractSelection();
             return;
         }
-        annotateSelection(kind, null, null);
+        // An annotation is a sentence beside a line, so it is written where it will live: in the margin, no dialog.
+        // An affirmation says nothing but itself, so it is recorded at once.
+        Optional<Prepared> prepared = prepareAnnotation(kind);
+        if (prepared.isEmpty()) {
+            return;
+        }
+        if (kind == AnnotationKind.AFFIRMATION) {
+            recordAnnotation(kind, prepared.get(), "", signsAnnotations());
+            return;
+        }
+        String prompt = kind == AnnotationKind.REFUTATION ? "Why do you dispute these lines?" : "Your comment";
+        surface.composeAnnotation(kind, prompt, kind == AnnotationKind.REFUTATION, signsAnnotations(),
+                text -> recordAnnotation(kind, prepared.get(), text, signsAnnotations()));
+    }
+
+    private static final String PREF_SIGN_ANNOTATIONS = "network.ike.komet.document.signAnnotations";
+    private Boolean signAnnotations;
+
+    /**
+     * Whether an annotation's commit is signed: a standing choice, remembered with the card, and
+     * at first what the person's git is set to do ({@code commit.gpgsign}).
+     */
+    @Override
+    public boolean signsAnnotations() {
+        if (signAnnotations == null) {
+            String remembered = preferences().get(PREF_SIGN_ANNOTATIONS, "");
+            if (!remembered.isEmpty()) {
+                signAnnotations = Boolean.parseBoolean(remembered);
+            } else {
+                signAnnotations = gitSignsByDefault();
+            }
+        }
+        return signAnnotations;
+    }
+
+    @Override
+    public void setSignsAnnotations(boolean sign) {
+        signAnnotations = sign;
+        preferences().put(PREF_SIGN_ANNOTATIONS, Boolean.toString(sign));
+        syncPreferences();
+        statusLine.setText(sign ? "Annotations are recorded as signed commits." : "Annotations are recorded as unsigned commits.");
+    }
+
+    /** What git itself would do: {@code commit.gpgsign} in the working tree's configuration, false when unset or unreadable. */
+    private boolean gitSignsByDefault() {
+        if (repoRoot == null) {
+            return false;
+        }
+        try {
+            GitOperations.Run run = GitOperations.git(repoRoot, "config", "--bool", "--get", "commit.gpgsign");
+            return run.ok() && run.output().strip().equals("true");
+        } catch (IOException | RuntimeException e) {
+            return false;
+        }
     }
 
     /**
@@ -2425,49 +2478,16 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
      * the empty commit through the person's own git, and re-reads the commit into the store.
      */
     private void annotateSelection(AnnotationKind kind, String headerNote, String initialText) {
-        if (shown == null) {
-            statusLine.setText("Choose a document first.");
+        Optional<Prepared> ready = prepareAnnotation(kind);
+        if (ready.isEmpty()) {
             return;
         }
-        Optional<LineSelection> selection = surface.selection();
-        if (selection.isEmpty()) {
-            statusLine.setText("Select the lines you have reviewed, then choose Affirm, Refute or Comment from their menu.");
-            return;
-        }
-        Optional<DocumentAssembly.Located> located = located();
-        if (located.isEmpty()) {
-            statusLine.setText("The selection spans " + assembly.membersTouched(selection.get())
-                    + " files; an annotation names one file's lines. Select within the host or within one included document.");
-            return;
-        }
-        DocumentAssembly.Member member = located.get().member();
-        Loaded loaded = members.get(member.path());
-        int uncommitted = located.get().local().uncommitted(o -> committedNumber(member, o));
-        List<int[]> ranges = selectedLineNumbers();
-        if (ranges.isEmpty()) {
-            statusLine.setText("The selected lines are edited in Komet and not committed; commit the edit before annotating them.");
-            return;
-        }
-        if (repoRoot == null || loaded == null || loaded.path() == null || !Files.isRegularFile(repoRoot.resolve(loaded.path()))) {
-            Optional<Path> chosen = annotationTree(kind, member.document().anchor(), loaded == null ? shownPath : loaded.path());
-            if (chosen.isEmpty()) {
-                return;
-            }
-        }
-        Path memberFile = loaded == null || loaded.path() == null ? null : Path.of(loaded.path());
-        // a sentence chosen in the Graph view's DocBook mode is annotated as that sentence (#1313)
-        Optional<DocumentGraph.Node> sentence = graph != null && surface.view() == DocumentSurfaceView.View.GRAPH
-                ? graph.selectedSentence() : Optional.empty();
-        Proposal proposal;
-        try {
-            proposal = sentence.isPresent()
-                    ? prepareSentence(kind, sentence.get().markup().text(), ranges, repoRoot, memberFile,
-                            loaded == null ? List.of() : loaded.committedLines())
-                    : prepare(kind, ranges, repoRoot, memberFile, loaded == null ? List.of() : loaded.committedLines());
-        } catch (IllegalStateException refused) {
-            statusLine.setText(refused.getMessage());
-            return;
-        }
+        Prepared prepared = ready.get();
+        Proposal proposal = prepared.proposal();
+        Path memberFile = prepared.memberFile();
+        DocumentAssembly.Member member = prepared.member();
+        int uncommitted = prepared.uncommitted();
+        Optional<DocumentGraph.Node> sentence = prepared.sentence();
         String noun = sentence.isPresent() ? "the sentence on " + proposal.lines() + " line" + (proposal.lines() == 1 ? "" : "s") + " of " + memberFile
                 : proposal.lines() + " line" + (proposal.lines() == 1 ? "" : "s") + " of " + memberFile;
         Alert confirm = new Alert(Alert.AlertType.CONFIRMATION);
@@ -2500,10 +2520,81 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
         if (choice.isEmpty() || choice.get() == ButtonType.CANCEL) {
             return;
         }
-        boolean sign = choice.get() == signed;
-        String body = text.getText();
+        recordAnnotation(kind, prepared, text.getText(), choice.get() == signed);
+    }
+
+    /**
+     * An annotation of the selection, ready to record: what the person must still give is its
+     * text, and whether to sign.
+     *
+     * @param proposal    the annotations to write and the tree to write them in
+     * @param member      the member the lines are in
+     * @param memberFile  the member's file, relative to the tree
+     * @param uncommitted how many selected lines are uncommitted edits, left out
+     * @param sentence    the sentence annotated, when one was chosen in the Graph view
+     */
+    private record Prepared(Proposal proposal, DocumentAssembly.Member member, Path memberFile, int uncommitted, Optional<DocumentGraph.Node> sentence) { }
+
+    /**
+     * Prepares an annotation of the selection: the checks, the working tree, and the proposal
+     * with its trailers; says on the status line what stands in the way when something does.
+     *
+     * @return the prepared annotation, or empty when it cannot be made
+     */
+    private Optional<Prepared> prepareAnnotation(AnnotationKind kind) {
+        if (shown == null) {
+            statusLine.setText("Choose a document first.");
+            return Optional.empty();
+        }
+        Optional<LineSelection> selection = surface.selection();
+        if (selection.isEmpty()) {
+            statusLine.setText("Select the lines you have reviewed, then choose Affirm, Refute or Comment from their menu.");
+            return Optional.empty();
+        }
+        Optional<DocumentAssembly.Located> located = located();
+        if (located.isEmpty()) {
+            statusLine.setText("The selection spans " + assembly.membersTouched(selection.get())
+                    + " files; an annotation names one file's lines. Select within the host or within one included document.");
+            return Optional.empty();
+        }
+        DocumentAssembly.Member member = located.get().member();
+        Loaded loaded = members.get(member.path());
+        int uncommitted = located.get().local().uncommitted(o -> committedNumber(member, o));
+        List<int[]> ranges = selectedLineNumbers();
+        if (ranges.isEmpty()) {
+            statusLine.setText("The selected lines are edited in Komet and not committed; commit the edit before annotating them.");
+            return Optional.empty();
+        }
+        if (repoRoot == null || loaded == null || loaded.path() == null || !Files.isRegularFile(repoRoot.resolve(loaded.path()))) {
+            Optional<Path> chosen = annotationTree(kind, member.document().anchor(), loaded == null ? shownPath : loaded.path());
+            if (chosen.isEmpty()) {
+                return Optional.empty();
+            }
+        }
+        Path memberFile = loaded == null || loaded.path() == null ? null : Path.of(loaded.path());
+        // a sentence chosen in the Graph view's DocBook mode is annotated as that sentence (#1313)
+        Optional<DocumentGraph.Node> sentence = graph != null && surface.view() == DocumentSurfaceView.View.GRAPH
+                ? graph.selectedSentence() : Optional.empty();
+        try {
+            Proposal proposal = sentence.isPresent()
+                    ? prepareSentence(kind, sentence.get().markup().text(), ranges, repoRoot, memberFile,
+                            loaded == null ? List.of() : loaded.committedLines())
+                    : prepare(kind, ranges, repoRoot, memberFile, loaded == null ? List.of() : loaded.committedLines());
+            return Optional.of(new Prepared(proposal, member, memberFile, uncommitted, sentence));
+        } catch (IllegalStateException refused) {
+            statusLine.setText(refused.getMessage());
+            return Optional.empty();
+        }
+    }
+
+    /**
+     * Records a prepared annotation as the person's own empty commit, signed or not, and reads
+     * the commit back into the store.
+     */
+    private void recordAnnotation(AnnotationKind kind, Prepared prepared, String body, boolean sign) {
+        Proposal proposal = prepared.proposal();
         Path root = proposal.root();
-        Path file = memberFile;
+        Path file = prepared.memberFile();
         PublicId anchor = shown.anchor();
         statusLine.setText("Writing annotation commit …");
         CompletableFuture.supplyAsync(() -> {
