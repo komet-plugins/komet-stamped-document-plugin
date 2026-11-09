@@ -839,7 +839,8 @@ public final class DocumentSurfaceView {
                 if (print && nesting == 0 && !printable(own).isEmpty()) {
                     modelOrdinal++;
                 }
-                add(member, block, own, paragraphs(own, " ", st.prose(), print ? DocumentSurfaceView::printProse : DocumentSurfaceView::prose), depth, true, section);
+                LineRunModel.Spec spec = paragraphs(own, " ", st.prose(), print ? DocumentSurfaceView::printProse : DocumentSurfaceView::readingProse);
+                add(member, block, own, print ? spec : withoutEmptyLines(spec), depth, true, section);
             }
             case ADMONITION -> {
                 if (print && nesting == 0) {
@@ -1073,6 +1074,29 @@ public final class DocumentSurfaceView {
     private static final Pattern CONCEALED_TERM = Pattern.compile("indexterm:\\[[^\\]]*\\]|\\(\\(\\([^)]*\\)\\)\\)");
     private static final Pattern VISIBLE_TERM = Pattern.compile("indexterm2:\\[([^\\]]*)\\]|\\(\\(([^)]*)\\)\\)");
 
+    /**
+     * A prose line as the Reading view draws it: as the pages do, with the index terms that print
+     * nothing left out, since the terms stand in the small line beneath the block, and a visible
+     * term as its text.
+     */
+    private static String readingProse(String text) {
+        return printProse(text);
+    }
+
+    /**
+     * A paragraph without the lines that draw nothing, a line of index terms alone: joined with
+     * the others it would leave a space at the paragraph's start. A paragraph of such lines alone
+     * keeps them, so it has a run to select.
+     */
+    private static LineRunModel.Spec withoutEmptyLines(LineRunModel.Spec spec) {
+        List<LineRunModel.Paragraph> kept = new ArrayList<>();
+        for (LineRunModel.Paragraph p : spec.paragraphs()) {
+            List<LineRunModel.Line> drawn = p.lines().stream().filter(l -> !l.text().isBlank()).toList();
+            kept.add(drawn.isEmpty() || drawn.size() == p.lines().size() ? p : new LineRunModel.Paragraph(drawn, p.separator(), p.style()));
+        }
+        return new LineRunModel.Spec(kept);
+    }
+
     /** A prose line as the pages draw it: concealed index terms, which print nothing, left out; visible ones as their text. */
     private static String printProse(String text) {
         String t = CONCEALED_TERM.matcher(text).replaceAll("");
@@ -1300,6 +1324,8 @@ public final class DocumentSurfaceView {
         if (!block.title().isEmpty()) {
             Label title = new Label(block.title());
             title.setFont(Font.font("System", javafx.scene.text.FontWeight.BOLD, 13));
+            title.setWrapText(true);                                     // a figure's title is read whole, not cut to the column
+            title.setMaxWidth(Double.MAX_VALUE);
             area.holder.getChildren().addFirst(title);
         }
     }

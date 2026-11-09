@@ -134,8 +134,8 @@ public final class StructuredBlocks {
      * @return the kind
      */
     public static Optional<StructuredBlockKind> kindOf(StoredBlock block) {
-        // a listing, ----, or an open block, --, the form the ANF blocks of the lab documents take
-        if (block == null || (block.kind() != Block.Kind.LISTING && block.kind() != Block.Kind.OPEN)) {
+        // a listing, ----, or an open block, --, the form the ANF blocks of the lab documents take; a diagram, [graphviz] over ----
+        if (block == null || (block.kind() != Block.Kind.LISTING && block.kind() != Block.Kind.OPEN && block.kind() != Block.Kind.DIAGRAM)) {
             return Optional.empty();
         }
         return style(block.parameters()).flatMap(StructuredBlocks::kindFor);

@@ -52,8 +52,10 @@ module komet.stamped.document {
     exports network.ike.komet.document.surface.print.settings;
     exports network.ike.komet.document.help;
 
-    // The structured block kinds a document draws, which other plugins provide.
+    // The structured block kinds a document draws, which other plugins provide, and the one a document draws itself.
     uses network.ike.komet.document.StructuredBlockKind;
+    provides network.ike.komet.document.StructuredBlockKind
+            with network.ike.komet.document.diagram.DiagramBlockKind;
 
     // Journal "+" menu entry.
     provides dev.ikm.komet.layout_engine.host.KlCardProvider
