@@ -87,6 +87,11 @@ public final class DocumentNarratives {
         }
     }
 
+    /** @return the working trees the document card has opened this session */
+    public static Set<Path> workingTrees() {
+        return Set.copyOf(WORKING_TREES);
+    }
+
     /**
      * @return the working tree the document card has opened this session, when it has opened exactly
      *         one: a new document commits to it, so it is never a guess among several

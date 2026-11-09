@@ -1142,9 +1142,18 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
     /** As {@link #open(PublicId)}, then puts a report on the status line and runs {@code afterShow} once drawn. */
     private void open(PublicId anchor, String report, Runnable afterShow) {
         statusLine.setText("Reading from the store …");
-        Path root = repoRoot;
+        Path known = repoRoot;
         long asOf = asOf();
-        CompletableFuture.supplyAsync(() -> read(anchor, root, asOf)).whenComplete((loaded, failure) -> Platform.runLater(() -> {
+        // the card may never have opened this document's file: its repository is found before it is read,
+        // so the includes are read from it and a comment or a commit has somewhere to go without asking
+        java.util.concurrent.atomic.AtomicReference<Path> home = new java.util.concurrent.atomic.AtomicReference<>();
+        CompletableFuture.supplyAsync(() -> {
+            home.set(home(anchor, known).orElse(null));
+            return read(anchor, home.get() != null ? home.get() : known, asOf);
+        }).whenComplete((loaded, failure) -> Platform.runLater(() -> {
+            if (failure == null && loaded != null && home.get() != null && java.util.Objects.equals(repoRoot, known)) {
+                useWorkingTree(home.get());
+            }
             if (failure != null) {
                 statusLine.setText("Could not read the document: " + failure.getMessage());
                 LOG.warn("Loading {} failed", anchor, failure);
@@ -3204,8 +3213,8 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
 
     /**
      * The working tree to commit into: the one known; else the one tree beside it that holds the
-     * file, for a child included from another repository ({@link WorkingTrees}); else one the
-     * person locates.
+     * file, for a child included from another repository ({@link WorkingTrees}); else the one
+     * Komet finds for the document ({@link DocumentHome}); else one the person locates.
      */
     private Optional<Path> workingTree(String path) {
         if (holdsFile(path)) {
@@ -3221,8 +3230,9 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
     }
 
     /**
-     * The working tree to annotate in: the one known, or, when none holds the file, what the
-     * person chooses in the folder panel. Choosing the repository that holds the file carries
+     * The working tree to annotate in: the one known, or the one Komet finds for the document
+     * ({@link DocumentHome}), or, when none holds the file, what the person chooses in the folder
+     * panel. Choosing the repository that holds the file carries
      * on; choosing any other folder takes a copy. The copy is a new document with a history of
      * its own, so nothing is annotated yet and the person selects its lines again. An assembly
      * can only be located, since a copy would lose its includes.
@@ -3238,6 +3248,11 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
         }
         if (path == null) {
             return locateWorkingTree(path);
+        }
+        Optional<Path> home = home(anchor, repoRoot);
+        if (home.isPresent()) {
+            useWorkingTree(home.get());
+            return Optional.of(repoRoot);
         }
         boolean copy = members.size() <= 1;
         String name = Path.of(path).getFileName().toString();
@@ -3291,11 +3306,39 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
         return repoRoot != null && path != null && Files.isRegularFile(repoRoot.resolve(path));
     }
 
-    /** Asks for the repository that holds a file, saying why and refusing a folder that does not. */
+    /**
+     * The working tree that holds a stored document's file, when the one known does not: found
+     * among the places Komet knows ({@link DocumentHome}), by the identity the store has for the
+     * document. Reads the store, so an open calls it off the FX thread.
+     *
+     * @param anchor the document's anchor
+     * @param known  the working tree known, or {@code null}
+     * @return the working tree to use in its place; empty when the known one holds the file, or none is found
+     */
+    private static Optional<Path> home(PublicId anchor, Path known) {
+        Optional<String> path = GitDocumentMaterializer.recordedPath(anchor);
+        if (path.isEmpty() || (known != null && Files.isRegularFile(known.resolve(path.get())))) {
+            return Optional.empty();
+        }
+        return DocumentHome.find(path.get(), DocumentNarratives.workingTrees(), DocumentLibrary.root(),
+                (root, file) -> GitDocumentMaterializer.documentAnchor(root, file).equals(anchor));
+    }
+
+    /**
+     * The repository that holds a file: the one Komet can find for the member at that path, and
+     * otherwise the one the person chooses, told why and refused a folder that does not hold it.
+     */
     private Optional<Path> locateWorkingTree(String path) {
         if (path == null) {
             statusLine.setText("The document records no file in a repository; Open file… names one.");
             return Optional.empty();
+        }
+        Loaded member = members.get(path);
+        PublicId anchor = member != null ? member.document().anchor() : path.equals(shownPath) && shown != null ? shown.anchor() : null;
+        Optional<Path> home = anchor == null ? Optional.empty() : home(anchor, repoRoot);
+        if (home.isPresent()) {
+            useWorkingTree(home.get());
+            return Optional.of(repoRoot);
         }
         return choosePlan("This is recorded as a git commit. Choose the repository that holds " + path + ".", path, null).map(plan -> {
             useWorkingTree(plan.folder());
