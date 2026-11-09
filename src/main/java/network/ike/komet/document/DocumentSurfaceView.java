@@ -310,6 +310,9 @@ public final class DocumentSurfaceView {
     private final MenuItem editItem = new MenuItem("Edit block");
     private final MenuItem deleteItem = new MenuItem("Delete block…");
     private final Menu insertMenu = new Menu("Insert");
+    private final Menu formatMenu = new Menu("Format");
+    /** The menu of a block in edit: the inline marks, each with its key. */
+    private final ContextMenu editingMenu = new ContextMenu();
     private final Map<View, CheckMenuItem> viewItems = new LinkedHashMap<>();
     private final Label headerTitle = new Label();
     private final Label headerSection = new Label();
@@ -2495,6 +2498,14 @@ public final class DocumentSurfaceView {
         composer.getStyleClass().add("stamped-document-note-composer");
         composer.setStyle("-fx-border-color: transparent transparent transparent #378add; -fx-border-width: 0 0 0 2; -fx-padding: 1 0 1 6;");
         Runnable close = () -> area.notes.getChildren().remove(composer);
+        text.addEventFilter(javafx.scene.input.KeyEvent.KEY_PRESSED, e -> InlineMarks.forKey(e).ifPresent(mark -> {
+            // the same keys as the block editor's, over the note's whole text
+            javafx.scene.control.IndexRange range = text.getSelection();
+            InlineMarks.Edit edit = mark.toggle(text.getText(), range.getStart(), range.getEnd());
+            text.setText(edit.text());
+            text.selectRange(edit.start(), edit.end());
+            e.consume();
+        }));
         text.setOnKeyPressed(e -> {
             if (e.getCode() == javafx.scene.input.KeyCode.ESCAPE) {
                 close.run();
@@ -2735,6 +2746,11 @@ public final class DocumentSurfaceView {
         });
         rta.setOnContextMenuRequested(e -> {
             if (area == editing) {
+                // a block in edit has the marks' menu: the same Format items, with their keys shown
+                if (area.structuredEditor == null) {
+                    editingMenu.show(rta, e.getScreenX(), e.getScreenY());
+                }
+                e.consume();
                 return;
             }
             hidePopover();
@@ -2751,6 +2767,7 @@ public final class DocumentSurfaceView {
             editItem.setDisable(structural);
             deleteItem.setDisable(structural);
             insertMenu.setDisable(structural);
+            formatMenu.setDisable(editing == null || editing.structuredEditor != null);
             refreshInsertMenu();
             refreshFoldItem();
             signItem.setSelected(host.signsAnnotations());
@@ -2916,6 +2933,18 @@ public final class DocumentSurfaceView {
             });
             viewItems.put(candidate, item);
         }
+        // Format: the inline marks of the block being edited, each with its key, which the menu teaches;
+        // in the surface's menu as a group, and as the whole menu of a block in edit
+        formatMenu.setId("stampedDocumentFormatMenu");
+        editingMenu.setId("stampedDocumentEditingMenu");
+        for (InlineMarks mark : InlineMarks.values()) {
+            formatMenu.getItems().add(formatItem(mark, "stampedDocumentFormat"));
+            editingMenu.getItems().add(formatItem(mark, "stampedDocumentEditing"));
+        }
+        MenuItem cancelEditing = new MenuItem("Cancel edit");
+        cancelEditing.setId("stampedDocumentEditingCancel");
+        cancelEditing.setOnAction(e -> cancelEdit(editing));
+        editingMenu.getItems().addAll(new SeparatorMenuItem(), cancelEditing);
         // Fold: the reader's view of the selected blocks, or of a heading's section
         foldItem.setId("stampedDocumentFold");
         foldItem.setOnAction(e -> toggleSelection());
@@ -2925,9 +2954,23 @@ public final class DocumentSurfaceView {
         signItem.setId("stampedDocumentSignAnnotations");
         signItem.setOnAction(e -> host.setSignsAnnotations(signItem.isSelected()));
         menu.getItems().addAll(affirm, refute, comment, retract, new SeparatorMenuItem(), editItem, deleteItem, new SeparatorMenuItem(), insertMenu,
-                new SeparatorMenuItem(), foldItem, new SeparatorMenuItem());
+                formatMenu, new SeparatorMenuItem(), foldItem, new SeparatorMenuItem());
         menu.getItems().addAll(viewItems.values());
         menu.getItems().addAll(new SeparatorMenuItem(), history, print, signItem);
+    }
+
+    /** A menu item for an inline mark, its key shown beside it, acting on the block in edit. */
+    private MenuItem formatItem(InlineMarks mark, String idPrefix) {
+        MenuItem item = new MenuItem(mark.label());
+        item.setId(idPrefix + DocumentInserts.camel(mark.name().toLowerCase(java.util.Locale.ROOT)));
+        item.setAccelerator(mark.key());
+        item.setOnAction(e -> {
+            if (editing != null && editing.structuredEditor == null) {
+                applyMark(editing.area, mark);
+                editing.area.requestFocus();
+            }
+        });
+        return item;
     }
 
     /** The Fold item says what it would do to the selection: open a fold, fold a section, or fold the selected blocks. */
@@ -3065,6 +3108,24 @@ public final class DocumentSurfaceView {
         rta.setWrapText(true);
         rta.setId("stampedDocumentBlockEditor");
         rta.setStyle("-fx-background-color: #FFFDF5; -fx-border-color: #b26a00; -fx-border-radius: 3;");
+        // the inline marks: their keys, a mark typed over a selection, and a bar beside Save that teaches the keys
+        rta.addEventFilter(javafx.scene.input.KeyEvent.KEY_PRESSED, e -> InlineMarks.forKey(e).ifPresent(mark -> {
+            applyMark(rta, mark);
+            e.consume();
+        }));
+        rta.addEventFilter(javafx.scene.input.KeyEvent.KEY_TYPED, e -> {
+            if (e.isShortcutDown() || e.isControlDown() || e.isMetaDown()) {
+                return;
+            }
+            jfx.incubator.scene.control.richtext.SelectionSegment selection = rta.getSelection();
+            if (selection == null || selection.isCollapsed()) {
+                return;
+            }
+            InlineMarks.forTyped(e.getCharacter()).ifPresent(mark -> {
+                applyMark(rta, mark);
+                e.consume();
+            });
+        });
         Button save = new Button("Save");
         save.setId("stampedDocumentSaveEdit");
         Button cancel = new Button("Cancel");
@@ -3072,9 +3133,20 @@ public final class DocumentSurfaceView {
         Label hint = new Label("Saved edits stay uncommitted in Komet until you commit the document in git.");
         hint.setFont(SMALL);
         hint.setStyle("-fx-text-fill: #5f6b7a;");
-        HBox buttons = new HBox(6, save, cancel, hint);
+        // the marks on a row of their own, so neither they nor Save are squeezed in a narrow column
+        HBox marks = new HBox(4);
+        marks.getChildren().addAll(formatBar(rta));
+        marks.setAlignment(Pos.CENTER_LEFT);
+        // the hint gives way before the buttons do
+        save.setMinWidth(Region.USE_PREF_SIZE);
+        cancel.setMinWidth(Region.USE_PREF_SIZE);
+        hint.setWrapText(true);
+        hint.setMinWidth(0);
+        HBox.setHgrow(hint, javafx.scene.layout.Priority.ALWAYS);
+        HBox actions = new HBox(6, save, cancel, hint);
+        actions.setAlignment(Pos.CENTER_LEFT);
+        VBox buttons = new VBox(4, marks, actions);
         buttons.setId("stampedDocumentEditButtons");
-        buttons.setAlignment(Pos.CENTER_LEFT);
         area.holder.getChildren().add(area.holder.getChildren().indexOf(rta) + 1, buttons);
         cancel.setOnAction(e -> cancelEdit(area));
         save.setOnAction(e -> {
@@ -3088,6 +3160,70 @@ public final class DocumentSurfaceView {
             host.saveEdit(area.block, text.toString());
         });
         rta.requestFocus();
+    }
+
+    /** The format bar: a button for each inline mark, its key in its tooltip, so the keys are learned where they are used. */
+    private List<Button> formatBar(RichTextArea rta) {
+        List<Button> bar = new ArrayList<>();
+        for (InlineMarks mark : InlineMarks.values()) {
+            Button button = new Button(switch (mark) {
+                case BOLD -> "B";
+                case ITALIC -> "I";
+                case UNDERLINE -> "U";
+                case STRIKE -> "S";
+                case MONO -> "`";
+                case HIGHLIGHT -> "#";
+                case LINK -> "Link";
+            });
+            button.setId("stampedDocumentMark" + DocumentInserts.camel(mark.name().toLowerCase(java.util.Locale.ROOT)));
+            button.setFont(Font.font("System", mark == InlineMarks.BOLD ? javafx.scene.text.FontWeight.BOLD : javafx.scene.text.FontWeight.NORMAL,
+                    mark == InlineMarks.ITALIC ? javafx.scene.text.FontPosture.ITALIC : javafx.scene.text.FontPosture.REGULAR, 12));
+            if (mark == InlineMarks.UNDERLINE) {
+                button.setUnderline(true);
+            }
+            button.setFocusTraversable(false);
+            button.setMinWidth(26);
+            button.setPadding(new Insets(2, 6, 2, 6));
+            button.setTooltip(new Tooltip(mark.label() + "  " + mark.keyText()));
+            button.setOnAction(e -> {
+                applyMark(rta, mark);
+                rta.requestFocus();
+            });
+            bar.add(button);
+        }
+        return bar;
+    }
+
+    /**
+     * Toggles an inline mark on the editor's selection, within one line: the changed stretch of
+     * the line is replaced and the selection set as the rule says. A selection across lines is
+     * left alone, since a mark holds within a line.
+     */
+    static void applyMark(RichTextArea rta, InlineMarks mark) {
+        jfx.incubator.scene.control.richtext.SelectionSegment selection = rta.getSelection();
+        jfx.incubator.scene.control.richtext.TextPos min = selection == null ? rta.getCaretPosition() : selection.getMin();
+        jfx.incubator.scene.control.richtext.TextPos max = selection == null ? min : selection.getMax();
+        if (min == null || max == null || min.index() != max.index()) {
+            return;
+        }
+        int index = min.index();
+        String line = rta.getPlainText(index);
+        InlineMarks.Edit edit = mark.toggle(line, min.offset(), max.offset());
+        // only the stretch that changed is replaced, so the rest of the line keeps its style
+        int prefix = 0;
+        while (prefix < line.length() && prefix < edit.text().length() && line.charAt(prefix) == edit.text().charAt(prefix)) {
+            prefix++;
+        }
+        int suffix = 0;
+        while (suffix < line.length() - prefix && suffix < edit.text().length() - prefix
+                && line.charAt(line.length() - 1 - suffix) == edit.text().charAt(edit.text().length() - 1 - suffix)) {
+            suffix++;
+        }
+        rta.replaceText(jfx.incubator.scene.control.richtext.TextPos.ofLeading(index, prefix),
+                jfx.incubator.scene.control.richtext.TextPos.ofLeading(index, line.length() - suffix),
+                edit.text().substring(prefix, edit.text().length() - suffix));
+        rta.select(jfx.incubator.scene.control.richtext.TextPos.ofLeading(index, edit.start()),
+                jfx.incubator.scene.control.richtext.TextPos.ofLeading(index, edit.end()));
     }
 
     /** Cancels the in-place edit: the block returns to its runs. */
