@@ -32,10 +32,35 @@ import java.util.Objects;
  * @param title  the document title, possibly empty
  * @param blocks the blocks in reading order
  */
-public record DocumentModel(String title, List<Block> blocks) {
+public record DocumentModel(String title, List<Block> blocks, Lists lists) {
+
+    /**
+     * The lists a document asks to be generated in its front matter: a table of contents to a
+     * depth, a list of figures, a list of tables.
+     *
+     * @param contents whether the document asks for a table of contents, {@code :toc:}
+     * @param depth    how many heading levels it lists, {@code :toclevels:}, 2 by default
+     * @param figures  whether it asks for a list of figures, {@code :list-of-figures:}
+     * @param tables   whether it asks for a list of tables, {@code :list-of-tables:}
+     */
+    public record Lists(boolean contents, int depth, boolean figures, boolean tables) {
+        /** No lists. */
+        public static final Lists NONE = new Lists(false, 2, false, false);
+
+        /** @return whether any list is asked for */
+        public boolean any() {
+            return contents || figures || tables;
+        }
+    }
+
+    /** A model with no generated lists. */
+    public DocumentModel(String title, List<Block> blocks) {
+        this(title, blocks, Lists.NONE);
+    }
 
     public DocumentModel {
         Objects.requireNonNull(title, "title is null");
+        Objects.requireNonNull(lists, "lists is null");
         blocks = List.copyOf(blocks);
     }
 
@@ -80,7 +105,12 @@ public record DocumentModel(String title, List<Block> blocks) {
      *
      * @param figure the figure
      */
-    public record Drawn(network.ike.komet.document.DecisionFigure figure) implements Block { }
+    public record Drawn(network.ike.komet.document.DecisionFigure figure, String caption) implements Block {
+        /** A drawn block with no caption. */
+        public Drawn(network.ike.komet.document.DecisionFigure figure) {
+            this(figure, "");
+        }
+    }
 
     /**
      * A list.

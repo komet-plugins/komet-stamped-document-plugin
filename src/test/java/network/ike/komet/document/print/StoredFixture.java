@@ -35,13 +35,13 @@ import java.util.UUID;
  * order, every line a {@link StoredLine} with no STAMP. Line nids are the 1-based line
  * numbers; block nids count up from one million.
  */
-final class StoredFixture {
+public final class StoredFixture {
 
     private long nextBlock = 1_000_000;
 
     private StoredFixture() { }
 
-    static StoredDocument parse(String text) {
+    public static StoredDocument parse(String text) {
         return new StoredFixture().build(IkeDialectParser.parse(text));
     }
 

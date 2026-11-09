@@ -84,6 +84,25 @@ public final class TextFigure {
      * @param figure the figure
      * @return the figure with the title above it
      */
+    /**
+     * A figure with its caption beneath it, where a figure's caption stands: the text as the
+     * document's captions read, {@code Figure 3. The control structure}, bold, wrapped to the
+     * figure's width.
+     *
+     * @param caption the caption's text
+     * @param figure  the figure
+     * @return the figure with the caption
+     */
+    public static DecisionFigure captioned(String caption, DecisionFigure figure) {
+        List<Mark> marks = new ArrayList<>(figure.marks());
+        double y = figure.height() + 6;
+        for (String line : DecisionFigureText.wrap(caption, SIZE, figure.width())) {
+            marks.add(new Text(0, y, line, SIZE, true, false, DecisionFigureText.INK, "caption"));
+            y += LINE;
+        }
+        return new DecisionFigure(figure.width(), y + 2, figure.role(), marks);
+    }
+
     public static DecisionFigure titled(String title, DecisionFigure figure) {
         List<Mark> marks = new ArrayList<>();
         double y = 0;

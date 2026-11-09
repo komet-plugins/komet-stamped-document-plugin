@@ -172,7 +172,7 @@ public final class TypstWriter {
         StringBuilder out = new StringBuilder(content.length() + 2048);
         out.append(preamble(InlineText.of(document.title()).text(), setup));
         // only where it is used, so a document with no drawn block is the source it always was
-        if (content.indexOf("#ike-figure(") >= 0) {
+        if (content.indexOf("ike-figure(") >= 0) {                       // bare, or within a captioned figure
             out.append(figureHelper(setup));
         }
         if (labels == Labels.WORDS) {
@@ -197,6 +197,11 @@ public final class TypstWriter {
             }
             out.append("#ike-title[").append(markup(document.title())).append("]\n\n");
         }
+        if (labels == Labels.NONE && document.lists().any()) {
+            // the generated lists, in the document that is printed; a measured document leaves them out, since
+            // the page layout places the blocks it knows by the measure, and knows no list
+            lists(document.lists(), out);
+        }
         for (Block block : document.blocks()) {
             if (labels != Labels.NONE) {
                 out.append(marker(index++));
@@ -205,6 +210,19 @@ public final class TypstWriter {
         }
         if (labels != Labels.NONE) {
             out.append("#metadata(none) <").append(END_LABEL).append(">\n");
+        }
+    }
+
+    /** The front matter's lists: the table of contents, the figures and the tables, each an outline of its kind. */
+    private static void lists(DocumentModel.Lists lists, StringBuilder out) {
+        if (lists.contents()) {
+            out.append("#outline(title: [Contents], depth: ").append(Math.max(1, lists.depth())).append(")\n\n");
+        }
+        if (lists.figures()) {
+            out.append("#outline(title: [Figures], target: figure.where(kind: image))\n\n");
+        }
+        if (lists.tables()) {
+            out.append("#outline(title: [Tables], target: figure.where(kind: table))\n\n");
         }
     }
 
@@ -278,6 +296,7 @@ public final class TypstWriter {
                 #show figure.where(kind: table): set block(breakable: true)
                 #set table.cell(breakable: false)
                 #set figure(numbering: none)
+                #show figure.where(kind: image): it => it.body
                 #set list(indent: 1em)
                 #set enum(indent: 1em)
                 #set terms(hanging-indent: 1.5em, separator: [: ])
@@ -361,15 +380,20 @@ public final class TypstWriter {
             case DocumentModel.Drawn d -> {
                 double w = d.figure().width();
                 double h = d.figure().height();
+                // A captioned drawing is a figure, so the list of figures finds it; the caption is drawn in the
+                // figure's own marks, beneath it, and the figure shows its body alone (see the preamble).
+                boolean captioned = !d.caption().isEmpty();
+                String open = captioned ? "#figure(kind: image, supplement: none, numbering: none, caption: [" + markup(d.caption()) + "], " : "#";
+                String close = captioned ? ")" : "";
                 if (CHUNK_WORDS.get()) {
                     // measured as a box of its size: its marks' words are not the document's, and its one word is its line
                     out.append(indent).append("#metadata(\"").append(LayoutOracle.FIGURE_WORD).append("\") <").append(TypstOracle.WORD_LABEL)
                             .append(">#metadata(false) <").append(TypstOracle.WORD_END_LABEL).append(">");
-                    out.append("#ike-figure(").append(points(w)).append(", ").append(points(h)).append(", [])\n\n");
+                    out.append(open).append("ike-figure(").append(points(w)).append(", ").append(points(h)).append(", [])").append(close).append("\n\n");
                 } else {
-                    out.append(indent).append("#ike-figure(").append(points(w)).append(", ").append(points(h)).append(", [\n")
+                    out.append(indent).append(open).append("ike-figure(").append(points(w)).append(", ").append(points(h)).append(", [\n")
                             .append(network.ike.komet.document.DecisionFigureTypst.write(d.figure()))
-                            .append(indent).append("])\n\n");
+                            .append(indent).append("])").append(close).append("\n\n");
                 }
             }
             case Image i -> out.append(indent).append("#ike-image(").append(string(i.target())).append(", ")

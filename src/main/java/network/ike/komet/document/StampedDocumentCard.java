@@ -1254,7 +1254,7 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
             return Optional.empty();
         }
         if (assembly == null) {
-            return Optional.of(StoredDocumentModel.of(shown, Map.of(), surface::printFigures));
+            return Optional.of(StoredDocumentModel.of(shown, Map.of(), surface.printing()));
         }
         Map<Long, StoredDocumentModel.Child> includes = new HashMap<>();
         Map<DocumentAssembly.Member, Integer> offsets = new HashMap<>();
@@ -1266,7 +1266,7 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
             offsets.put(include.child(), offset);
             includes.put(include.line().nid(), new StoredDocumentModel.Child(include.child().document(), offset));
         }
-        return Optional.of(StoredDocumentModel.of(shown, includes, surface::printFigures));
+        return Optional.of(StoredDocumentModel.of(shown, includes, surface.printing()));
     }
 
     /**

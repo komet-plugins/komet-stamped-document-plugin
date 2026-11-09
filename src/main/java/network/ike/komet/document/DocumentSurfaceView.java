@@ -290,6 +290,8 @@ public final class DocumentSurfaceView {
      * is open. Annotate, Block, Insert, View and Record, a separator between the families.
      */
     private final ContextMenu menu = new ContextMenu();
+    /** The numbered captions of the shown assembly's titled figures and tables. */
+    private Captions captions = Captions.none();
     /** What the reader has folded away in the Reading view, by the index of the areas. */
     private final Folding folding = new Folding();
     /** The document the folds belong to. */
@@ -558,6 +560,7 @@ public final class DocumentSurfaceView {
         }
         StoredDocument document = shown.host().document();
         String title = document.attributes().isEmpty() ? "" : document.attributes().getFirst();
+        captions = Captions.of(shown, DocumentSurfaceView::isFigure);
         renderMember(shown.host(), 0, "");
         if (title.isEmpty() && document.root() != null) {
             title = document.root().title();
@@ -816,8 +819,16 @@ public final class DocumentSurfaceView {
                 }
                 List<StoredLine> front = own.stream().filter(l -> !l.text().startsWith("= "))
                         .filter(l -> !print || assembly.includeOf(l.nid()).map(DocumentAssembly.Include::resolved).orElse(false)).toList();
+                Area frontArea = null;
                 if (!front.isEmpty()) {
-                    add(member, block, front, paragraphs(front, "", st.monoGrey(), null), depth, false, under);
+                    frontArea = add(member, block, front, paragraphs(front, "", st.monoGrey(), null), depth, false, under);
+                }
+                if (!print && member.host()) {
+                    // the lists the header asks for, beneath the header's own lines, before the body
+                    Area beneath = frontArea != null ? frontArea : target.isEmpty() ? null : target.getLast();
+                    if (beneath != null) {
+                        generatedLists(beneath, document);
+                    }
                 }
                 renderChildren(member, children, depth, under);
             }
@@ -942,7 +953,7 @@ public final class DocumentSurfaceView {
                             .flatMap(row -> row.members().stream()).map(document::line).flatMap(Optional::stream).limit(1).toList();
                     if (!carrier.isEmpty()) {
                         // Straight to an area: the carrier may be the title line itself, which the print filter would drop.
-                        addArea(member, block, carrier, paragraphs(carrier, "", st.bold(), t -> block.title()), depth, false, section);
+                        addArea(member, block, carrier, paragraphs(carrier, "", st.bold(), t -> captions.text(block)), depth, false, section);
                     }
                 }
                 if (print) {
@@ -956,13 +967,113 @@ public final class DocumentSurfaceView {
                 if (print && nesting == 0) {
                     modelOrdinal++;
                 }
-                add(member, block, own, paragraphs(own, " ", st.prose(), t -> "🖼 " + t), depth, false, section);
+                Area area = add(member, block, own, paragraphs(own, " ", st.prose(), t -> "🖼 " + t), depth, false, section);
+                if (area != null && !print) {
+                    title(area, block);
+                }
             }
         }
     }
 
     /** The figures of each block's source: the model and the page must draw the same ones, and a sweep is not free. */
     private final Map<String, List<network.ike.komet.document.DecisionFigure>> printed = new HashMap<>();
+
+    /**
+     * The lists the document's header asks for, drawn beneath the header block that asks: the
+     * contents, the figures and the tables, each entry a link that scrolls to its block and opens
+     * any fold that hides it. The page prints the same lists with page numbers.
+     */
+    private void generatedLists(Area header, StoredDocument document) {
+        network.ike.komet.document.print.DocumentModel.Lists lists = network.ike.komet.document.print.StoredDocumentModel.lists(document);
+        if (!lists.any()) {
+            return;
+        }
+        VBox box = new VBox(2);
+        box.getStyleClass().add("stamped-document-lists");
+        box.setPadding(new Insets(6, 0, 2, 0));
+        if (lists.contents()) {
+            List<Captions.Heading> headings = captions.headings().stream().filter(h -> h.level() <= lists.depth()).toList();
+            generatedList(box, "Contents", headings.stream().map(h -> new Object[] {h.text(), h.block(), h.level() - 1}).toList());
+        }
+        if (lists.figures()) {
+            generatedList(box, "Figures", captions.of(Captions.Kind.FIGURE).stream().map(c -> new Object[] {c.text(), c.block(), 0}).toList());
+        }
+        if (lists.tables()) {
+            generatedList(box, "Tables", captions.of(Captions.Kind.TABLE).stream().map(c -> new Object[] {c.text(), c.block(), 0}).toList());
+        }
+        if (!box.getChildren().isEmpty()) {
+            header.holder.getChildren().add(box);
+        }
+    }
+
+    /** One generated list: its heading and its entries, each {text, block nid, indent level}. */
+    private void generatedList(VBox box, String heading, List<Object[]> entries) {
+        if (entries.isEmpty()) {
+            return;
+        }
+        Label title = new Label(heading);
+        title.setFont(Font.font("System", javafx.scene.text.FontWeight.BOLD, 13));
+        title.setPadding(new Insets(6, 0, 1, 0));
+        box.getChildren().add(title);
+        for (Object[] entry : entries) {
+            Label line = new Label((String) entry[0]);
+            long block = (Long) entry[1];
+            line.setFont(Font.font(13));
+            line.setWrapText(true);
+            line.setMaxWidth(Double.MAX_VALUE);
+            line.setStyle("-fx-text-fill: #2a5db0;");
+            line.setCursor(Cursor.HAND);
+            line.setPadding(new Insets(0, 0, 0, 14 * (Integer) entry[2]));
+            line.getStyleClass().add("stamped-document-list-entry");
+            line.setOnMouseClicked(e -> {
+                revealBlock(block);
+                e.consume();
+            });
+            box.getChildren().add(line);
+        }
+    }
+
+    /** Scrolls the Reading view to a block's area, opening any fold that hides it. */
+    private void revealBlock(long blockNid) {
+        for (int i = 0; i < areas.size(); i++) {
+            Area area = areas.get(i);
+            if (area.block != null && area.block.nid() == blockNid) {
+                unfoldToShow(i);
+                surface.revealBlock(i);
+                return;
+            }
+        }
+    }
+
+    /** Whether a block is a figure for its caption: a diagram, an image, or a block a kind draws. */
+    private static boolean isFigure(StoredBlock block) {
+        return block.kind() == Block.Kind.DIAGRAM || block.kind() == Block.Kind.IMAGE || StructuredBlocks.kindOf(block).isPresent();
+    }
+
+    /** The caption of a block as the document reads it, {@code Table 2. Title}; empty for a block with no title. */
+    public String printCaption(StoredBlock block) {
+        return block.title().isEmpty() ? "" : captions.text(block);
+    }
+
+    /** @return the captions of the shown assembly */
+    public Captions captions() {
+        return captions;
+    }
+
+    /** What the print model draws and captions: this view's figures and captions. */
+    public network.ike.komet.document.print.StoredDocumentModel.Figures printing() {
+        return new network.ike.komet.document.print.StoredDocumentModel.Figures() {
+            @Override
+            public List<network.ike.komet.document.DecisionFigure> of(StoredDocument document, StoredBlock block) {
+                return printFigures(document, block);
+            }
+
+            @Override
+            public String caption(StoredDocument document, StoredBlock block) {
+                return printCaption(block);
+            }
+        };
+    }
 
     /**
      * What a block is drawn as on a page, the model and the Page layout alike.
@@ -977,17 +1088,19 @@ public final class DocumentSurfaceView {
             return List.of();
         }
         StructuredBlockKind.Source source = StructuredBlocks.source(document, block);
-        return printed.computeIfAbsent(source.parameters() + "\n" + source.content(), key -> {
+        // keyed by the caption too: a figure inserted before this one renumbers it, with the same source
+        return printed.computeIfAbsent(source.parameters() + "\n" + captions.text(block) + "\n" + source.content(), key -> {
             try {
                 List<network.ike.komet.document.DecisionFigure> figures = network.ike.komet.document.DecisionFigureText
                         .inSerif(() -> kind.get().figures(source, new StructuredBlockKind.Context(host.view(), blocks, st.base())));
                 if (figures.isEmpty() || block.title().isEmpty()) {
                     return figures;
                 }
-                List<network.ike.komet.document.DecisionFigure> titled = new ArrayList<>(figures);
-                titled.set(0, network.ike.komet.document.DecisionFigureText
-                        .inSerif(() -> network.ike.komet.document.TextFigure.titled(block.title(), figures.getFirst())));
-                return titled;
+                // the caption stands beneath the first figure, in the figure's own marks, so the page and the PDF agree
+                List<network.ike.komet.document.DecisionFigure> captioned = new ArrayList<>(figures);
+                captioned.set(0, network.ike.komet.document.DecisionFigureText
+                        .inSerif(() -> network.ike.komet.document.TextFigure.captioned(captions.text(block), figures.getFirst())));
+                return captioned;
             } catch (RuntimeException failure) {
                 host.status("The " + kind.get().name() + " block could not be drawn for the page; it prints as its text: " + failure.getMessage());
                 return List.of();
@@ -1320,13 +1433,23 @@ public final class DocumentSurfaceView {
         return new LineRunModel.Spec(paragraphs);
     }
 
+    /**
+     * A block's title as its caption: numbered when the block is a figure or a table, beneath a
+     * figure and above anything else, as the convention has it.
+     */
     private void title(Area area, StoredBlock block) {
         if (!block.title().isEmpty()) {
-            Label title = new Label(block.title());
+            Label title = new Label(captions.text(block));
             title.setFont(Font.font("System", javafx.scene.text.FontWeight.BOLD, 13));
             title.setWrapText(true);                                     // a figure's title is read whole, not cut to the column
             title.setMaxWidth(Double.MAX_VALUE);
-            area.holder.getChildren().addFirst(title);
+            title.getStyleClass().add("stamped-document-caption");
+            boolean figure = captions.of(block.nid()).map(c -> c.kind() == Captions.Kind.FIGURE).orElse(false);
+            if (figure) {
+                area.holder.getChildren().add(title);
+            } else {
+                area.holder.getChildren().addFirst(title);
+            }
         }
     }
 

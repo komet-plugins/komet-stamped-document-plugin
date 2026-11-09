@@ -104,6 +104,19 @@ public final class StoredDocumentModel {
          * @return its figures in order, or none
          */
         List<DecisionFigure> of(StoredDocument document, StoredBlock block);
+
+        /**
+         * The caption of a block, as the document's captions read it, {@code Figure 3. Title}:
+         * the block's title by default, which a surface that numbers its figures and tables
+         * replaces.
+         *
+         * @param document the block's document
+         * @param block    the block
+         * @return the caption, or an empty string for a block with no title
+         */
+        default String caption(StoredDocument document, StoredBlock block) {
+            return block.title();
+        }
     }
 
     private final StoredDocument document;
@@ -156,7 +169,39 @@ public final class StoredDocumentModel {
     public static DocumentModel of(StoredDocument document, Map<Long, Child> includes, Figures figures) {
         List<DocumentModel.Block> blocks = new ArrayList<>();
         String title = new StoredDocumentModel(document, 0, Map.copyOf(includes), figures).read(blocks, true);
-        return new DocumentModel(title, blocks);
+        return new DocumentModel(title, blocks, lists(document));
+    }
+
+    private static final Pattern TOC_LEVELS = Pattern.compile("^:toclevels:\\s*(\\d+)\\s*$");
+
+    /**
+     * The lists a document asks for in its header: {@code :toc:}, with {@code :toclevels:}, and
+     * the dialect's {@code :list-of-figures:} and {@code :list-of-tables:}.
+     *
+     * @param document the host document
+     * @return the lists
+     */
+    public static DocumentModel.Lists lists(StoredDocument document) {
+        boolean contents = false;
+        boolean figures = false;
+        boolean tables = false;
+        int depth = 2;
+        for (StoredLine line : document.lines()) {
+            String text = line.text().strip();
+            if (text.startsWith(":toc:") && !text.startsWith(":toc!:")) {
+                contents = true;
+            } else if (text.startsWith(":list-of-figures:")) {
+                figures = true;
+            } else if (text.startsWith(":list-of-tables:")) {
+                tables = true;
+            } else {
+                Matcher levels = TOC_LEVELS.matcher(text);
+                if (levels.matches()) {
+                    depth = Integer.parseInt(levels.group(1));
+                }
+            }
+        }
+        return new DocumentModel.Lists(contents, depth, figures, tables);
     }
 
     /** Reads this document's blocks onto the list; returns its title. A child's title is a heading; the host's is the model's title. */
@@ -213,7 +258,11 @@ public final class StoredDocumentModel {
     private void block(StoredBlock block, List<DocumentModel.Block> out) {
         List<DecisionFigure> drawn = figures.of(document, block);
         if (!drawn.isEmpty()) {
-            drawn.forEach(figure -> out.add(new DocumentModel.Drawn(figure)));
+            // the first figure carries the block's caption, which the figures source has drawn beneath it
+            String caption = figures.caption(document, block);
+            for (int i = 0; i < drawn.size(); i++) {
+                out.add(new DocumentModel.Drawn(drawn.get(i), i == 0 ? caption : ""));
+            }
             return;
         }
         if (block.kind() == Block.Kind.OPEN && StructuredBlocks.kindOf(block).isPresent()) {
@@ -359,7 +408,7 @@ public final class StoredDocumentModel {
         List<List<String>> rows = cells.stream().map(row -> row.stream().map(TableCells.Cell::text).toList()).toList();
         List<Integer> widths = widths(block.parameters(), TableCells.columns(cells));
         boolean header = block.parameters().contains("header") && !rows.isEmpty();
-        return new Table(block.title(), widths, header ? 1 : 0, rows);
+        return new Table(figures.caption(document, block), widths, header ? 1 : 0, rows);
     }
 
     /** @return how many columns {@code cols} names, 0 when the table has none */
