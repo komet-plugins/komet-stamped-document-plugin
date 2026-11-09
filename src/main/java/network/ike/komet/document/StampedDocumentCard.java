@@ -164,6 +164,10 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
     /** In the Layer menu: sentences as nodes in DocBook mode, or flattened into mixed content. */
     private final CheckMenuItem sentencesItem = new CheckMenuItem("Sentences in DocBook mode");
     private static final String PREF_LAYER = "network.ike.komet.document.layer.";
+    /** What the reader folded in a document, by the document's identity: the view's keys, one per fold. */
+    private static final String PREF_FOLDS = "network.ike.komet.document.folds.";
+    /** Between two folds' keys: a line break, since a key is one line of the document; the preferences are XML, which a control character would break. */
+    private static final String FOLD_SEPARATOR = "\n";
 
     /** Live cards, most recently realized last, so tools and automation can find the one in use. */
     private static final List<WeakReference<StampedDocumentCard>> OPEN = new CopyOnWriteArrayList<>();
@@ -1418,6 +1422,40 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
                 StampedDocumentCard.this.showingMember(member);
             }
         };
+    }
+
+    /** The reader's folds in the shown document, kept with the card's preferences under the document's identity. */
+    @Override
+    public void rememberFolds(List<String> keys) {
+        if (shown == null) {
+            return;
+        }
+        String joined = String.join(FOLD_SEPARATOR, keys);
+        try {
+            if (joined.isEmpty()) {
+                preferences().remove(PREF_FOLDS + foldsKey(shown.anchor()));
+            } else if (joined.length() < java.util.prefs.Preferences.MAX_VALUE_LENGTH) {
+                preferences().put(PREF_FOLDS + foldsKey(shown.anchor()), joined);
+            }
+            syncPreferences();
+        } catch (RuntimeException | AssertionError e) {
+            // the fold stands on the surface either way; what could not be kept is only the memory of it
+            LOG.warn("The folds of {} could not be remembered", shownPath, e);
+        }
+    }
+
+    @Override
+    public List<String> rememberedFolds() {
+        if (shown == null) {
+            return List.of();
+        }
+        String joined = preferences().get(PREF_FOLDS + foldsKey(shown.anchor()), "");
+        return joined.isEmpty() ? List.of() : List.of(joined.split(FOLD_SEPARATOR));
+    }
+
+    /** A document's part of a preference key: its anchor's first UUID, never a nid. */
+    private static String foldsKey(PublicId anchor) {
+        return anchor.asUuidArray()[0].toString();
     }
 
     /** @return the Graph view, for automation and tests */

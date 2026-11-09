@@ -31,6 +31,7 @@ import javafx.scene.control.Label;
 import javafx.scene.control.Menu;
 import javafx.scene.control.MenuItem;
 import javafx.scene.control.SeparatorMenuItem;
+import javafx.scene.Cursor;
 import javafx.scene.control.Tooltip;
 import javafx.scene.image.Image;
 import javafx.scene.image.ImageView;
@@ -155,6 +156,14 @@ public final class DocumentSurfaceView {
 
         /** The member of the assembly whose block is at the top of the viewport. */
         void showingMember(DocumentAssembly.Member member);
+
+        /** What the reader has folded in the shown document, as the view's keys, to be given back by {@link #rememberedFolds}. */
+        default void rememberFolds(List<String> keys) { }
+
+        /** The folds remembered for the shown document; none by default. */
+        default List<String> rememberedFolds() {
+            return List.of();
+        }
     }
 
     /** The toggles of the Provenance layer. */
@@ -281,6 +290,11 @@ public final class DocumentSurfaceView {
      * is open. Annotate, Block, Insert, View and Record, a separator between the families.
      */
     private final ContextMenu menu = new ContextMenu();
+    /** What the reader has folded away in the Reading view, by the index of the areas. */
+    private final Folding folding = new Folding();
+    /** The document the folds belong to. */
+    private dev.ikm.tinkar.common.id.PublicId foldedDocument;
+    private final MenuItem foldItem = new MenuItem("Fold");
     private final MenuItem editItem = new MenuItem("Edit block");
     private final MenuItem deleteItem = new MenuItem("Delete block…");
     private final Menu insertMenu = new Menu("Insert");
@@ -419,6 +433,16 @@ public final class DocumentSurfaceView {
         final VBox holder = new VBox();
         final boolean editable;
         final String section;
+        /** Whether the area's row is laid out: false while a fold hides it. */
+        final javafx.beans.property.BooleanProperty shown = new javafx.beans.property.SimpleBooleanProperty(true);
+        /** Whether the area anchors a fold: a heading whose section is folded, or the first block of a folded run. */
+        final javafx.beans.property.BooleanProperty anchored = new javafx.beans.property.SimpleBooleanProperty(false);
+        /** A heading's fold mark in the left margin; null for any other area. */
+        Label foldMark;
+        /** The line that says what is folded, while the area anchors a fold. */
+        HBox foldLine;
+        /** What a run's first block hid to make way for its fold line, each node with the visible and managed it had, to be given back. */
+        final Map<Node, boolean[]> hiddenByFold = new java.util.LinkedHashMap<>();
         LineRunModel model;
         HBox marginalia;
         Label date;
@@ -479,6 +503,7 @@ public final class DocumentSurfaceView {
             area.setHighlightCurrentParagraph(false);
             area.setContentPadding(new Insets(2, 4, 2, 4));
             area.getStyleClass().add("doc-prose-block");
+            holder.getProperties().put(MarkdownRichText.BLOCK_SHOWN, shown);
             wire(this, area, () -> model);
             // A selection held off a window fails every layout of the control, so an area keeps one only while attached.
             area.sceneProperty().addListener((obs, was, is) -> {
@@ -518,6 +543,10 @@ public final class DocumentSurfaceView {
         // the structured blocks of this document read each other here: trees folded in, statements named, values computed
         blocks = new BlockContext();
         printed.clear();
+        // the same document's folds are carried across the rebuild by what the blocks say; another document's are what the card remembers of it
+        boolean sameDocument = foldedDocument != null && foldedDocument.equals(shown.host().document().anchor());
+        List<String> foldKeys = sameDocument ? folding.keys(this::foldKey) : host.rememberedFolds();
+        foldedDocument = shown.host().document().anchor();
         areas.clear();
         pages.clear();
         units.clear();
@@ -536,6 +565,8 @@ public final class DocumentSurfaceView {
         headerTitle.setText(title.isEmpty() ? StampNames.name(host.view(), dev.ikm.tinkar.common.service.PrimitiveData.nid(document.anchor())) : title);
         headerSection.setText("");
         buildSource(shown);
+        folding.clear();
+        folding.restore(foldKeys, key -> areaIndexOf(key), this::levelAt, areas.size());
         stack();
     }
 
@@ -559,6 +590,7 @@ public final class DocumentSurfaceView {
         if (view == View.READING) {
             surface.setMarginTracks(layers.contains(Layer.MARGINALIA) ? 2 : 0, layers.contains(Layer.MARGINALIA) ? 2 : 0);
             surface.setBlocks(areas.stream().map(a -> a.documentBlock).toList());
+            applyFolds();
         } else {
             surface.setMarginTracks(0, 0);
             surface.setBlocks(sources.stream().map(a -> a.documentBlock).toList());
@@ -1439,10 +1471,227 @@ public final class DocumentSurfaceView {
 
     /** The left margin: the first introducing date, right-aligned against the body. */
     private Node dateBox(Area area) {
-        HBox box = new HBox(area.date);
+        // every date keeps the same slot beside it, so the dates stay in one column whether or not a mark is there
+        Node slot;
+        if (levelAt(areas.indexOf(area)) >= 1) {
+            Label mark = new Label("▾");
+            mark.setFont(SMALL);
+            mark.setStyle("-fx-text-fill: #5f6b7a;");
+            mark.setPadding(new Insets(2, 0, 0, 0));
+            mark.setCursor(Cursor.HAND);
+            mark.setVisible(false);
+            mark.setTooltip(new Tooltip("Fold this section"));
+            mark.getStyleClass().add("stamped-document-fold-mark");
+            mark.setOnMouseClicked(e -> {
+                toggleSection(area);
+                e.consume();
+            });
+            area.foldMark = mark;
+            slot = mark;
+        } else {
+            slot = new Region();
+        }
+        ((Region) slot).setMinWidth(FOLD_MARK_WIDTH);
+        ((Region) slot).setPrefWidth(FOLD_MARK_WIDTH);
+        ((Region) slot).setMaxWidth(FOLD_MARK_WIDTH);
+        HBox box = new HBox(2, area.date, slot);
         box.setAlignment(Pos.TOP_RIGHT);
-        box.setPadding(new Insets(0, 4, 0, 0));
+        box.setPadding(new Insets(0, 2, 0, 0));
         return box;
+    }
+
+    /** The width of the fold mark's slot beside a date. */
+    private static final double FOLD_MARK_WIDTH = 12;
+
+    // ── folding ───────────────────────────────────────────────────────────────
+
+    /**
+     * The heading level of an area: a section heading's, a document title's as its include's
+     * offset, and a negative number for an area that is no heading.
+     */
+    private int levelAt(int index) {
+        if (index < 0 || index >= areas.size()) {
+            return -1;
+        }
+        Area area = areas.get(index);
+        if (area.block == null) {
+            return -1;
+        }
+        return switch (area.block.kind()) {
+            case SECTION -> area.block.level();
+            case DOCUMENT -> area.member.host() ? 0 : offsetOf(area.member);
+            default -> -1;
+        };
+    }
+
+    /** What a fold is remembered by: a heading's title, any other block's first line. */
+    private String foldKey(int index) {
+        Area area = areas.get(index);
+        if (area.block != null && area.block.kind() == Block.Kind.SECTION && !area.block.title().isEmpty()) {
+            return area.block.title();
+        }
+        return area.lines.isEmpty() ? "" : area.lines.getFirst().text();
+    }
+
+    private int areaIndexOf(String key) {
+        for (int i = 0; i < areas.size(); i++) {
+            if (key.equals(foldKey(i))) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /** Folds a heading's section, or opens it when it is folded. */
+    private void toggleSection(Area heading) {
+        int index = areas.indexOf(heading);
+        if (index < 0) {
+            return;
+        }
+        if (!folding.unfold(index)) {
+            if (folding.foldSection(index, Folding.sectionEnd(this::levelAt, areas.size(), index)).isEmpty()) {
+                host.status("This section has nothing under its heading to fold.");
+                return;
+            }
+        }
+        foldsChanged();
+    }
+
+    /** Folds the blocks the selection touches, or opens the fold the selection's first block anchors. */
+    private void toggleSelection() {
+        int[] span = selectedAreas();
+        if (span == null) {
+            return;
+        }
+        if (folding.at(span[0]).isPresent()) {
+            folding.unfold(span[0]);
+        } else if (span[0] == span[1] && levelAt(span[0]) >= 1) {
+            if (folding.foldSection(span[0], Folding.sectionEnd(this::levelAt, areas.size(), span[0])).isEmpty()) {
+                host.status("This section has nothing under its heading to fold.");
+                return;
+            }
+        } else {
+            folding.foldRun(span[0], span[1]);
+        }
+        foldsChanged();
+    }
+
+    /** The first and last Reading-view areas the selection touches, or null when it touches none. */
+    private int[] selectedAreas() {
+        if (selection == null || view != View.READING) {
+            return null;
+        }
+        int first = -1;
+        int last = -1;
+        for (int i = 0; i < areas.size(); i++) {
+            Area area = areas.get(i);
+            if (area.model != null && area.model.runs().stream().anyMatch(r -> selection.contains(ordinal(r.nid())))) {
+                if (first < 0) {
+                    first = i;
+                }
+                last = i;
+            }
+        }
+        return first < 0 ? null : new int[] {first, last};
+    }
+
+    /** Opens every fold hiding an area, so it can be seen. */
+    private void unfoldToShow(int index) {
+        if (folding.reveal(index)) {
+            foldsChanged();
+        }
+    }
+
+    private void foldsChanged() {
+        applyFolds();
+        host.rememberFolds(folding.keys(this::foldKey));
+    }
+
+    /**
+     * Lays the folds out: a hidden area's row leaves the stack, an anchor shows the line that
+     * says what is folded, beneath a heading or in place of a run's first block, and a heading's
+     * mark shows while the pointer is on its row or its section is folded.
+     */
+    private void applyFolds() {
+        for (int i = 0; i < areas.size(); i++) {
+            Area area = areas.get(i);
+            area.shown.set(!folding.hidden(i));
+            Optional<Folding.Fold> fold = folding.at(i);
+            area.anchored.set(fold.isPresent());
+            if (area.foldMark != null) {
+                area.foldMark.setText(fold.isPresent() ? "▸" : "▾");
+                area.foldMark.setTooltip(new Tooltip(fold.isPresent() ? "Open this section" : "Fold this section"));
+                Node row = area.documentBlock == null ? null : area.documentBlock.stackNode();
+                area.foldMark.visibleProperty().unbind();
+                if (row != null) {
+                    area.foldMark.visibleProperty().bind(row.hoverProperty().or(area.anchored));
+                }
+            }
+            boolean inPlace = fold.isPresent() && !fold.get().atHeading();
+            if (inPlace) {
+                // the run's first block makes way for the fold line: its body, date and marks go, to come back as they were
+                List<Node> making = new ArrayList<>(area.holder.getChildren());
+                making.remove(area.foldLine);
+                if (area.marginalia != null) {
+                    making.add(area.marginalia);
+                }
+                if (area.date != null) {
+                    making.add(area.date);
+                }
+                for (Node node : making) {
+                    if (!area.hiddenByFold.containsKey(node)) {
+                        area.hiddenByFold.put(node, new boolean[] {node.isVisible(), node.isManaged()});
+                        node.setVisible(false);
+                        node.setManaged(false);
+                    }
+                }
+            } else if (!area.hiddenByFold.isEmpty()) {
+                area.hiddenByFold.forEach((node, was) -> {
+                    node.setVisible(was[0]);
+                    node.setManaged(was[1]);
+                });
+                area.hiddenByFold.clear();
+            }
+            if (fold.isPresent()) {
+                showFoldLine(area, i, fold.get());
+            } else if (area.foldLine != null) {
+                area.holder.getChildren().remove(area.foldLine);
+                area.foldLine = null;
+            }
+        }
+    }
+
+    /** The line an anchor shows: how many blocks are folded, and that a click opens them. */
+    private void showFoldLine(Area anchor, int index, Folding.Fold fold) {
+        if (anchor.foldLine == null) {
+            Label mark = new Label("▸");
+            mark.setFont(SMALL);
+            Label words = new Label();
+            words.setFont(SMALL);
+            words.getStyleClass().add("stamped-document-fold-words");
+            HBox line = new HBox(4, mark, words);
+            line.setAlignment(Pos.CENTER_LEFT);
+            line.setStyle("-fx-text-fill: #5f6b7a;");
+            line.getStyleClass().add("stamped-document-fold-line");
+            line.setId("stampedDocumentFold");
+            line.setCursor(Cursor.HAND);
+            line.setPadding(new Insets(2, 4, 2, 4));
+            Tooltip.install(line, new Tooltip("Open the folded blocks"));
+            line.setOnMouseClicked(e -> {
+                folding.unfold(areas.indexOf(anchor));
+                foldsChanged();
+                e.consume();
+            });
+            anchor.foldLine = line;
+            anchor.holder.getChildren().add(line);
+        }
+        java.util.Set<Long> blocks = new java.util.HashSet<>();
+        for (int i = fold.from(); i <= fold.to(); i++) {
+            Area hidden = areas.get(i);
+            blocks.add(hidden.block == null ? (long) -i : hidden.block.nid());
+        }
+        int count = blocks.size();
+        ((Label) anchor.foldLine.getChildren().get(1)).setText(count + (count == 1 ? " block folded" : " blocks folded"));
     }
 
     /** The references on the block's lines, as one small line, or null when there are none. */
@@ -2229,6 +2478,7 @@ public final class DocumentSurfaceView {
             deleteItem.setDisable(structural);
             insertMenu.setDisable(structural);
             refreshInsertMenu();
+            refreshFoldItem();
             viewItems.forEach((candidate, item) -> item.setSelected(candidate == view));
             menu.show(rta, e.getScreenX(), e.getScreenY());
             e.consume();
@@ -2346,6 +2596,9 @@ public final class DocumentSurfaceView {
         List<Area> shown = shownAreas();
         for (int i = 0; i < shown.size(); i++) {
             if (shown.get(i).model.runs().stream().anyMatch(r -> selection.contains(ordinal(r.nid())))) {
+                if (view == View.READING) {
+                    unfoldToShow(i);                                 // a block scrolled to is seen, folded or not
+                }
                 if (view == View.PAGE_LAYOUT) {
                     Area line = shown.get(i);
                     host.revealPage(line.page, line.baseline - metrics(line.spec.paragraphs().getFirst().style())[0]);
@@ -2388,13 +2641,35 @@ public final class DocumentSurfaceView {
             });
             viewItems.put(candidate, item);
         }
+        // Fold: the reader's view of the selected blocks, or of a heading's section
+        foldItem.setId("stampedDocumentFold");
+        foldItem.setOnAction(e -> toggleSelection());
         // Record: what the document is and was
         MenuItem history = item("Show history", "stampedDocumentShowHistory", host::showHistory);
         MenuItem print = item("Print to PDF…", "stampedDocumentMenuPrintPdf", host::printPdf);
         menu.getItems().addAll(affirm, refute, comment, retract, new SeparatorMenuItem(), editItem, deleteItem, new SeparatorMenuItem(), insertMenu,
-                new SeparatorMenuItem());
+                new SeparatorMenuItem(), foldItem, new SeparatorMenuItem());
         menu.getItems().addAll(viewItems.values());
         menu.getItems().addAll(new SeparatorMenuItem(), history, print);
+    }
+
+    /** The Fold item says what it would do to the selection: open a fold, fold a section, or fold the selected blocks. */
+    private void refreshFoldItem() {
+        int[] span = selectedAreas();
+        if (span == null) {
+            foldItem.setText("Fold");
+            foldItem.setDisable(true);
+            return;
+        }
+        foldItem.setDisable(false);
+        if (folding.at(span[0]).isPresent()) {
+            foldItem.setText("Unfold");
+        } else if (span[0] == span[1] && levelAt(span[0]) >= 1) {
+            foldItem.setText("Fold section");
+        } else {
+            int blocks = span[1] - span[0] + 1;
+            foldItem.setText(blocks == 1 ? "Fold block" : "Fold " + blocks + " blocks");
+        }
     }
 
     private static MenuItem item(String text, String id, Runnable action) {
