@@ -1055,6 +1055,9 @@ public final class GitDocumentMaterializer {
         if (VertexReader.isVertexDocument(anchor)) {
             return VertexReader.load(anchor, pending, asOf);                // IKE-Network/ike-issues#1313
         }
+        if (!PrimitiveData.get().hasPublicId(anchor)) {
+            return Optional.empty();                                         // never materialized: an include the store does not answer
+        }
         long anchorNid = EntityService.get().nidForPublicId(anchor);
         List<SemanticEntity<SemanticEntityVersion>> manifests = EntityService.get()
                 .semanticsForComponentOfPattern(anchorNid, IkePattern.JOURNAL_MANIFEST_PATTERN.nid()).toList();
@@ -1197,6 +1200,9 @@ public final class GitDocumentMaterializer {
      * @return the path, or empty when the store holds no git source for it
      */
     public static Optional<String> recordedPath(PublicId anchor) {
+        if (!PrimitiveData.get().hasPublicId(anchor)) {
+            return Optional.empty();
+        }
         long anchorNid = EntityService.get().nidForPublicId(anchor);
         String path = null;
         for (SemanticEntity<SemanticEntityVersion> source : EntityService.get()
