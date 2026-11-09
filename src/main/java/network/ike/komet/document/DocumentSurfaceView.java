@@ -1615,11 +1615,16 @@ public final class DocumentSurfaceView {
         area.marginalia.setAlignment(Pos.TOP_LEFT);
         area.marginalia.getStyleClass().add("stamped-document-marginalia");
         area.notes.getStyleClass().add("stamped-document-notes");
-        fillMarginalia(area);
         VBox right = new VBox(4, area.marginalia, area.notes);
         right.setFillWidth(true);
+        // the margins' images and the fold mark's binding wait until the surface builds the block near the viewport
         area.documentBlock = DocumentBlock.prose(area.holder, area.area, area.model, spec.lines().stream().map(StoredLine::text).collect(Collectors.joining("\n")))
-                .withMarginalia(dateBox(area), right);
+                .withMarginalia(dateBox(area), right)
+                .withEstimatedHeight(estimatedHeight(area))
+                .whenRealized(() -> {
+                    fillMarginalia(area);
+                    bindFoldMark(area);
+                });
         return area;
     }
 
@@ -1678,6 +1683,21 @@ public final class DocumentSurfaceView {
 
     /** The width of the fold mark's slot beside a date. */
     private static final double FOLD_MARK_WIDTH = 12;
+
+    /**
+     * How tall an area is expected to stand before it is built: a line of text for each source
+     * line at the base size, more for a structured block's control, so an unbuilt block holds
+     * about its room and the scroll bar is about right.
+     */
+    private double estimatedHeight(Area area) {
+        double line = st.base() * 1.45;
+        double lines = Math.max(1, area.lines.size());
+        double height = lines * line + 8;
+        if (area.block != null && StructuredBlocks.kindOf(area.block).isPresent()) {
+            height += 220;
+        }
+        return height;
+    }
 
     // ── folding ───────────────────────────────────────────────────────────────
 
@@ -1797,11 +1817,7 @@ public final class DocumentSurfaceView {
             if (area.foldMark != null) {
                 area.foldMark.setText(fold.isPresent() ? "▸" : "▾");
                 area.foldMark.setTooltip(new Tooltip(fold.isPresent() ? "Open this section" : "Fold this section"));
-                Node row = area.documentBlock == null ? null : area.documentBlock.stackNode();
-                area.foldMark.visibleProperty().unbind();
-                if (row != null) {
-                    area.foldMark.visibleProperty().bind(row.hoverProperty().or(area.anchored));
-                }
+                bindFoldMark(area);
             }
             boolean inPlace = fold.isPresent() && !fold.get().atHeading();
             if (inPlace) {
@@ -1834,6 +1850,18 @@ public final class DocumentSurfaceView {
                 area.holder.getChildren().remove(area.foldLine);
                 area.foldLine = null;
             }
+        }
+    }
+
+    /** A heading's fold mark shows while the pointer is on its row, or its section is folded; bound to the row the surface built. */
+    private void bindFoldMark(Area area) {
+        if (area.foldMark == null) {
+            return;
+        }
+        Node row = area.documentBlock == null ? null : area.documentBlock.stackNode();
+        area.foldMark.visibleProperty().unbind();
+        if (row != null) {
+            area.foldMark.visibleProperty().bind(row.hoverProperty().or(area.anchored));
         }
     }
 
@@ -2361,6 +2389,9 @@ public final class DocumentSurfaceView {
 
     /** The right margin: every introducing identicon, then the marks; the left margin's date beside it. */
     private void fillMarginalia(Area area) {
+        if (area.documentBlock != null && !area.documentBlock.isRealized()) {
+            return;                                                      // filled when the surface builds the block
+        }
         HBox marginalia = area.marginalia;
         marginalia.getChildren().clear();
         List<StoredLine> lines = area.lines;
@@ -3094,6 +3125,9 @@ public final class DocumentSurfaceView {
             showStructured(area, false);
         }
         editing = area;
+        if (area.documentBlock != null) {
+            area.documentBlock.setPinned(true);                          // stays built while it is edited, wherever the reader scrolls
+        }
         RichTextArea rta = area.area;
         RichTextModel model = new RichTextModel();
         applying = true;
@@ -3230,6 +3264,9 @@ public final class DocumentSurfaceView {
     void cancelEdit(Area area) {
         if (area == null || editing != area) {
             return;
+        }
+        if (area.documentBlock != null) {
+            area.documentBlock.setPinned(false);
         }
         if (area.structuredEditor != null) {
             area.holder.getChildren().remove(area.structuredEditor.node());

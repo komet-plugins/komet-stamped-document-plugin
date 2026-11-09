@@ -131,6 +131,8 @@ public final class DocumentSurface extends BorderPane {
         setTop(header);
         setCenter(scroll);
         setBottom(footer);
+        scroll.vvalueProperty().addListener((obs, was, is) -> virtualize());
+        scroll.viewportBoundsProperty().addListener((obs, was, is) -> virtualize());
     }
 
     // ── Regions (dev-interaction-surface-family) ──────────────────────────
@@ -197,9 +199,146 @@ public final class DocumentSurface extends BorderPane {
         turnStarts.clear();
         exchangeHeaders.clear();
         exchangeTitles.clear();
+        // A long document is built as it is read: past a few screens of blocks, a block stands as a
+        // placeholder of its expected height until it nears the viewport, and goes back to one when
+        // it is far again. A short document is built whole, as it always was.
+        virtual = document.size() > VIRTUAL_FROM;
         for (DocumentBlock block : document) {
             blocks.add(block);
-            stack.getChildren().add(stackNode(block));
+            if (virtual) {
+                block.released();
+                stack.getChildren().add(placeholder(block, block.estimatedHeight()));
+            } else {
+                stack.getChildren().add(stackNode(block));
+                block.realized();
+            }
+        }
+        if (virtual) {
+            Platform.runLater(this::virtualize);
+        }
+    }
+
+    // ── Building blocks as they are read ─────────────────────────────────
+
+    /** How many blocks a document has before it is built as it is read rather than whole. */
+    static final int VIRTUAL_FROM = 80;
+    /** How far beyond the viewport, in viewport heights, a block is built. */
+    private static final double BUILD_WITHIN = 1.5;
+    /** How far beyond the viewport, in viewport heights, a built block is let go. */
+    private static final double RELEASE_BEYOND = 5;
+    /** How many blocks one look builds at most, so a look never holds the thread long. */
+    private static final int BUILD_BATCH = 24;
+    /** The room an unbuilt block takes when nothing better is known. */
+    private static final double DEFAULT_ESTIMATE = 40;
+    private static final String PLACEHOLDER_STYLE = "doc-block-placeholder";
+
+    private boolean virtual;
+    private boolean virtualizing;
+    /** How many times in a row the surface looked before it was laid out. */
+    private int unlaidLooks;
+
+    /** An unbuilt block's stand-in: a region of its expected height, hidden as the block would be. */
+    private Node placeholder(DocumentBlock block, double height) {
+        javafx.scene.layout.Region stand = new javafx.scene.layout.Region();
+        stand.getStyleClass().add(PLACEHOLDER_STYLE);
+        double h = height > 0 ? height : DEFAULT_ESTIMATE;
+        stand.setMinHeight(h);
+        stand.setPrefHeight(h);
+        stand.setMaxHeight(h);
+        block.setRow(stand);
+        return followShown(block.node(), stand);
+    }
+
+    /**
+     * Builds the blocks within reach of the viewport and lets go of those far from it. Called
+     * when the surface scrolls or is resized, and again after a build changes the stack's
+     * heights, until nothing more changes.
+     */
+    private void virtualize() {
+        if (!virtual || virtualizing || blocks.isEmpty()) {
+            return;
+        }
+        double contentHeight = stack.getBoundsInLocal().getHeight();
+        if (contentHeight <= 0 || scroll.getViewportBounds().getHeight() <= 0) {
+            // not laid out yet: every block would read as at the top; look once the stack has its heights
+            if (unlaidLooks++ < 20) {
+                Platform.runLater(this::virtualize);
+            }
+            return;
+        }
+        unlaidLooks = 0;
+        virtualizing = true;
+        try {
+            // laid out first, so a block built on the last look has its height and its place before the next is judged
+            stack.applyCss();
+            stack.layout();
+            contentHeight = stack.getBoundsInLocal().getHeight();
+            double viewport = Math.max(1, scroll.getViewportBounds().getHeight());
+            double range = Math.max(0, contentHeight - viewport);
+            double top = scroll.getVvalue() * range;
+            double bottom = top + viewport;
+            boolean changed = false;
+            int built = 0;
+            for (int i = 0; i < blocks.size(); i++) {
+                DocumentBlock block = blocks.get(i);
+                Bounds bounds = block.stackNode().getBoundsInParent();
+                boolean near = bounds.getMaxY() >= top - BUILD_WITHIN * viewport && bounds.getMinY() <= bottom + BUILD_WITHIN * viewport;
+                boolean far = bounds.getMaxY() < top - RELEASE_BEYOND * viewport || bounds.getMinY() > bottom + RELEASE_BEYOND * viewport;
+                if ((near || block.isPinned()) && !block.isRealized()) {
+                    realize(i);                                          // a pinned block is built wherever it stands
+                    changed = true;
+                    if (++built >= BUILD_BATCH) {
+                        break;                                           // a screenful at a time, so the thread is never held long
+                    }
+                } else if (far && block.isRealized() && !block.isPinned()) {
+                    release(i);
+                    changed = true;
+                }
+            }
+            if (changed) {
+                Platform.runLater(this::virtualize);                     // the heights moved: look again once they are laid out
+            }
+        } finally {
+            virtualizing = false;
+        }
+    }
+
+    /** Builds one block in place of its placeholder. */
+    private void realize(int index) {
+        DocumentBlock block = blocks.get(index);
+        if (block.isRealized() || index >= stack.getChildren().size()) {
+            return;
+        }
+        Node row = stackNode(block);
+        stack.getChildren().set(index, row);
+        block.realized();
+    }
+
+    /** Lets a built block go, a placeholder of the height it stood at in its place. */
+    private void release(int index) {
+        DocumentBlock block = blocks.get(index);
+        if (!block.isRealized() || index >= stack.getChildren().size()) {
+            return;
+        }
+        double height = block.stackNode().getBoundsInParent().getHeight();
+        Node row = block.stackNode();
+        if (row instanceof GridPane grid) {
+            grid.getChildren().clear();                                  // the body and marginalia are the block's to keep
+        }
+        stack.getChildren().set(index, placeholder(block, height > 0 ? height : block.estimatedHeight()));
+        block.released();
+    }
+
+    /**
+     * Makes sure a block is built, for a caller about to select in it or scroll to it.
+     *
+     * @param index the block
+     */
+    public void ensureBuilt(int index) {
+        if (virtual && index >= 0 && index < blocks.size() && !blocks.get(index).isRealized()) {
+            realize(index);
+            stack.applyCss();
+            stack.layout();
         }
     }
 
@@ -585,6 +724,7 @@ public final class DocumentSurface extends BorderPane {
             TextSelection selection = viewpoint.selection();
             if (selection != null && selection.blockIndex() >= 0
                     && selection.blockIndex() < blocks.size()) {
+                ensureBuilt(selection.blockIndex());
                 RichTextArea area = blocks.get(selection.blockIndex()).richText();
                 if (area != null && area.getParagraphCount() > 0) {
                     // Blocks are content-height (no internal scroll), so selecting here cannot
@@ -713,6 +853,7 @@ public final class DocumentSurface extends BorderPane {
             return;
         }
         clearSelection();
+        ensureBuilt(match.blockIndex());
         DocumentBlock block = blocks.get(match.blockIndex());
         if (match.selectable() && block.richText() != null) {
             RichTextArea area = block.richText();
@@ -745,6 +886,7 @@ public final class DocumentSurface extends BorderPane {
     private void rebuild() {
         clearSelection();
         stack.getChildren().clear();
+        virtual = false;
         blocks.clear();
         turnStarts.clear();
         exchangeHeaders.clear();
@@ -931,6 +1073,7 @@ public final class DocumentSurface extends BorderPane {
         if (blockIndex < 0 || blockIndex >= blocks.size()) {
             return;
         }
+        ensureBuilt(blockIndex);
         stack.applyCss();
         stack.layout();
         Node node = blocks.get(blockIndex).stackNode();

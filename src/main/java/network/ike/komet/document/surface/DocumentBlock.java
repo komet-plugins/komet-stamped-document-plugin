@@ -40,6 +40,13 @@ public final class DocumentBlock {
     private final Node rightMarginalia;
     /** The stack child the surface built for this block: the body itself, or its row with the margins. */
     private Node row;
+    /** How tall the block is expected to stand before it is built, in points; negative for no estimate. */
+    private double estimatedHeight = -1;
+    /** What the host does when the block is first built on the surface, or {@code null}. */
+    private Runnable onRealize;
+    private boolean realized;
+    /** Whether the block stays built while it is far from the viewport: a block being edited, for one. */
+    private boolean pinned;
 
     private DocumentBlock(Node node, String plainText, RichTextArea richText, StyledTextModel model, Node leftMarginalia, Node rightMarginalia) {
         this.node = node;
@@ -97,6 +104,61 @@ public final class DocumentBlock {
      */
     public DocumentBlock withMarginalia(Node left, Node right) {
         return new DocumentBlock(node, plainText, richText, model, left, right);
+    }
+
+    /**
+     * Says how tall the block is expected to stand, so a surface that builds its blocks as they
+     * near the viewport can give an unbuilt block its room.
+     *
+     * @param points the estimate
+     * @return this block
+     */
+    public DocumentBlock withEstimatedHeight(double points) {
+        this.estimatedHeight = points;
+        return this;
+    }
+
+    /**
+     * What to do when the surface first builds the block: the host fills in what a block far
+     * from the viewport need not have, such as the images in its margins.
+     *
+     * @param onRealize the work, run once
+     * @return this block
+     */
+    public DocumentBlock whenRealized(Runnable onRealize) {
+        this.onRealize = onRealize;
+        return this;
+    }
+
+    /** @return the estimated height, negative when none was given */
+    public double estimatedHeight() {
+        return estimatedHeight;
+    }
+
+    /** @return whether the surface has built this block */
+    public boolean isRealized() {
+        return realized;
+    }
+
+    /** Keeps the block built while it is far from the viewport, or lets it go again. */
+    public void setPinned(boolean pinned) {
+        this.pinned = pinned;
+    }
+
+    public boolean isPinned() {
+        return pinned;
+    }
+
+    /** The surface built the block, in a new row: the host's work runs each time, since the row is new. */
+    void realized() {
+        realized = true;
+        if (onRealize != null) {
+            onRealize.run();
+        }
+    }
+
+    void released() {
+        realized = false;
     }
 
     /**
