@@ -505,6 +505,10 @@ public final class DocumentSurfaceView {
         StructuredBlockKind.Editor structuredEditor;
         /** A table row's cells in the Reading view, each a text of its own in the row's grid; none for any other area. */
         List<CellText> cells = List.of();
+        /** A table row's cells as specs, one per column, an empty cell's {@code null}; none for any other area. */
+        List<LineRunModel.Spec> cellSpecs = List.of();
+        /** A table row: whether it is its table's first, which draws the table's top edge on a page. */
+        boolean tableFirst;
 
         Area(DocumentAssembly.Member member, StoredBlock block, List<StoredLine> lines, LineRunModel.Spec spec, boolean editable, String section) {
             this.member = member;
@@ -1273,9 +1277,33 @@ public final class DocumentSurfaceView {
             Area area = add(member, blockOf.get(lines.getFirst().nid()), lines, spec, depth, false, section);
             if (area != null) {
                 area.columns = widths;
-                area.area.setStyle("-fx-background-color: " + (head ? "#ECEAE6" : "#F4F3F1") + ";");
+                area.tableFirst = r == 1;
+                area.cellSpecs = cellSpecs(row, body, widths.size(), head ? st.headerCell() : st.cell());
             }
         }
+    }
+
+    /**
+     * A table row's cells as a page prints them, each the lines its words come from: one spec per
+     * column of the table, {@code null} where the row's cell is empty or the row has fewer cells
+     * than the table.
+     */
+    private static List<LineRunModel.Spec> cellSpecs(List<network.ike.komet.document.print.TableCells.Cell> row, List<StoredLine> body, int columns, StyleAttributeMap style) {
+        List<LineRunModel.Spec> specs = new ArrayList<>();
+        for (int c = 0; c < columns; c++) {
+            List<LineRunModel.Line> own = c >= row.size() ? List.<LineRunModel.Line>of() : row.get(c).pieces().stream()
+                    .filter(piece -> !piece.text().isEmpty())
+                    .map(piece -> new LineRunModel.Line(body.get(piece.line()), piece.text())).toList();
+            if (own.isEmpty()) {
+                specs.add(null);
+                continue;
+            }
+            // read as the page prints it, markup gone, so a cell wraps as Typst wrapped it; a footnote in a cell
+            // keeps the row's number, so the cells' own numbering is thrown away
+            LineRunModel.Spec raw = new LineRunModel.Spec(List.of(new LineRunModel.Paragraph(own, " ", style)));
+            specs.add(raw.inlined(new network.ike.komet.document.print.InlineText.Numbering()).spec());
+        }
+        return specs;
     }
 
     /**
@@ -2111,6 +2139,9 @@ public final class DocumentSurfaceView {
                 area.x = line.x();
                 area.baseline = line.baseline();
                 area.whole = whole;
+                if (whole && unit.kind() == network.ike.komet.document.print.LayoutOracle.Kind.TABLE_ROW && !unitArea.cellSpecs.isEmpty()) {
+                    pageRow(area, unitArea);
+                }
                 // No chrome of the control's own on a page line: the sheet is the paper. A listing's tint is one
                 // block behind its lines, as Typst draws it: a line is taller than its pitch, and painted line by
                 // line each covers the one above.
@@ -2231,6 +2262,35 @@ public final class DocumentSurfaceView {
     /** The inset of a listing's block on a page, in points, what the Typst writer gives {@code raw}. */
     private static final double LISTING_INSET = 8;
 
+    /**
+     * A table row on a page: the row's cells as texts of their own, standing in a grid at the
+     * table's column widths in place of the row's one text, which the Reading view's rows do too.
+     * The grid is the area's drawing, placed by {@link #linesOn}; the row's own text stays its
+     * model, unshown, so the row is selected and hovered as one.
+     */
+    private void pageRow(Area area, Area unitArea) {
+        area.columns = unitArea.columns;
+        area.tableFirst = unitArea.tableFirst;
+        area.cellSpecs = unitArea.cellSpecs;
+        List<CellText> cells = new ArrayList<>();
+        List<Node> texts = new ArrayList<>();
+        for (LineRunModel.Spec spec : area.cellSpecs) {
+            if (spec == null) {
+                texts.add(null);
+                continue;
+            }
+            CellText cell = new CellText(area, spec);
+            cell.rta.setContentPadding(new Insets(network.ike.komet.document.print.TypstOracle.TABLE_INSET));
+            cell.rta.setStyle("-fx-background-color: transparent; -fx-background-insets: 0; -fx-background-radius: 0; -fx-border-width: 0; -fx-padding: 0;");
+            cell.rta.getStyleClass().add("stamped-page-line");
+            cells.add(cell);
+            texts.add(cell.rta);
+        }
+        area.cells = List.copyOf(cells);
+        area.drawing = new network.ike.komet.document.print.PageTableRow(texts, area.columns, area.tableFirst);
+        areaByNode.put(area.drawing, area);
+    }
+
     /** @return the line areas on a page, placed for the page stack */
     public List<PageStackView.Placed> linesOn(int page, double contentLeft, double contentWidth, double bandHeight) {
         List<PageStackView.Placed> out = new ArrayList<>();
@@ -2250,6 +2310,13 @@ public final class DocumentSurfaceView {
             }
             StyleAttributeMap style = area.spec.paragraphs().getFirst().style();
             double[] m = metrics(style);
+            if (area.drawing != null) {
+                // A table row: its cells across the content width, the first cell's first line on the row's baseline.
+                double rowAscent = m[0] + network.ike.komet.document.print.TypstOracle.TABLE_INSET + 1;
+                out.add(new PageStackView.Placed(area.drawing, contentLeft, area.baseline, rowAscent, contentWidth,
+                        m[1] + 2 * network.ike.komet.document.print.TypstOracle.TABLE_INSET, false));
+                continue;
+            }
             double ascent = m[0] + 2 + 1;                            // the area's content padding above the first line, and a point of air
             // JavaFX lays the glyphs without kerning, so a line Typst fit by a hair may not fit here: the area
             // is as wide as the content, or as the line's natural width when that is wider, so the line's last

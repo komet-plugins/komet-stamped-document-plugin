@@ -56,6 +56,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -257,8 +258,10 @@ class PageTableIT {
             int on = page;
             List<PageStackView.Placed> placed = onFx(() -> surface.linesOn(on, geometry.contentLeft(), geometry.contentWidth(), geometry.bandHeight()));
             PageStackView.Placed top = placed.stream().min(java.util.Comparator.comparingDouble(PageStackView.Placed::baseline)).orElseThrow();
-            RichTextArea area = (RichTextArea) top.node();
-            assertEquals(rows.getFirst().text(), area.getModel().getPlainText(0), "the top of page " + page);
+            // a row stands on the page as a grid of its cells, the header's first on every page the table runs to
+            assertInstanceOf(network.ike.komet.document.print.PageTableRow.class, top.node(), "the top of page " + page);
+            assertEquals(rows.getFirst().index(), surface.identity(top)[0], "the top of page " + page);
+            assertEquals(geometry.contentWidth(), top.width(), 0.01, "a row spans the content");
         }
     }
 
