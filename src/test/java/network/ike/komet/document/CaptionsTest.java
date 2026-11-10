@@ -179,6 +179,33 @@ class CaptionsTest {
     }
 
     @Test
+    void theFrontListsAreTheHeadingsToTheDepthAndTheCaptionsByKind() {
+        StoredDocument document = StoredFixture.parse(TEXT);
+        Captions captions = Captions.of(DocumentAssembly.single(document, "doc.adoc"), CaptionsTest::figure, 3);
+        List<DocumentModel.FrontList> lists = captions.frontLists(StoredDocumentModel.lists(document));
+
+        assertEquals(List.of(DocumentModel.FrontList.Kind.CONTENTS, DocumentModel.FrontList.Kind.FIGURES),
+                lists.stream().map(DocumentModel.FrontList::kind).toList(), "the lists asked for, in front-matter order; tables were not");
+        assertEquals(List.of("1 First section", "1.1 Deeper", "2 Second section"), lists.get(0).entries().stream().map(DocumentModel.Entry::text).toList());
+        assertEquals(List.of(0, 1, 0), lists.get(0).entries().stream().map(DocumentModel.Entry::depth).toList());
+        assertEquals(List.of("Figure 1. The control structure", "Figure 2. The approval tree"), lists.get(1).entries().stream().map(DocumentModel.Entry::text).toList());
+        StoredBlock first = document.blocks().values().stream().filter(b -> b.title().equals("First section")).findFirst().orElseThrow();
+        assertEquals(StoredDocumentModel.key(first.nid()), lists.get(0).entries().getFirst().target(), "an entry names its block by the block's key");
+        assertEquals(List.of(0, 0), lists.get(1).entries().stream().map(DocumentModel.Entry::page).toList(), "no page until a layout finds one");
+
+        List<DocumentModel.FrontList> shallow = captions.frontLists(new DocumentModel.Lists(true, 1, false, false));
+        assertEquals(1, shallow.size());
+        assertEquals(List.of("1 First section", "2 Second section"), shallow.getFirst().entries().stream().map(DocumentModel.Entry::text).toList(),
+                "only the levels within the depth");
+        List<DocumentModel.FrontList> tables = captions.frontLists(new DocumentModel.Lists(false, 2, false, true));
+        assertEquals(List.of("Table 1. Per 10,000 who take each alternative", "Table 2. Costs"),
+                tables.getFirst().entries().stream().map(DocumentModel.Entry::text).toList(), "the titled tables alone");
+        assertTrue(captions.frontLists(DocumentModel.Lists.NONE).isEmpty());
+        Captions bare = Captions.of(DocumentAssembly.single(StoredFixture.parse("= Plain\n\n|===\n| a\n|===\n"), "p.adoc"), CaptionsTest::figure);
+        assertTrue(bare.frontLists(new DocumentModel.Lists(true, 2, true, true)).isEmpty(), "nothing to list, no list: not even its title");
+    }
+
+    @Test
     void nothingIsCaptionedInADocumentWithoutTitles() {
         Captions captions = Captions.of(DocumentAssembly.single(StoredFixture.parse("= Plain\n\n|===\n| a\n|===\n"), "p.adoc"), CaptionsTest::figure);
         assertTrue(captions.isEmpty());

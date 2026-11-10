@@ -161,6 +161,14 @@ public final class ModelUnits {
                 }
                 return last;
             }
+            case DocumentModel.FrontList f -> {
+                // its title is a level-1 heading; an entry's text alone is the unit, the page after its leader is the renderer's
+                Kind last = add(out, notes, block, Kind.HEADING, f.title(), base * 1.5, true, 0, previous, base);
+                for (DocumentModel.Entry entry : f.entries()) {
+                    last = add(out, notes, block, Kind.ENTRY, entry.text(), base, false, base * entry.depth(), last, base);
+                }
+                return last;
+            }
         }
     }
 

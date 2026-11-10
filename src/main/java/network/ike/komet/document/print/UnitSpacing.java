@@ -30,7 +30,8 @@ import network.ike.komet.document.print.LayoutOracle.Unit;
  *       to the larger;</li>
  *   <li>the title's {@code block(below: 1.2em)} is 1.2em of the body; a block title keeps 1em above
  *       and 0.5em below; a table's caption a leading (0.65em) below, over the first row's inset;</li>
- *   <li>a raw block adds its 8pt inset above and below its lines, which are the same 1.364em apart as any.</li>
+ *   <li>a raw block adds its 8pt inset above and below its lines, which are the same 1.364em apart as any;</li>
+ *   <li>a front list's entries stand a leading (0.65em) apart, as the writer's entry block keeps it.</li>
  * </ul>
  *
  * One place for the rule, so the surface's units and the model's agree.
@@ -57,6 +58,7 @@ public final class UnitSpacing {
             case TITLE -> 0;
             case HEADING -> size * 0.9;
             case LIST_ITEM -> previous == Kind.LIST_ITEM ? base * 0.65 : base * 1.1;
+            case ENTRY -> previous == Kind.ENTRY ? base * 0.65 : base * 1.1;      // the writer's entry block keeps 0.65em above and below
             case TABLE_ROW -> previous == Kind.TABLE_ROW ? 2 * CELL_INSET : base * 1.1;
             case OTHER, FIGURE -> base;
             default -> base * 1.1;

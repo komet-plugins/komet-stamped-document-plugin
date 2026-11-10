@@ -130,6 +130,63 @@ public final class StoredDocumentModel {
         default String heading(StoredDocument document, StoredBlock block, String text) {
             return text;
         }
+
+        /**
+         * The lists the header asks for, with their entries: none by default — a surface that
+         * numbers its headings and captions supplies them, as {@link network.ike.komet.document.Captions#frontLists}
+         * builds them. An entry names its block by {@link StoredDocumentModel#key}.
+         *
+         * @param document the host document
+         * @param lists    what the header asks for
+         * @return the lists in front-matter order, an empty one left out
+         */
+        default List<DocumentModel.FrontList> frontLists(StoredDocument document, DocumentModel.Lists lists) {
+            return List.of();
+        }
+
+        /**
+         * A reading that numbers headings and captions as an assembly's captions have them, and
+         * lists them at the front, drawing nothing: what a document is read with where no surface
+         * draws its blocks.
+         *
+         * @param captions the assembly's captions
+         * @return the reading
+         */
+        static Figures captioned(network.ike.komet.document.Captions captions) {
+            return new Figures() {
+                @Override
+                public List<DecisionFigure> of(StoredDocument document, StoredBlock block) {
+                    return List.of();
+                }
+
+                @Override
+                public String caption(StoredDocument document, StoredBlock block) {
+                    return block.title().isEmpty() ? "" : captions.text(block);
+                }
+
+                @Override
+                public String heading(StoredDocument document, StoredBlock block, String text) {
+                    return captions.heading(block, text);
+                }
+
+                @Override
+                public List<DocumentModel.FrontList> frontLists(StoredDocument document, DocumentModel.Lists lists) {
+                    return captions.frontLists(lists);
+                }
+            };
+        }
+    }
+
+    /**
+     * The key a front list's entry names a block by, and the block carries: from the block's nid,
+     * so the same block has the same key in the model and on the surface, and a Typst label can
+     * spell it.
+     *
+     * @param blockNid the block's nid
+     * @return the key
+     */
+    public static String key(long blockNid) {
+        return "b" + Long.toString(blockNid).replace('-', 'n');
     }
 
     private final StoredDocument document;
@@ -180,9 +237,11 @@ public final class StoredDocumentModel {
      * @return the model
      */
     public static DocumentModel of(StoredDocument document, Map<Long, Child> includes, Figures figures) {
-        List<DocumentModel.Block> blocks = new ArrayList<>();
+        DocumentModel.Lists lists = lists(document);
+        // the lists stand at the front, after the title, as the printed document and the pages have them
+        List<DocumentModel.Block> blocks = new ArrayList<>(figures.frontLists(document, lists));
         String title = new StoredDocumentModel(document, 0, Map.copyOf(includes), figures).read(blocks, true);
-        return new DocumentModel(title, blocks, lists(document));
+        return new DocumentModel(title, blocks, lists);
     }
 
     private static final Pattern TOC_LEVELS = Pattern.compile("^:toclevels:\\s*(\\d+)\\s*$");
@@ -242,7 +301,7 @@ public final class StoredDocumentModel {
             title = document.root().title();
         }
         if (!isRoot && !title.isEmpty()) {
-            out.add(new Heading(levelOffset, figures.heading(document, document.root(), title)));
+            out.add(new Heading(levelOffset, figures.heading(document, document.root(), title), key(document.root().nid())));
         }
         for (Member member : members(document.root())) {
             if (member.block() != null) {
@@ -285,14 +344,14 @@ public final class StoredDocumentModel {
             // the first figure carries the block's caption, which the figures source has drawn beneath it
             String caption = figures.caption(document, block);
             for (int i = 0; i < drawn.size(); i++) {
-                out.add(new DocumentModel.Drawn(drawn.get(i), i == 0 ? caption : ""));
+                out.add(new DocumentModel.Drawn(drawn.get(i), i == 0 ? caption : "", i == 0 ? key(block.nid()) : ""));
             }
             return;
         }
         if (block.kind() == Block.Kind.OPEN && StructuredBlocks.kindOf(block).isPresent()) {
             // one block of source, as a listing is: the parser's paragraphs of it are not paragraphs
             out.add(new Verbatim(block.title(), String.join("\n",
-                    StructuredBlocks.content(document, block).stream().map(StoredLine::text).toList())));
+                    StructuredBlocks.content(document, block).stream().map(StoredLine::text).toList()), key(block.nid())));
             return;
         }
         List<StoredLine> own = ownLines(block);
@@ -302,7 +361,7 @@ public final class StoredDocumentModel {
             case SECTION -> {
                 String heading = own.stream().map(StoredLine::text).filter(t -> t.matches("^=+\\s.*")).findFirst()
                         .map(t -> t.replaceFirst("^=+\\s*", "").strip()).orElse(block.title());
-                out.add(new Heading(block.level() + levelOffset, figures.heading(document, block, heading)));
+                out.add(new Heading(block.level() + levelOffset, figures.heading(document, block, heading), key(block.nid())));
                 children(children, out);
             }
             case PARAGRAPH -> {
@@ -321,7 +380,8 @@ public final class StoredDocumentModel {
                 children(children, body);
                 out.add(new Admonition(label, body));
             }
-            case LISTING, LITERAL, DIAGRAM -> out.add(new Verbatim(block.title(), String.join("\n", verbatimLines(own).stream().map(StoredLine::text).toList())));
+            case LISTING, LITERAL, DIAGRAM -> out.add(new Verbatim(block.title(), String.join("\n", verbatimLines(own).stream().map(StoredLine::text).toList()),
+                    key(block.nid())));
             case EXAMPLE, QUOTE, SIDEBAR, OPEN -> {
                 List<DocumentModel.Block> body = new ArrayList<>();
                 children(children, body);
@@ -339,7 +399,7 @@ public final class StoredDocumentModel {
             case IMAGE -> {
                 String target = own.stream().map(StoredLine::text).map(IMAGE_MACRO::matcher).filter(Matcher::matches)
                         .map(m -> m.group(1)).findFirst().orElse("");
-                out.add(new Image(target, block.title()));
+                out.add(new Image(target, block.title(), key(block.nid())));
             }
             case OPAQUE -> {
                 // Comments, attribute entries and passthrough print nothing; an include line whose child
@@ -432,7 +492,7 @@ public final class StoredDocumentModel {
         List<List<String>> rows = cells.stream().map(row -> row.stream().map(TableCells.Cell::text).toList()).toList();
         List<Integer> widths = widths(block.parameters(), TableCells.columns(cells));
         boolean header = block.parameters().contains("header") && !rows.isEmpty();
-        return new Table(figures.caption(document, block), widths, header ? 1 : 0, rows);
+        return new Table(figures.caption(document, block), widths, header ? 1 : 0, rows, key(block.nid()));
     }
 
     /** @return how many columns {@code cols} names, 0 when the table has none */

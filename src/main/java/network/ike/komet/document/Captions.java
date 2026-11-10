@@ -19,6 +19,8 @@ import design.knowledge.stamp.adoc.dialect.Block;
 import network.ike.komet.document.GitDocumentMaterializer.StoredBlock;
 import network.ike.komet.document.GitDocumentMaterializer.StoredDocument;
 import network.ike.komet.document.GitDocumentMaterializer.StoredLine;
+import network.ike.komet.document.print.DocumentModel;
+import network.ike.komet.document.print.StoredDocumentModel;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -180,6 +182,40 @@ public final class Captions {
 
     public boolean isEmpty() {
         return all.isEmpty();
+    }
+
+    /**
+     * The lists a header asks for, with their entries, as the Reading view lists them and the
+     * pages and the PDF print them: the contents to the depth asked, every heading as read with
+     * its number; the figures and the tables by caption. A list with nothing to say is left out.
+     * An entry names its block by {@link StoredDocumentModel#key}.
+     *
+     * @param lists what the header asks for
+     * @return the lists in front-matter order
+     */
+    public List<DocumentModel.FrontList> frontLists(DocumentModel.Lists lists) {
+        List<DocumentModel.FrontList> out = new ArrayList<>();
+        if (lists.contents()) {
+            List<DocumentModel.Entry> entries = headings.stream().filter(h -> h.level() <= lists.depth())
+                    .map(h -> new DocumentModel.Entry(h.read(), Math.max(0, h.level() - 1), StoredDocumentModel.key(h.block()))).toList();
+            if (!entries.isEmpty()) {
+                out.add(new DocumentModel.FrontList(DocumentModel.FrontList.Kind.CONTENTS, entries));
+            }
+        }
+        if (lists.figures()) {
+            frontList(DocumentModel.FrontList.Kind.FIGURES, of(Kind.FIGURE), out);
+        }
+        if (lists.tables()) {
+            frontList(DocumentModel.FrontList.Kind.TABLES, of(Kind.TABLE), out);
+        }
+        return out;
+    }
+
+    private static void frontList(DocumentModel.FrontList.Kind kind, List<Caption> captions, List<DocumentModel.FrontList> out) {
+        if (!captions.isEmpty()) {
+            out.add(new DocumentModel.FrontList(kind, captions.stream()
+                    .map(c -> new DocumentModel.Entry(c.text(), 0, StoredDocumentModel.key(c.block()))).toList()));
+        }
     }
 
     /** The reading-order walk: a document's blocks, and at a resolved include the child's blocks in its place. */

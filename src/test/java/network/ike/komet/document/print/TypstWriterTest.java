@@ -103,6 +103,7 @@ class TypstWriterTest {
         String typst = TypstWriter.write(drawn(), TypstWriter.PageSetup.DEFAULT);
         assertTrue(typst.contains("#ike-figure(600pt, 120pt, ["), typst);
         assertTrue(typst.contains("inside the figure"), typst);
+        assertTrue(typst.contains("reflow: true, body"), "the scaled marks take the room of their scaled size, as the measured figure does");
     }
 
     @Test
@@ -434,9 +435,10 @@ class TypstWriterTest {
         long includeLine = parent.lines().stream().filter(l -> l.text().startsWith("include::")).findFirst().orElseThrow().nid();
         DocumentModel model = StoredDocumentModel.of(parent, Map.of(includeLine, new StoredDocumentModel.Child(child, 2)));
         assertEquals("The Compendium", model.title());
-        assertEquals(new Heading(1, "Part One"), model.blocks().get(0));
-        assertEquals(new Heading(2, "Child Title"), model.blocks().get(1));
-        assertEquals(new Heading(3, "Child Section"), model.blocks().get(3));
+        assertEquals(List.of(new Heading(1, "Part One"), new Heading(2, "Child Title"), new Heading(3, "Child Section")),
+                List.of(model.blocks().get(0), model.blocks().get(1), model.blocks().get(3)).stream()
+                        .map(Heading.class::cast).map(h -> new Heading(h.level(), h.text())).toList(), "every heading carries its block's key besides");
+        assertTrue(model.blocks().stream().filter(Heading.class::isInstance).map(Heading.class::cast).noneMatch(h -> h.key().isEmpty()));
         String typst = TypstWriter.write(model, TypstWriter.PageSetup.DEFAULT);
         assertTrue(typst.contains("= Part One\n\n== Child Title\n\nChild prose.\n\n=== Child Section\n\nMore."), typst);
         assertEquals(2, StoredDocumentModel.Child.levelOffset("leveloffset=+2"));
@@ -486,6 +488,92 @@ class TypstWriterTest {
         String words = TypstWriter.write(model, TypstWriter.PageSetup.DEFAULT, TypstWriter.Labels.WORDS);
         assertTrue(words.contains(TypstOracle.WORD_RULE), "the oracle's form labels every word");
         assertTrue(words.indexOf(TypstOracle.WORD_RULE) < words.indexOf(marker), "the show rule precedes the first block");
+    }
+
+    /** A model with a contents list and a list of tables naming a heading and a table by key, as the stored reading keys them. */
+    private static DocumentModel listed() {
+        return new DocumentModel("Listed", List.of(
+                new DocumentModel.FrontList(DocumentModel.FrontList.Kind.CONTENTS, List.of(
+                        new DocumentModel.Entry("1 Intro", 0, "b1"), new DocumentModel.Entry("1.1 Deeper", 1, "b2"))),
+                new DocumentModel.FrontList(DocumentModel.FrontList.Kind.TABLES, List.of(new DocumentModel.Entry("Table 1. Costs", 0, "b3"))),
+                new Heading(1, "1 Intro", "b1"),
+                new DocumentModel.Paragraph("Prose."),
+                new Heading(2, "1.1 Deeper", "b2"),
+                new Heading(3, "Unlisted", "b9"),
+                new Table("Table 1. Costs", List.of(1, 1), 1, List.of(List.of("a", "b")), "b3")),
+                new DocumentModel.Lists(true, 2, false, true));
+    }
+
+    @Test
+    void frontListsAreWrittenAsEntriesThatReadTheirTargetsPages() {
+        String typst = TypstWriter.write(listed(), TypstWriter.PageSetup.DEFAULT);
+
+        assertFalse(typst.contains("#outline"), "the lists are the model's entries, not Typst's outline");
+        assertTrue(typst.contains(TypstWriter.ENTRY_HELPERS), "the entry and page helpers come with the lists");
+        assertTrue(typst.contains("= Contents\n\n#ike-entry(0, repeat[.])[1 Intro][#ike-page(<ike-b1>)]\n#ike-entry(1, repeat[.])[1.1 Deeper][#ike-page(<ike-b2>)]\n\n"), typst);
+        assertTrue(typst.contains("= Tables\n\n#ike-entry(0, repeat[.])[Table 1. Costs][#ike-page(<ike-b3>)]\n\n"), typst);
+        assertTrue(typst.contains("= 1 Intro <ike-b1>\n\n"), "a heading an entry names carries its label");
+        assertTrue(typst.contains("== 1.1 Deeper <ike-b2>\n\n"), typst);
+        assertTrue(typst.contains("=== Unlisted\n\n"), "a heading no entry names carries none");
+        assertTrue(typst.contains("  kind: table,\n) <ike-b3>\n\n"), "a table an entry names carries its label");
+        assertTrue(typst.indexOf("= Contents") < typst.indexOf("= Tables") && typst.indexOf("= Tables") < typst.indexOf("= 1 Intro"), "the lists come first");
+    }
+
+    @Test
+    void theMeasuredFormPrintsTheEntriesPagesAsFoundAndNoLeaderDots() {
+        DocumentModel numbered = listed().withEntryPages(Map.of("b1", 2, "b2", 3, "b3", 4));
+        String words = TypstWriter.write(numbered, TypstWriter.PageSetup.DEFAULT, TypstWriter.Labels.WORDS);
+
+        assertTrue(words.contains("#ike-entry(0, [])[1 Intro][#ike-page-room([2])]\n#ike-entry(1, [])[1.1 Deeper][#ike-page-room([3])]\n"), words);
+        assertTrue(words.contains("#ike-entry(0, [])[Table 1. Costs][#ike-page-room([4])]\n"), words);
+        assertFalse(words.contains("#ike-page(<"), "a measured source holds the room of the number the last pass found, and no digits the oracle could read");
+        assertTrue(words.contains("= 1 Intro <ike-b1>"), "the targets keep their labels, so the printed form reads the same document");
+        String blocks = TypstWriter.write(numbered, TypstWriter.PageSetup.DEFAULT, TypstWriter.Labels.BLOCKS);
+        assertTrue(blocks.contains("[1 Intro][#ike-page(<ike-b1>)]"), "the block-labelled form is the printed one, with its leader and Typst's own page");
+        assertEquals(List.of(2, 3, 4), numbered.entries().stream().map(DocumentModel.Entry::page).toList());
+        assertEquals(List.of(0, 0, 0), listed().entries().stream().map(DocumentModel.Entry::page).toList(), "unknown until a pass finds them");
+    }
+
+    @Test
+    void aStoredDocumentThatAsksForListsPrintsThemFromItsCaptions() {
+        StoredDocument stored = StoredFixture.parse("""
+                :topic-id: t-lists
+                = Listed
+                :toc:
+                :toclevels: 1
+                :list-of-tables:
+                :sectnums:
+
+                == Intro
+
+                Prose.
+
+                === Deeper
+
+                .Costs
+                |===
+                | a | b
+                |===
+                """);
+        network.ike.komet.document.Captions captions = network.ike.komet.document.Captions.of(
+                network.ike.komet.document.DocumentAssembly.single(stored, "t.adoc"), b -> false, 3);
+        DocumentModel model = StoredDocumentModel.of(stored, Map.of(), StoredDocumentModel.Figures.captioned(captions));
+
+        DocumentModel.FrontList contents = assertInstanceOf(DocumentModel.FrontList.class, model.blocks().get(0));
+        assertEquals(DocumentModel.FrontList.Kind.CONTENTS, contents.kind());
+        assertEquals(List.of("1 Intro"), contents.entries().stream().map(DocumentModel.Entry::text).toList(), "to the depth asked");
+        DocumentModel.FrontList tables = assertInstanceOf(DocumentModel.FrontList.class, model.blocks().get(1));
+        assertEquals(List.of("Table 1. Costs"), tables.entries().stream().map(DocumentModel.Entry::text).toList());
+        Heading intro = assertInstanceOf(Heading.class, model.blocks().get(2));
+        assertEquals(contents.entries().getFirst().target(), intro.key(), "the entry names the heading by the key the heading carries");
+        Table costs = model.blocks().stream().filter(Table.class::isInstance).map(Table.class::cast).findFirst().orElseThrow();
+        assertEquals(tables.entries().getFirst().target(), costs.key());
+        assertEquals(java.util.Set.of(intro.key(), costs.key()), model.targets());
+        String typst = TypstWriter.write(model, TypstWriter.PageSetup.DEFAULT);
+        assertTrue(typst.contains("= 1 Intro <ike-" + intro.key() + ">"), typst);
+        assertTrue(typst.contains("== 1.1 Deeper\n\n"), "the deeper heading is numbered but not listed, so not labelled");
+        assertTrue(StoredDocumentModel.of(stored).entries().isEmpty(), "with no captions to read, a document lists nothing");
+        assertTrue(StoredDocumentModel.key(-42).matches("[A-Za-z0-9_-]+"), "a key spells as a Typst label: " + StoredDocumentModel.key(-42));
     }
 
     @Test

@@ -15,8 +15,12 @@
  */
 package network.ike.komet.document.print;
 
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
 /**
  * A document as a print writer reads it: a title and a flat run of blocks, each a plain-text
@@ -29,8 +33,14 @@ import java.util.Objects;
  * content. Paragraph text is the lines of the source paragraph joined by spaces; verbatim text
  * keeps its line breaks; a table is rows of cells with the header rows counted.
  *
+ * <p>The lists a header asks for — the contents, the figures, the tables — are blocks of their
+ * own at the front ({@link FrontList}), each entry naming the block it points at by that block's
+ * {@code key}, so a writer can print the page the block lands on and a layout oracle can place
+ * every entry as a unit of text.
+ *
  * @param title  the document title, possibly empty
- * @param blocks the blocks in reading order
+ * @param blocks the blocks in reading order, the front lists first
+ * @param lists  what the header asks for
  */
 public record DocumentModel(String title, List<Block> blocks, Lists lists) {
 
@@ -71,8 +81,50 @@ public record DocumentModel(String title, List<Block> blocks, Lists lists) {
         blocks = List.copyOf(blocks);
     }
 
+    /** @return the front lists' entries, in order */
+    public List<Entry> entries() {
+        List<Entry> out = new ArrayList<>();
+        for (Block block : blocks) {
+            if (block instanceof FrontList list) {
+                out.addAll(list.entries());
+            }
+        }
+        return out;
+    }
+
+    /** @return the keys of the blocks the front lists' entries name */
+    public Set<String> targets() {
+        Set<String> out = new LinkedHashSet<>();
+        for (Entry entry : entries()) {
+            out.add(entry.target());
+        }
+        return out;
+    }
+
+    /**
+     * This model with the front lists' entries carrying the pages their targets begin on.
+     *
+     * @param pages the 1-based page of each target, by key; a target not named keeps the page it has
+     * @return the model, the same one when it has no front list
+     */
+    public DocumentModel withEntryPages(Map<String, Integer> pages) {
+        if (entries().isEmpty()) {
+            return this;
+        }
+        List<Block> out = new ArrayList<>(blocks.size());
+        for (Block block : blocks) {
+            out.add(block instanceof FrontList list ? list.withPages(pages) : block);
+        }
+        return new DocumentModel(title, out, lists);
+    }
+
     /** One block of the document. */
-    public sealed interface Block permits Heading, Paragraph, Admonition, Verbatim, ListBlock, Table, Image, Drawn, Container { }
+    public sealed interface Block permits Heading, Paragraph, Admonition, Verbatim, ListBlock, Table, Image, Drawn, Container, FrontList { }
+
+    /** The key of a block no list entry names. */
+    private static String keyOrNone(String key) {
+        return key == null ? "" : key;
+    }
 
     /**
      * A heading. Level 0 is a document title; an assembly's child titles arrive at the level
@@ -80,8 +132,18 @@ public record DocumentModel(String title, List<Block> blocks, Lists lists) {
      *
      * @param level the level, 0 for a title, 1 for a top-level section
      * @param text  the heading text
+     * @param key   what a front list's entry names the heading by, empty for a heading no entry can name
      */
-    public record Heading(int level, String text) implements Block { }
+    public record Heading(int level, String text, String key) implements Block {
+        /** A heading no entry names. */
+        public Heading(int level, String text) {
+            this(level, text, "");
+        }
+
+        public Heading {
+            key = keyOrNone(key);
+        }
+    }
 
     /**
      * A paragraph of prose.
@@ -103,19 +165,40 @@ public record DocumentModel(String title, List<Block> blocks, Lists lists) {
      *
      * @param title the block title, possibly empty
      * @param text  the content with its line breaks, delimiters excluded
+     * @param key   what a front list's entry names the block by (a titled diagram is a figure), empty for none
      */
-    public record Verbatim(String title, String text) implements Block { }
+    public record Verbatim(String title, String text, String key) implements Block {
+        /** A verbatim block no entry names. */
+        public Verbatim(String title, String text) {
+            this(title, text, "");
+        }
+
+        public Verbatim {
+            key = keyOrNone(key);
+        }
+    }
 
     /**
      * A block drawn rather than set: a figure of marks, whole on one page, scaled to the page's
      * measure when it is wider. Typst and the Page layout draw the same marks.
      *
-     * @param figure the figure
+     * @param figure  the figure
+     * @param caption the caption drawn beneath it, empty for none
+     * @param key     what a front list's entry names the figure by, empty for none
      */
-    public record Drawn(network.ike.komet.document.DecisionFigure figure, String caption) implements Block {
+    public record Drawn(network.ike.komet.document.DecisionFigure figure, String caption, String key) implements Block {
         /** A drawn block with no caption. */
         public Drawn(network.ike.komet.document.DecisionFigure figure) {
-            this(figure, "");
+            this(figure, "", "");
+        }
+
+        /** A drawn block no entry names. */
+        public Drawn(network.ike.komet.document.DecisionFigure figure, String caption) {
+            this(figure, caption, "");
+        }
+
+        public Drawn {
+            key = keyOrNone(key);
         }
     }
 
@@ -148,8 +231,18 @@ public record DocumentModel(String title, List<Block> blocks, Lists lists) {
      * @param widths     the relative column widths, one per column, from {@code cols} or all 1
      * @param headerRows how many leading rows are header rows
      * @param rows       the rows, each a list of cell texts, short rows padded by the writer
+     * @param key        what a front list's entry names the table by, empty for none
      */
-    public record Table(String title, List<Integer> widths, int headerRows, List<List<String>> rows) implements Block {
+    public record Table(String title, List<Integer> widths, int headerRows, List<List<String>> rows, String key) implements Block {
+
+        /** A table no entry names. */
+        public Table(String title, List<Integer> widths, int headerRows, List<List<String>> rows) {
+            this(title, widths, headerRows, rows, "");
+        }
+
+        public Table {
+            key = keyOrNone(key);
+        }
 
         /** @return the column count */
         public int columns() {
@@ -162,8 +255,18 @@ public record DocumentModel(String title, List<Block> blocks, Lists lists) {
      *
      * @param target the image target as written
      * @param title  the block title, possibly empty
+     * @param key    what a front list's entry names the image by, empty for none
      */
-    public record Image(String target, String title) implements Block { }
+    public record Image(String target, String title, String key) implements Block {
+        /** An image no entry names. */
+        public Image(String target, String title) {
+            this(target, title, "");
+        }
+
+        public Image {
+            key = keyOrNone(key);
+        }
+    }
 
     /**
      * A delimited container: an example, a sidebar, a quote or an open block.
@@ -176,5 +279,81 @@ public record DocumentModel(String title, List<Block> blocks, Lists lists) {
 
         /** The container kinds a writer distinguishes. */
         public enum Kind { EXAMPLE, SIDEBAR, QUOTE, OPEN }
+    }
+
+    /**
+     * A list the header asks for at the front of the document: the contents, the figures or
+     * the tables, each entry the text of what it names, its depth, and the key of the block
+     * it names, whose page the writers print after a leader.
+     *
+     * @param kind    which list
+     * @param entries the entries in reading order
+     */
+    public record FrontList(Kind kind, List<Entry> entries) implements Block {
+
+        /** The lists, each with the title it is printed under. */
+        public enum Kind {
+            CONTENTS("Contents"),
+            FIGURES("Figures"),
+            TABLES("Tables");
+
+            private final String title;
+
+            Kind(String title) {
+                this.title = title;
+            }
+
+            /** @return the list's title */
+            public String title() {
+                return title;
+            }
+        }
+
+        public FrontList {
+            Objects.requireNonNull(kind, "kind is null");
+            entries = List.copyOf(entries);
+        }
+
+        /** @return the list's title, {@code Contents}, {@code Figures} or {@code Tables} */
+        public String title() {
+            return kind.title();
+        }
+
+        /** @return this list with its entries' pages taken from the map, by target; an entry whose target is not named keeps its page */
+        public FrontList withPages(Map<String, Integer> pages) {
+            List<Entry> out = new ArrayList<>(entries.size());
+            for (Entry entry : entries) {
+                Integer page = pages.get(entry.target());
+                out.add(page == null ? entry : entry.withPage(page));
+            }
+            return new FrontList(kind, out);
+        }
+    }
+
+    /**
+     * One entry of a front list.
+     *
+     * @param text   what it says: a heading as read, with its number; a caption, {@code Figure 3. Title}
+     * @param depth  how far it is indented, 0 for a top-level heading or any caption
+     * @param target the key of the block it names
+     * @param page   the 1-based page the target begins on as last laid out, 0 while unknown; a writer that
+     *               prints the document asks the layout for the page itself, a measured source prints this
+     */
+    public record Entry(String text, int depth, String target, int page) {
+
+        /** An entry whose target's page is not known yet. */
+        public Entry(String text, int depth, String target) {
+            this(text, depth, target, 0);
+        }
+
+        public Entry {
+            Objects.requireNonNull(text, "text is null");
+            Objects.requireNonNull(target, "target is null");
+        }
+
+        /** @return this entry on a page */
+        public Entry withPage(int page) {
+            return new Entry(text, depth, target, page);
+        }
     }
 }

@@ -43,6 +43,12 @@ import java.util.Objects;
  * <p>Prose reaches the page through {@link InlineText}: inline code as {@code raw} at the raw
  * size, strong and emphasis, links, and footnotes at the foot of the page.
  *
+ * <p>The lists the header asks for are written as the model has them ({@link DocumentModel.FrontList}),
+ * not as Typst's own {@code outline}: a heading and one entry block per entry, with the target's
+ * page after a leader, so the measured source holds every entry as labelled text a layout oracle
+ * can place, and the pages paginate as the PDF does. Every block an entry names carries a label
+ * the printed document reads the page counter at.
+ *
  * <p>The running head shows the document title on the left and the current section on the
  * right — the last heading of level 1 or 2 before the page, so a flowed child's title names
  * the section while the child runs. Folios are one sequence over the whole document.
@@ -163,11 +169,13 @@ public final class TypstWriter {
         StringBuilder content = new StringBuilder(4096);
         CHUNK_WORDS.set(labels == Labels.WORDS);
         NOTES.set(new InlineText.Numbering());
+        TARGETS.set(document.targets());
         try {
             body(document, labels, content);
         } finally {
             CHUNK_WORDS.set(false);
             NOTES.remove();
+            TARGETS.remove();
         }
         StringBuilder out = new StringBuilder(content.length() + 2048);
         out.append(preamble(InlineText.of(document.title()).text(), setup));
@@ -175,18 +183,52 @@ public final class TypstWriter {
         if (content.indexOf("ike-figure(") >= 0) {                       // bare, or within a captioned figure
             out.append(figureHelper(setup));
         }
+        if (content.indexOf("ike-entry(") >= 0) {
+            out.append(ENTRY_HELPERS);
+        }
         if (labels == Labels.WORDS) {
             out.append(TypstOracle.WORD_RULE);
         }
         return out.append(content).toString();
     }
 
-    /** A drawn block: scaled to the measure, whole on a page, as {@link LayoutOracle.Unit#figureScale} reckons it. */
+    /** The prefix of the label a front list's entry names its block by: {@code <ike-b123>} for the key {@code b123}. */
+    public static final String TARGET_LABEL = "ike-";
+
+    /**
+     * A front list's entry, and the page its target lands on. An entry is a block that never
+     * breaks over a page, its text, a leader in a box that takes the rest of the line, and the
+     * page: the printed document asks the page counter at the target's label, so Typst's own
+     * number stands there; a measured source ({@link Labels#WORDS}) holds the room of the number
+     * the last layout pass found — an empty box as wide as the digits would set — and its leader
+     * box empty: a box of a fraction takes the line's rest whatever it holds, and the oracle
+     * reads no dots and no digits as words, which it would otherwise align with the section
+     * number that opens the next entry. A target the document does not hold prints no page
+     * rather than failing the compile.
+     */
+    static final String ENTRY_HELPERS = """
+            #let ike-page(key) = context {
+              let found = query(key)
+              if found.len() > 0 { str(counter(page).at(found.first().location()).first()) }
+            }
+            #let ike-page-room(number) = context box(width: measure(number).width)
+            #let ike-entry(depth, leader, body, page) = block(width: 100%, breakable: false, above: 0.65em, below: 0.65em,
+              inset: (left: depth * 1em))[#body#box(width: 1fr, inset: (x: 0.25em), leader)#page]
+            """;
+
+    /**
+     * A drawn block: scaled to the measure, whole on a page, as {@link LayoutOracle.Unit#figureScale}
+     * reckons it. The scale reflows, so the figure takes the room of its scaled marks: without
+     * that Typst lays the marks' box at its unscaled size inside the scaled one, and a figure
+     * scaled to fit a page still spilled it, landing on a page of its own in the printed document
+     * while the measured one (whose figure body is empty) kept it in the flow — six pages'
+     * difference over the regulatory book (2026-11-09).
+     */
     private static String figureHelper(PageSetup setup) {
         return "#let ike-figure(w, h, body) = context {\n"
                 + "  let s = calc.min(1, (page.width - " + points(setup.marginLeft() + setup.marginRight()) + ") / w, (page.height - "
                 + points(setup.marginTop() + setup.marginBottom()) + ") / h)\n"
-                + "  box(width: w * s, height: h * s, scale(x: s * 100%, y: s * 100%, origin: top + left, body))\n}\n";
+                + "  box(width: w * s, height: h * s, scale(x: s * 100%, y: s * 100%, origin: top + left, reflow: true, body))\n}\n";
     }
 
     private static void body(DocumentModel document, Labels labels, StringBuilder out) {
@@ -196,11 +238,6 @@ public final class TypstWriter {
                 out.append(marker(index++));
             }
             out.append("#ike-title[").append(markup(document.title())).append("]\n\n");
-        }
-        if (labels == Labels.NONE && document.lists().any()) {
-            // the generated lists, in the document that is printed; a measured document leaves them out, since
-            // the page layout places the blocks it knows by the measure, and knows no list
-            lists(document.lists(), out);
         }
         for (Block block : document.blocks()) {
             if (labels != Labels.NONE) {
@@ -213,17 +250,20 @@ public final class TypstWriter {
         }
     }
 
-    /** The front matter's lists: the table of contents, the figures and the tables, each an outline of its kind. */
-    private static void lists(DocumentModel.Lists lists, StringBuilder out) {
-        if (lists.contents()) {
-            out.append("#outline(title: [Contents], depth: ").append(Math.max(1, lists.depth())).append(")\n\n");
+    /** The label on a block a front list's entry names, with its leading space; empty for every other block. */
+    private static String target(String key) {
+        return !key.isEmpty() && TARGETS.get().contains(key) ? " <" + TARGET_LABEL + key + ">" : "";
+    }
+
+    /** A front list: its title as a heading, then its entries. */
+    private static void frontList(DocumentModel.FrontList list, StringBuilder out, String indent) {
+        out.append(indent).append("= ").append(markup(list.title())).append("\n\n");
+        for (DocumentModel.Entry entry : list.entries()) {
+            String page = CHUNK_WORDS.get() ? "#ike-page-room([" + entry.page() + "])" : "#ike-page(<" + TARGET_LABEL + entry.target() + ">)";
+            out.append(indent).append("#ike-entry(").append(Math.max(0, entry.depth())).append(", ").append(CHUNK_WORDS.get() ? "[]" : "repeat[.]")
+                    .append(")[").append(markup(entry.text())).append("][").append(page).append("]\n");
         }
-        if (lists.figures()) {
-            out.append("#outline(title: [Figures], target: figure.where(kind: image))\n\n");
-        }
-        if (lists.tables()) {
-            out.append("#outline(title: [Tables], target: figure.where(kind: table))\n\n");
-        }
+        out.append('\n');
     }
 
     /** The page setup and the styles every construct relies on. */
@@ -337,7 +377,8 @@ public final class TypstWriter {
     private static void block(Block block, StringBuilder out, String indent) {
         switch (block) {
             case Heading h -> out.append(indent).append("=".repeat(Math.clamp(h.level(), 1, 6))).append(' ')
-                    .append(markup(h.text())).append("\n\n");
+                    .append(markup(h.text())).append(target(h.key())).append("\n\n");
+            case DocumentModel.FrontList f -> frontList(f, out, indent);
             case Paragraph p -> out.append(indent).append(markup(p.text()).replace("\n", "\n" + indent)).append("\n\n");
             case Admonition a -> {
                 out.append(indent).append("#ike-admonition(").append(string(a.label())).append(")[\n");
@@ -346,15 +387,16 @@ public final class TypstWriter {
                 out.append('\n').append(indent).append("]\n\n");
             }
             case Verbatim v -> {
+                // a titled diagram is a figure: the list of figures names it by the label on its title
                 if (!v.title().isEmpty()) {
-                    out.append(indent).append("#ike-block-title[").append(markup(v.title())).append("]\n");
+                    out.append(indent).append("#ike-block-title[").append(markup(v.title())).append("]").append(target(v.key())).append('\n');
                 }
                 String fence = fence(v.text());
                 out.append(indent).append(fence).append('\n');
                 for (String line : v.text().split("\n", -1)) {
                     out.append(indent).append(line).append('\n');
                 }
-                out.append(indent).append(fence).append("\n\n");
+                out.append(indent).append(fence).append(v.title().isEmpty() ? target(v.key()) : "").append("\n\n");
             }
             case ListBlock l -> {
                 if (!l.title().isEmpty()) {
@@ -384,7 +426,7 @@ public final class TypstWriter {
                 // figure's own marks, beneath it, and the figure shows its body alone (see the preamble).
                 boolean captioned = !d.caption().isEmpty();
                 String open = captioned ? "#figure(kind: image, supplement: none, numbering: none, caption: [" + markup(d.caption()) + "], " : "#";
-                String close = captioned ? ")" : "";
+                String close = (captioned ? ")" : "") + target(d.key());
                 if (CHUNK_WORDS.get()) {
                     // measured as a box of its size: its marks' words are not the document's, and its one word is its line
                     out.append(indent).append("#metadata(\"").append(LayoutOracle.FIGURE_WORD).append("\") <").append(TypstOracle.WORD_LABEL)
@@ -397,7 +439,7 @@ public final class TypstWriter {
                 }
             }
             case Image i -> out.append(indent).append("#ike-image(").append(string(i.target())).append(", ")
-                    .append(i.title().isEmpty() ? "none" : "[" + markup(i.title()) + "]").append(")\n\n");
+                    .append(i.title().isEmpty() ? "none" : "[" + markup(i.title()) + "]").append(")").append(target(i.key())).append("\n\n");
             case Container c -> {
                 switch (c.kind()) {
                     case EXAMPLE, SIDEBAR -> {
@@ -455,7 +497,7 @@ public final class TypstWriter {
             out.append(indent).append("  caption: [").append(markup(t.title())).append("],\n");
         }
         out.append(indent).append("  kind: table,\n");
-        out.append(indent).append(")\n\n");
+        out.append(indent).append(")").append(target(t.key())).append("\n\n");
     }
 
     /**
@@ -571,6 +613,9 @@ public final class TypstWriter {
 
     /** Whether paragraphs are being written for the word-labelled measurement: see {@link #chunk}. */
     private static final ThreadLocal<Boolean> CHUNK_WORDS = ThreadLocal.withInitial(() -> false);
+
+    /** The keys of the blocks the document's front lists name, which carry a label while it is written: {@link #write} sets it. */
+    private static final ThreadLocal<java.util.Set<String>> TARGETS = ThreadLocal.withInitial(java.util.Set::of);
     /** Words per text element in the word-labelled form. */
     static final int CHUNK = 120;
 

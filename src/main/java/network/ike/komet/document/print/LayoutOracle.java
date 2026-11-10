@@ -34,8 +34,12 @@ import java.util.Objects;
  */
 public interface LayoutOracle {
 
-    /** What kind of unit, for the spacing and keep rules a greedy oracle applies. */
-    enum Kind { TITLE, HEADING, PARAGRAPH, LIST_ITEM, VERBATIM, TABLE_ROW, FIGURE, FOOTNOTE, OTHER }
+    /**
+     * What kind of unit, for the spacing and keep rules a greedy oracle applies. An
+     * {@link #ENTRY} is a front list's entry: prose that never splits over a page, set a leading
+     * apart from the next, its target's page drawn after a leader on its last line.
+     */
+    enum Kind { TITLE, HEADING, PARAGRAPH, LIST_ITEM, VERBATIM, TABLE_ROW, FIGURE, FOOTNOTE, ENTRY, OTHER }
 
     /** The one word a {@link Kind#FIGURE} unit reads as: Typst labels it, and its line is the figure's. */
     String FIGURE_WORD = "figure";

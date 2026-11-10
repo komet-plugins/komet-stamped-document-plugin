@@ -505,6 +505,14 @@ public final class DocumentSurfaceView {
         boolean heading;
         /** In the Page layout: whether the area is a block's title, a unit of its own above the block. */
         boolean caption;
+        /** In the Page layout: whether the area is a front list's title or entry, generated from the header's request. */
+        boolean frontList;
+        /** In the Page layout: the key of the block a front list's entry names ({@link network.ike.komet.document.print.StoredDocumentModel#key}); empty for any other area. */
+        String entryTarget = "";
+        /** In the Page layout: how far a front list's entry is indented, in ems of the body. */
+        int entryDepth;
+        /** A page line of a front list's entry, its unit's last: the leader and page drawn after its text. */
+        Region entryTail;
         /** A page line: the unit it is a line of, which line of it, the page, its left edge and baseline there. */
         int unit = -1;
         int lineOfUnit;
@@ -610,6 +618,8 @@ public final class DocumentSurfaceView {
         final boolean whole;
         /** Whether the line is a listing's, which draws on the listing's one tint. */
         final boolean listing;
+        /** Whether the line is its unit's last: a front list's entry draws its leader and page after it. */
+        boolean lastOfUnit;
         /** A figure's height on its page at the scale it is shown, known once a page asked for its lines. */
         double drawnHeight;
         /** The line's area, once its page was shown. */
@@ -931,6 +941,10 @@ public final class DocumentSurfaceView {
                                 t -> captions.heading(block, t.startsWith("= ") ? t.substring(2) : t)), depth, false, under);
                     }
                 }
+                if (print && member.host()) {
+                    // the lists the header asks for, after the title and before the body, as the print model has them
+                    frontLists(member, document);
+                }
                 List<StoredLine> front = own.stream().filter(l -> !l.text().startsWith("= "))
                         .filter(l -> !print || assembly.includeOf(l.nid()).map(DocumentAssembly.Include::resolved).orElse(false)).toList();
                 Area frontArea = null;
@@ -1155,6 +1169,102 @@ public final class DocumentSurfaceView {
         }
     }
 
+    /**
+     * The Page layout's front lists: for each list the header asks for, its title as a level-1
+     * heading and one unit per entry, with the entry's text alone — the page after its leader is
+     * drawn by the line ({@link #linesOn}) from wherever the layout put the target. Each unit
+     * stands on its target's own title line, so hovering an entry finds what it names, and
+     * clicking it goes there. The print model's blocks are counted the same way, one per list.
+     */
+    private void frontLists(DocumentAssembly.Member host, StoredDocument document) {
+        List<network.ike.komet.document.print.DocumentModel.FrontList> lists = captions.frontLists(
+                network.ike.komet.document.print.StoredDocumentModel.lists(document));
+        if (lists.isEmpty()) {
+            return;
+        }
+        Map<String, Object[]> targets = new HashMap<>();                        // key -> {member, block}
+        for (Captions.Heading heading : captions.headings()) {
+            targets.put(network.ike.komet.document.print.StoredDocumentModel.key(heading.block()), new Object[] {heading.member(), heading.block()});
+        }
+        for (Captions.Caption caption : captions.all()) {
+            targets.put(network.ike.komet.document.print.StoredDocumentModel.key(caption.block()), new Object[] {caption.member(), caption.block()});
+        }
+        List<StoredLine> hostTitle = document.lines().stream().filter(l -> l.text().startsWith("= ")).limit(1).toList();
+        if (hostTitle.isEmpty()) {
+            hostTitle = document.lines().isEmpty() ? List.of() : document.lines().subList(0, 1);
+        }
+        for (network.ike.komet.document.print.DocumentModel.FrontList list : lists) {
+            modelOrdinal++;
+            if (hostTitle.isEmpty()) {
+                continue;                                         // a document with no line at all has nothing to stand its lists on
+            }
+            Area title = addArea(host, document.root(), hostTitle, paragraphs(hostTitle, " ", st.heading(1), t -> list.title()), 0, false, list.title(), true);
+            title.heading = true;
+            title.splittable = false;
+            title.frontList = true;
+            for (network.ike.komet.document.print.DocumentModel.Entry entry : list.entries()) {
+                Object[] target = targets.get(entry.target());
+                DocumentAssembly.Member member = target == null ? host : (DocumentAssembly.Member) target[0];
+                StoredBlock block = target == null ? document.root() : member.document().blocks().get((Long) target[1]);
+                List<StoredLine> carrier = block == null ? hostTitle : titleLine(member.document(), block, hostTitle);
+                Area area = addArea(member, block == null ? document.root() : block, carrier,
+                        paragraphs(carrier, " ", st.prose(), t -> entry.text()), 0, false, list.title(), true);
+                area.heading = false;                             // it names a section; it is not one
+                area.splittable = false;
+                area.frontList = true;
+                area.entryTarget = entry.target();
+                area.entryDepth = Math.max(0, entry.depth());
+            }
+        }
+    }
+
+    /** The line a block's title stands on: a section's heading line, a titled block's {@code .Title} line, else its first; the fallback when it has none. */
+    private static List<StoredLine> titleLine(StoredDocument document, StoredBlock block, List<StoredLine> fallback) {
+        List<StoredLine> lines = block.kind() == Block.Kind.SECTION || block.kind() == Block.Kind.DOCUMENT
+                ? block.members().stream().map(document::line).flatMap(Optional::stream).filter(l -> l.text().startsWith("=")).limit(1).toList()
+                : StructuredBlocks.lines(document, block).stream().filter(l -> BLOCK_TITLE_LINE.matcher(l.text().strip()).matches()).limit(1).toList();
+        if (lines.isEmpty()) {
+            lines = StructuredBlocks.lines(document, block).stream().limit(1).toList();
+        }
+        return lines.isEmpty() ? fallback : lines;
+    }
+
+    /**
+     * The unit each front list target begins with, by the target's key: what the layout's pages
+     * for the entries are read from, here and by the card's settling passes.
+     *
+     * @return the unit index by key, for every block on the pages that a front list could name
+     */
+    public Map<String, Integer> entryTargets() {
+        Map<String, Integer> out = new LinkedHashMap<>();
+        for (int i = 0; i < units.size(); i++) {
+            Area area = units.get(i);
+            if (area.block != null && !area.frontList && area.note == 0) {
+                out.putIfAbsent(network.ike.komet.document.print.StoredDocumentModel.key(area.block.nid()), i);
+            }
+        }
+        return out;
+    }
+
+    /** The page each front list target begins on in the layout last laid, 1-based, by key. */
+    private Map<String, Integer> entryPages = Map.of();
+
+    /** Scrolls the Page layout to the page a front list's target begins on. */
+    private void revealTarget(String key) {
+        Integer unit = entryTargets().get(key);
+        if (unit == null) {
+            return;
+        }
+        for (PageLine laid : pageLines) {
+            if (laid.unit == unit && laid.lineOfUnit == 0) {
+                double top = laid.unitArea.drawn != null ? laid.baseline - (laid.drawnHeight > 0 ? laid.drawnHeight : st.base() * 2)
+                        : laid.baseline - metrics(laid.style())[0];
+                host.revealPage(laid.page, top);
+                return;
+            }
+        }
+    }
+
     /** Scrolls the Reading view to a block's area, opening any fold that hides it. */
     private void revealBlock(long blockNid) {
         for (int i = 0; i < areas.size(); i++) {
@@ -1198,6 +1308,12 @@ public final class DocumentSurfaceView {
             @Override
             public String heading(StoredDocument document, StoredBlock block, String text) {
                 return captions.heading(block, text);
+            }
+
+            @Override
+            public List<network.ike.komet.document.print.DocumentModel.FrontList> frontLists(StoredDocument document,
+                                                                                              network.ike.komet.document.print.DocumentModel.Lists lists) {
+                return captions.frontLists(lists);
             }
         };
     }
@@ -2121,7 +2237,9 @@ public final class DocumentSurfaceView {
                         base * network.ike.komet.document.print.LayoutOracle.FOOTNOTE_SCALE, false, 0, 0, 0, false).withInline(area.spec.runs(), List.of(), area.note));
                 continue;
             }
-            network.ike.komet.document.print.LayoutOracle.Kind kind = area.caption ? network.ike.komet.document.print.LayoutOracle.Kind.OTHER : area.heading
+            network.ike.komet.document.print.LayoutOracle.Kind kind = area.frontList
+                    ? (area.heading ? network.ike.komet.document.print.LayoutOracle.Kind.HEADING : network.ike.komet.document.print.LayoutOracle.Kind.ENTRY)
+                    : area.caption ? network.ike.komet.document.print.LayoutOracle.Kind.OTHER : area.heading
                     ? (blockKind == Block.Kind.DOCUMENT ? network.ike.komet.document.print.LayoutOracle.Kind.TITLE
                     : network.ike.komet.document.print.LayoutOracle.Kind.HEADING)
                     : switch (blockKind) {
@@ -2134,7 +2252,8 @@ public final class DocumentSurfaceView {
             StyleAttributeMap style = area.spec.paragraphs().isEmpty() ? st.prose() : area.spec.paragraphs().getFirst().style();
             double size = style.getFontSize() == null ? base : style.getFontSize();
             boolean bold = style.isBold();
-            double indent = kind == network.ike.komet.document.print.LayoutOracle.Kind.LIST_ITEM ? base : 0;
+            double indent = kind == network.ike.komet.document.print.LayoutOracle.Kind.LIST_ITEM ? base
+                    : kind == network.ike.komet.document.print.LayoutOracle.Kind.ENTRY ? base * area.entryDepth : 0;
             double[] spacing = network.ike.komet.document.print.UnitSpacing.of(kind, previous, size, base,
                     kind == network.ike.komet.document.print.LayoutOracle.Kind.OTHER && blockKind == Block.Kind.TABLE);
             double above = spacing[0];
@@ -2163,6 +2282,8 @@ public final class DocumentSurfaceView {
         if (editing != null) {
             cancelEdit(editing);
         }
+        // the pages the front lists' entries print: wherever this layout put their targets
+        entryPages = network.ike.komet.document.print.FrontLists.pages(layout, entryTargets());
         for (int u = 0; u < units.size() && u < this.units.size(); u++) {
             Area unitArea = this.units.get(u);
             network.ike.komet.document.print.LayoutOracle.Unit unit = units.get(u);
@@ -2197,6 +2318,7 @@ public final class DocumentSurfaceView {
                 // A listing's tint is one block behind its lines, as Typst draws it: a line is taller than its pitch,
                 // and painted line by line each would cover the one above.
                 PageLine laid = new PageLine(unitArea, spec, u, k, line, whole, unitArea.listing);
+                laid.lastOfUnit = k == own.size() - 1;
                 checkLine(laid, line, unit);
                 pageLines.add(laid);
             }
@@ -2235,6 +2357,12 @@ public final class DocumentSurfaceView {
             area.area.getStyleClass().add("stamped-page-line");
             area.area.setId("stampedDocumentPageLine" + laid.index);
             areaByNode.put(area.area, area);
+            if (!unitArea.entryTarget.isEmpty()) {
+                area.frontList = true;
+                area.entryTarget = unitArea.entryTarget;
+                area.entryDepth = unitArea.entryDepth;
+                entryGesture(area.area, unitArea.entryTarget);
+            }
         }
         if (highlightedCommit != 0) {
             area.highlightedStamp = highlightedCommit;
@@ -2438,8 +2566,80 @@ public final class DocumentSurfaceView {
                 clip = true;
             }
             out.add(new PageStackView.Placed(area.area, area.x - 4, area.baseline, ascent, width, height, clip, scale));
+            if (!area.entryTarget.isEmpty() && laid.lastOfUnit) {
+                // A front list's entry ends in its leader and its target's page, from the text's end to the measure's right edge,
+                // as the Typst writer's entry block sets them.
+                double end = area.x + natural * scale;
+                double room = contentLeft + contentWidth - end;
+                if (room > 1) {
+                    if (area.entryTail == null) {
+                        area.entryTail = entryTail(style, Integer.toString(entryPages.getOrDefault(area.entryTarget, 0)), m[0]);
+                        areaByNode.put(area.entryTail, area);
+                        entryGesture(area.entryTail, area.entryTarget);
+                    }
+                    out.add(new PageStackView.Placed(area.entryTail, end, area.baseline, m[0], room, m[1], false));
+                }
+            }
         }
         return out;
+    }
+
+    /**
+     * The tail of a front list's entry: a leader of dots spread over the room from the text's
+     * end to the page number, and the number against the measure's right edge, as the Typst
+     * writer's entry block sets them ({@code box(width: 1fr, inset: (x: 0.25em), repeat[.])}).
+     *
+     * @param style  the entry's style, for the font
+     * @param page   the page as text
+     * @param ascent the line's ascent: where the baseline stands under the tail's top
+     */
+    private Region entryTail(StyleAttributeMap style, String page, double ascent) {
+        double size = style.getFontSize() == null ? st.base() : style.getFontSize();
+        String family = style.getFontFamily() == null ? network.ike.komet.document.print.DocumentFonts.SERIF : style.getFontFamily();
+        javafx.scene.text.Text number = new javafx.scene.text.Text(page);
+        number.setFont(Font.font(family, size));
+        number.setTextOrigin(javafx.geometry.VPos.BASELINE);
+        javafx.scene.shape.Line leader = new javafx.scene.shape.Line();
+        leader.setStrokeLineCap(javafx.scene.shape.StrokeLineCap.ROUND);
+        leader.setStrokeWidth(Math.max(1, size * 0.09));
+        leader.setStroke(Color.BLACK);
+        double inset = size * 0.25;
+        javafx.scene.layout.Pane tail = new javafx.scene.layout.Pane(leader, number) {
+            @Override
+            protected void layoutChildren() {
+                double width = getWidth();
+                double numberWidth = number.getLayoutBounds().getWidth();
+                number.relocate(Math.max(0, width - numberWidth), ascent - number.getBaselineOffset());
+                // the dots spread evenly over the room between the insets, one every quarter em or so, as Typst's repeat justifies them
+                double from = inset;
+                double to = width - numberWidth - inset;
+                int dots = (int) Math.floor((to - from) / (size * 0.3));
+                leader.setVisible(dots >= 1);
+                if (dots >= 1) {
+                    double gap = dots == 1 ? 0 : (to - from) / (dots - 1);
+                    leader.setStartX(from);
+                    leader.setEndX(dots == 1 ? from + 0.01 : to);
+                    leader.setStartY(ascent - 0.5);
+                    leader.setEndY(ascent - 0.5);
+                    leader.getStrokeDashArray().setAll(0.01, Math.max(0.5, gap));
+                }
+            }
+        };
+        tail.setMouseTransparent(false);
+        tail.getStyleClass().add("stamped-page-entry-tail");
+        tail.setMinHeight(0);
+        return tail;
+    }
+
+    /** A front list's entry on a page goes where it points when clicked. */
+    private void entryGesture(Node node, String target) {
+        node.setCursor(Cursor.HAND);
+        node.addEventHandler(MouseEvent.MOUSE_CLICKED, e -> {
+            if (e.getButton() == MouseButton.PRIMARY && !e.isShiftDown() && e.isStillSincePress()) {
+                revealTarget(target);
+                e.consume();
+            }
+        });
     }
 
     /** @return the unit and line-of-unit a placed line stands for */
@@ -2497,8 +2697,8 @@ public final class DocumentSurfaceView {
     List<PageStackView.Mark> marginaliaOn(int page) {
         List<PageStackView.Mark> out = new ArrayList<>();
         for (PageLine laid : pageLines) {
-            if (laid.page != page || laid.lineOfUnit != 0 || laid.note() > 0) {
-                continue;                                         // a note's line is its marked block's
+            if (laid.page != page || laid.lineOfUnit != 0 || laid.note() > 0 || laid.unitArea.frontList) {
+                continue;                                         // a note's line is its marked block's; a list's entry names a block, it is not one
             }
             Node node = unitMarginalia(laid.unit);
             if (node != null) {
@@ -3148,6 +3348,9 @@ public final class DocumentSurfaceView {
         }
         List<Area> shown = shownAreas();
         for (int i = 0; i < shown.size(); i++) {
+            if (shown.get(i).frontList) {
+                continue;                                         // a list's entry stands on its target's line; the target is what is revealed
+            }
             if (shown.get(i).model.runs().stream().anyMatch(r -> selection.contains(ordinal(r.nid())))) {
                 if (view == View.READING) {
                     unfoldToShow(i);                                 // a block scrolled to is seen, folded or not

@@ -77,6 +77,7 @@ import network.ike.komet.document.GitDocumentMaterializer.StoredBlock;
 import network.ike.komet.document.GitDocumentMaterializer.StoredDocument;
 import network.ike.komet.document.print.DocumentFonts;
 import network.ike.komet.document.print.DocumentModel;
+import network.ike.komet.document.print.FrontLists;
 import network.ike.komet.document.print.GreedyFxOracle;
 import network.ike.komet.document.print.LayoutOracle;
 import network.ike.komet.document.print.PageFidelity;
@@ -288,6 +289,10 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
     private final Map<Long, Optional<StoredNodeFacts.NodeFacts>> facts = new HashMap<>();
     /** The page stack's units, and the two layouts of them: JavaFX's estimate, shown at once, and Typst's, settled on when it returns. */
     private List<LayoutOracle.Unit> pageUnits = List.of();
+    /** The print model as the pages last measured it: its lists' entries carrying the pages settled on; {@code null} until settled. */
+    private DocumentModel pageModel;
+    /** How many passes the pages took to settle their lists' page numbers. */
+    private int pagePasses;
     private LayoutOracle.Geometry pageGeometry;
     private LayoutOracle.Layout greedyLayout;
     private LayoutOracle.Layout typstLayout;
@@ -1475,6 +1480,8 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
         GreedyFxOracle greedy = new GreedyFxOracle(DocumentFonts.SERIF, DocumentFonts.MONO);
         greedyLayout = greedy.layout(pageUnits, pageGeometry);
         typstLayout = null;
+        pageModel = null;
+        pagePasses = 0;
         surface.beginLineCheck(pageGeometry.contentLeft());
         surface.layoutLines(greedyLayout, pageUnits);
         pageStack = new PageStackView(settings, dims[0], dims[1], runningHead());
@@ -1544,15 +1551,22 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
         showSettling(true);
         List<LayoutOracle.Unit> units = pageUnits;
         LayoutOracle.Geometry geometry = pageGeometry;
+        // The front lists' entries print their targets' pages: the greedy estimate's first, then the pages typst
+        // found, until no entry's page changes (FrontLists), so the measured source is the document as printed.
+        Map<String, Integer> targets = surface.entryTargets();
+        Map<String, Integer> estimated = FrontLists.pages(greedyLayout, targets);
+        TypstWriter.PageSetup setup = TypstPdf.setup(settings);
         CompletableFuture.supplyAsync(() -> {
             try {
                 Path folder = Files.createTempDirectory("stamped-document-layout-");
                 Path source = folder.resolve("layout.typ");
-                Files.writeString(source, TypstWriter.write(model.get(), TypstPdf.setup(settings), TypstWriter.Labels.WORDS), java.nio.charset.StandardCharsets.UTF_8);
                 Path fonts = DocumentFonts.extractTo(folder.resolve("fonts"));
-                LayoutOracle.Layout layout = new TypstOracle(folder, source, fonts, greedy::width).layout(units, geometry);
-                dump(folder, units, layout);
-                return Map.entry(folder, layout);
+                FrontLists.Settled settled = FrontLists.settle(model.get(), estimated, targets, numbered -> {
+                    Files.writeString(source, TypstWriter.write(numbered, setup, TypstWriter.Labels.WORDS), java.nio.charset.StandardCharsets.UTF_8);
+                    return new TypstOracle(folder, source, fonts, greedy::width).layout(units, geometry);
+                });
+                dump(folder, units, settled.layout());
+                return Map.entry(folder, settled);
             } catch (IOException e) {
                 throw new java.io.UncheckedIOException(e);
             }
@@ -1567,13 +1581,16 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
                 LOG.warn("Typst layout failed", cause);
                 return;
             }
-            LayoutOracle.Layout layout = answer.getValue();
+            FrontLists.Settled settled = answer.getValue();
+            LayoutOracle.Layout layout = settled.layout();
             if (layout.lines().isEmpty()) {
                 statusLine.setText("The pages keep JavaFX's layout: " + String.join("; ", layout.notes()));
                 return;
             }
             oracleFolder = answer.getKey();
             typstLayout = layout;
+            pageModel = settled.model();
+            pagePasses = settled.passes();
             Optional<PageStackView.Anchor> anchor = pageStack.anchor();
             surface.beginLineCheck(geometry.contentLeft());
             surface.layoutLines(layout, units);
@@ -1584,6 +1601,7 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
             // The footer's line stays the document's: how the pages settled is detail.
             if (statusLine.getTooltip() != null) {
                 statusLine.getTooltip().setText(statusDetail + "\n\nPages settled on Typst's lines in " + layout.millis() + " ms"
+                        + (settled.passes() > 1 ? ", the last of " + settled.passes() + " passes over the lists' page numbers" : "")
                         + (layout.notes().isEmpty() ? "" : " (" + String.join("; ", layout.notes()) + ")"));
             }
         }));
@@ -1713,9 +1731,11 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
         try {
             Path folder = oracleFolder != null ? oracleFolder : Files.createTempDirectory("stamped-document-fidelity-");
             PageFidelity.Report report = PageFidelity.compare(greedyLayout, typstLayout, pageUnits);
-            String perturbation = PageFidelity.perturbation(model.get(), settings, folder);
+            // the model as the pages measured it: its lists' entries print the pages the passes settled on, which the printed
+            // document reads from Typst's page counter, so the two sources lay out alike
+            String perturbation = PageFidelity.perturbation(pageModel != null ? pageModel : model.get(), settings, folder);
             String text = "document: " + documents.getValue() + "\nsettings: " + settings + "\nfolder: " + folder + "\n"
-                    + "typst oracle: " + typstLayout.millis() + " ms; greedy pass: " + greedyLayout.millis() + " ms\n"
+                    + "typst oracle: " + typstLayout.millis() + " ms over " + pagePasses + " pass(es); greedy pass: " + greedyLayout.millis() + " ms\n"
                     + report.text() + perturbation + surface.lineCheck() + "\n";
             Files.writeString(folder.resolve("fidelity-report.txt"), text, java.nio.charset.StandardCharsets.UTF_8);
             return text;

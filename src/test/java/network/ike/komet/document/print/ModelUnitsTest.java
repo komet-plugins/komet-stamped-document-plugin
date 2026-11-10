@@ -67,6 +67,29 @@ class ModelUnitsTest {
     }
 
     @Test
+    void aFrontListIsItsTitleAsAHeadingAndAnEntryUnitPerEntry() {
+        DocumentModel model = new DocumentModel("Title", List.of(
+                new DocumentModel.FrontList(DocumentModel.FrontList.Kind.CONTENTS, List.of(
+                        new DocumentModel.Entry("1 One", 0, "a", 2), new DocumentModel.Entry("1.1 Deeper", 1, "b", 3))),
+                new Heading(1, "1 One", "a")));
+
+        List<Unit> units = ModelUnits.of(model, 12);
+
+        assertEquals(List.of(0, 1, 1, 1, 2), units.stream().map(Unit::block).toList(), "a list is one block of the writer's");
+        assertEquals(Kind.HEADING, units.get(1).kind());
+        assertEquals("Contents", units.get(1).text());
+        assertEquals(18, units.get(1).fontSize(), 0.001, "a level-1 heading");
+        assertEquals(Kind.ENTRY, units.get(2).kind());
+        assertEquals("1 One", units.get(2).text(), "the entry's text alone: its page is drawn after a leader by the renderer");
+        assertEquals(0, units.get(2).indent(), 0.001);
+        assertEquals(12, units.get(3).indent(), 0.001, "an em of indent a depth");
+        assertTrue(!units.get(2).keepWithNext() && !units.get(2).bold());
+        assertEquals(9, UnitSpacing.gap(units.get(1), units.get(2)), 0.001, "the heading's weak spacing stands over the first entry");
+        assertEquals(0.65 * 12, UnitSpacing.gap(units.get(2), units.get(3)), 0.001, "entries a leading apart");
+        assertEquals(16.2, UnitSpacing.gap(units.get(3), units.get(4)), 0.001, "a heading after the last entry keeps its own space");
+    }
+
+    @Test
     void spacingFollowsTypstsRules() {
         Unit title = new Unit(0, 0, Kind.TITLE, "T", 21.6, true, 0, 0, 14.4, false);
         Unit heading = new Unit(1, 1, Kind.HEADING, "H", 18, true, 0, 16.2, 9, true);
