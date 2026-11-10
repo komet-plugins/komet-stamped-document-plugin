@@ -957,7 +957,7 @@ final class DocumentGraphView {
                 }
                 box.getChildren().add(strip);
             }
-            if (host.layer(Layer.MARGINALIA) && node.stamp() != null) {
+            if (host.layer(Layer.STAMPS) && node.stamp() != null) {
                 ImageView badge = new ImageView(host.identicon(node.stamp()));
                 badge.setPreserveRatio(true);
                 badge.setFitHeight(IDENTICON);

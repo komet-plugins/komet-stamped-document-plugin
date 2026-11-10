@@ -176,7 +176,14 @@ public final class DocumentSurfaceView {
     }
 
     /** The toggles of the Provenance layer. */
-    enum Layer { MARGINALIA, TINTS, REVIEW_QUEUE, ANNOTATION_MARKS }
+    /**
+     * What the Provenance layer draws over the document, each switched on its own: the dates in
+     * the left margin, the stamps in the right, the commit tints over the text, the review
+     * queue, and the annotation marks. The margins' notes, the comments in force, are not a
+     * layer: they are the document's own and stand in the right margin whether or not the
+     * stamps do.
+     */
+    enum Layer { DATES, STAMPS, TINTS, REVIEW_QUEUE, ANNOTATION_MARKS }
 
     /** The views: three on the surface's areas, and the Graph, a tree the card hosts in their place. */
     enum View { READING, SOURCE, PAGE_LAYOUT, GRAPH }
@@ -281,7 +288,7 @@ public final class DocumentSurfaceView {
     private final Host host;
     private final DocumentSurface surface;
     private final Map<Long, Image> badges = new HashMap<>();
-    private final Set<Layer> layers = EnumSet.of(Layer.MARGINALIA, Layer.ANNOTATION_MARKS);
+    private final Set<Layer> layers = EnumSet.of(Layer.DATES, Layer.STAMPS, Layer.ANNOTATION_MARKS);
     private final List<Area> areas = new ArrayList<>();
     private final List<Area> sources = new ArrayList<>();
     /** The Page layout's units: one area per paragraph-like piece of the print model, what the layout oracles place. */
@@ -612,7 +619,8 @@ public final class DocumentSurfaceView {
             return;                                              // the card shows the pages or the graph in the surface's place
         }
         if (view == View.READING) {
-            surface.setMarginTracks(layers.contains(Layer.MARGINALIA) ? 2 : 0, layers.contains(Layer.MARGINALIA) ? 2 : 0);
+            // the left margin is the dates'; the right is the stamps', and the notes' while any comment is in force
+            surface.setMarginTracks(layers.contains(Layer.DATES) ? 2 : 0, layers.contains(Layer.STAMPS) || hasNotes() ? 2 : 0);
             surface.setBlocks(areas.stream().map(a -> a.documentBlock).toList());
             applyFolds();
         } else {
@@ -2418,7 +2426,7 @@ public final class DocumentSurfaceView {
 
     /** The right-margin marginalia of a unit: its introducing identicons, with the hover highlight, and an edited mark. */
     private Node unitMarginalia(int index) {
-        if (index < 0 || index >= units.size() || !layers.contains(Layer.MARGINALIA)) {
+        if (index < 0 || index >= units.size() || !layers.contains(Layer.STAMPS)) {
             return null;
         }
         Area area = units.get(index);
@@ -2471,24 +2479,29 @@ public final class DocumentSurfaceView {
         List<StampEntity<?>> stamps = new ArrayList<>(distinct.values());
         stamps.removeIf(stamp -> stamp.time() == Long.MAX_VALUE);
         stamps.sort(Comparator.comparingLong(StampEntity::time));
-        area.date.setText(stamps.isEmpty() ? "" : DAY.format(Instant.ofEpochMilli(stamps.getFirst().time())));
-        FlowPane icons = new FlowPane(3, 3);
-        icons.setPrefWrapLength(120);
-        if (!stamps.isEmpty()) {
-            icons.getChildren().add(new dev.ikm.komet.framework.controls.StampSigil(18));   // one leads the cluster
-        }
-        int shown = 0;
-        for (StampEntity<?> stamp : stamps) {
-            if (shown++ == 8) {
-                Label more = new Label("+" + (stamps.size() - 8));
-                more.setFont(SMALL);
-                more.setStyle("-fx-text-fill: #5f6b7a;");
-                icons.getChildren().add(more);
-                break;
+        boolean dates = layers.contains(Layer.DATES);
+        area.date.setText(dates && !stamps.isEmpty() ? DAY.format(Instant.ofEpochMilli(stamps.getFirst().time())) : "");
+        area.date.setVisible(dates);
+        area.date.setManaged(dates);
+        if (layers.contains(Layer.STAMPS)) {
+            FlowPane icons = new FlowPane(3, 3);
+            icons.setPrefWrapLength(120);
+            if (!stamps.isEmpty()) {
+                icons.getChildren().add(new dev.ikm.komet.framework.controls.StampSigil(18));   // one leads the cluster
             }
-            icons.getChildren().add(identicon(stamp, 18, area));
+            int shown = 0;
+            for (StampEntity<?> stamp : stamps) {
+                if (shown++ == 8) {
+                    Label more = new Label("+" + (stamps.size() - 8));
+                    more.setFont(SMALL);
+                    more.setStyle("-fx-text-fill: #5f6b7a;");
+                    icons.getChildren().add(more);
+                    break;
+                }
+                icons.getChildren().add(identicon(stamp, 18, area));
+            }
+            marginalia.getChildren().add(icons);
         }
-        marginalia.getChildren().add(icons);
         long edited = lines.stream().filter(DocumentSurfaceView::uncommitted).count();
         if (edited > 0) {
             marginalia.getChildren().add(mark("edited", "#b26a00", edited + " of these " + lines.size() + " line(s) edited in Komet and not yet committed in git"));
@@ -2519,6 +2532,22 @@ public final class DocumentSurfaceView {
 
     /** The annotations whose notes are drawn already, so one that covers lines in several blocks is read once, beside its first. */
     private final Set<Long> notedStamps = new HashSet<>();
+
+    /** @return whether any line shown has a note for the margin: a comment in force, or a refutation with a reason */
+    private boolean hasNotes() {
+        if (assembly == null) {
+            return false;
+        }
+        for (StoredLine line : assembly.lines()) {
+            for (GitDocumentMaterializer.StoredAnnotation annotation : line.inForce()) {
+                if (annotation.kind() == AnnotationKind.COMMENT
+                        || annotation.kind() == AnnotationKind.REFUTATION && annotation.text() != null && !annotation.text().isBlank()) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
 
     /**
      * The margin's notes: every comment in force on the area's lines, and every refutation with

@@ -601,7 +601,8 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
         layerMenu.getStyleClass().add("stamped-toolbar-control");
         for (DocumentSurfaceView.Layer layer : DocumentSurfaceView.Layer.values()) {
             CheckMenuItem item = new CheckMenuItem(switch (layer) {
-                case MARGINALIA -> "Marginalia";
+                case DATES -> "Dates";
+                case STAMPS -> "Stamps";
                 case TINTS -> "Commit tints";
                 case REVIEW_QUEUE -> "Review queue";
                 case ANNOTATION_MARKS -> "Annotation marks";

@@ -492,15 +492,20 @@ public final class DocumentSurface extends BorderPane {
                 double left = row.getColumnConstraints().get(0).getPercentWidth();
                 double body = row.getColumnConstraints().get(1).getPercentWidth();
                 double right = row.getColumnConstraints().get(2).getPercentWidth();
-                return new Insets(0, right > 0 ? bodyWidth * right / body + ROW_GAP : 0,
-                        0, left > 0 ? bodyWidth * left / body + ROW_GAP : 0);
+                // a body with no share of its own takes what the margins leave
+                double share = body > 0 ? body : 100 - Math.max(0, left) - Math.max(0, right);
+                return new Insets(0, right > 0 ? bodyWidth * right / share + ROW_GAP : 0,
+                        0, left > 0 ? bodyWidth * left / share + ROW_GAP : 0);
             }
         }
         return Insets.EMPTY;
     }
 
     private Node stackRow(DocumentBlock block) {
-        if (leftTracks == 0 && rightTracks == 0) {
+        // With no left tracks, what a block keeps in its left margin (a fold mark, with the date gone) still
+        // stands beside the body, in a column as narrow as itself.
+        boolean slot = leftTracks == 0 && block.leftMarginalia() != null;
+        if (leftTracks == 0 && rightTracks == 0 && !slot) {
             block.setRow(null);
             return block.node();
         }
@@ -508,9 +513,13 @@ public final class DocumentSurface extends BorderPane {
         row.getStyleClass().add(ROW_STYLE);
         row.setHgap(ROW_GAP);
         ColumnConstraints left = new ColumnConstraints();
-        left.setPercentWidth(100.0 * leftTracks / TRACKS);
         ColumnConstraints body = new ColumnConstraints();
-        body.setPercentWidth(100.0 * (TRACKS - leftTracks - rightTracks) / TRACKS);
+        if (slot) {
+            left.setHgrow(Priority.NEVER);
+        } else {
+            left.setPercentWidth(100.0 * leftTracks / TRACKS);
+            body.setPercentWidth(100.0 * (TRACKS - leftTracks - rightTracks) / TRACKS);
+        }
         body.setHgrow(Priority.ALWAYS);
         ColumnConstraints right = new ColumnConstraints();
         right.setPercentWidth(100.0 * rightTracks / TRACKS);
@@ -525,7 +534,7 @@ public final class DocumentSurface extends BorderPane {
         if (block.node() instanceof javafx.scene.layout.Region region) {
             region.setMaxWidth(Double.MAX_VALUE);
         }
-        if (block.rightMarginalia() != null) {
+        if (block.rightMarginalia() != null && rightTracks > 0) {
             row.add(block.rightMarginalia(), 2, 0);
             GridPane.setValignment(block.rightMarginalia(), javafx.geometry.VPos.TOP);
         }
