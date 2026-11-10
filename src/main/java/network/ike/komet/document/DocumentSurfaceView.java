@@ -449,14 +449,21 @@ public final class DocumentSurfaceView {
 
     // ── building ──────────────────────────────────────────────────────────────
 
-    /** One area of a view: a block of the Reading view, or a chunk of the Source view's ledger. */
+    /**
+     * One area of a view: a block of the Reading view, a chunk of the Source view's ledger, a
+     * line of the Page layout — or a unit of the Page layout, which is bare: the oracles place a
+     * unit by its text and style alone, so a unit has no control of its own and no model, only
+     * what the lines built from it need.
+     */
     private final class Area {
         final DocumentAssembly.Member member;
         final StoredBlock block;
         final List<StoredLine> lines;
         final LineRunModel.Spec spec;
-        final RichTextArea area = new RichTextArea();
-        final VBox holder = new VBox();
+        /** The control that draws the area; {@code null} for a bare unit. */
+        final RichTextArea area;
+        /** The area's column in the surface, the control and what stands with it; {@code null} for a bare unit. */
+        final VBox holder;
         final boolean editable;
         final String section;
         /** Whether the area's row is laid out: false while a fold hides it. */
@@ -484,7 +491,7 @@ public final class DocumentSurfaceView {
         javafx.scene.layout.Region drawing;
         /** In the Page layout: how tall a drawn area stands on its page, its baseline being its foot. */
         double drawnHeight;
-        /** In the Page layout: whether this line is a listing's, which draws on the listing's one tint. */
+        /** In the Page layout: whether this unit, or line of one, is a listing's, which draws on the listing's one tint. */
         boolean listing;
         /** In the Page layout: the top-level block of the print model this area belongs to, or -1. */
         int modelOrdinal = -1;
@@ -522,12 +529,28 @@ public final class DocumentSurfaceView {
         boolean tableFirst;
 
         Area(DocumentAssembly.Member member, StoredBlock block, List<StoredLine> lines, LineRunModel.Spec spec, boolean editable, String section) {
+            this(member, block, lines, spec, editable, section, false);
+        }
+
+        /**
+         * @param bare whether the area is a unit of the Page layout, with no control and no model: it is never shown,
+         *             only placed by the oracles and read by the lines built from it
+         */
+        Area(DocumentAssembly.Member member, StoredBlock block, List<StoredLine> lines, LineRunModel.Spec spec, boolean editable, String section,
+             boolean bare) {
             this.member = member;
             this.block = block;
             this.lines = lines;
             this.spec = spec;
             this.editable = editable;
             this.section = section;
+            if (bare) {
+                area = null;
+                holder = null;
+                return;
+            }
+            area = new RichTextArea();
+            holder = new VBox();
             area.setEditable(false);
             area.setWrapText(true);
             area.setUseContentHeight(true);
@@ -549,6 +572,9 @@ public final class DocumentSurfaceView {
         }
 
         void decorate() {
+            if (area == null) {
+                return;                                          // a bare unit draws nothing
+            }
             model = spec.build(decoration(this));
             applying = true;
             try {
@@ -876,7 +902,7 @@ public final class DocumentSurfaceView {
             List<StoredLine> all = print ? StructuredBlocks.content(document, block) : StructuredBlocks.lines(document, block);
             Area area = add(member, block, all, paragraphs(all, "", st.mono(), null), depth, !print, section);
             if (area != null) {
-                area.area.setStyle("-fx-background-color: #F4F3F1; -fx-background-radius: 4;");
+                tintListing(area);
                 if (!print) {
                     title(area, block);
                     attachStructured(area, document, block);
@@ -955,7 +981,7 @@ public final class DocumentSurfaceView {
                     lines.add(new LineRunModel.Line(own.get(i), text));
                 }
                 Area area = add(member, block, own, new LineRunModel.Spec(List.of(new LineRunModel.Paragraph(lines, " ", st.prose()))), depth, true, section);
-                if (area != null) {
+                if (area != null && area.area != null) {
                     area.area.setStyle("-fx-background-color: #FFF8E1; -fx-background-radius: 4;");
                 }
                 nesting++;
@@ -975,7 +1001,7 @@ public final class DocumentSurfaceView {
                         block.kind() == Block.Kind.LISTING || block.kind() == Block.Kind.LITERAL, section);
                 if (area != null) {
                     if (block.kind() != Block.Kind.OPAQUE) {
-                        area.area.setStyle("-fx-background-color: #F4F3F1; -fx-background-radius: 4;");
+                        tintListing(area);
                     }
                     if (!print) {
                         title(area, block);
@@ -1060,6 +1086,14 @@ public final class DocumentSurfaceView {
                     title(area, block);
                 }
             }
+        }
+    }
+
+    /** Marks an area a listing's: the Reading view tints its control, the Page layout tints the block behind its lines. */
+    private static void tintListing(Area area) {
+        area.listing = true;
+        if (area.area != null) {
+            area.area.setStyle("-fx-background-color: #F4F3F1; -fx-background-radius: 4;");
         }
     }
 
@@ -1661,27 +1695,24 @@ public final class DocumentSurfaceView {
                          boolean inline) {
         LineRunModel.Inlined inlined = inline ? read.inlined(printNotes) : null;
         LineRunModel.Spec spec = inlined == null ? read : inlined.spec();
-        Area area = new Area(member, block, lines, spec, editable && !past, section);
+        // a unit of the Page layout is bare: the oracles place it by its text and style, and its lines are built from it
+        Area area = new Area(member, block, lines, spec, editable && !past, section, print);
         target.add(area);
-        if (block != null && editable && !print) {
-            areasByBlock.put(block.nid(), area);
-        }
-        area.holder.getChildren().add(area.area);
         if (print) {
             area.modelOrdinal = modelOrdinal;
             Block.Kind kind = printKind(block);
             area.splittable = kind == Block.Kind.PARAGRAPH || kind == Block.Kind.LIST_ITEM || kind == Block.Kind.BIBLIOGRAPHY_ENTRY || kind == Block.Kind.ADMONITION;
             area.heading = area.heading || kind == Block.Kind.SECTION;
-            area.holder.setPadding(printSpacing(kind, spec));
-            area.holder.setFillWidth(true);
-            area.holder.setMinWidth(0);
-            area.documentBlock = DocumentBlock.prose(area.holder, area.area, area.model, spec.lines().stream().map(StoredLine::text).collect(Collectors.joining("\n")));
             if (inlined != null) {
                 area.marks = inlined.marks();
                 inlined.notes().forEach(note -> addNote(member, block, note, section));
             }
             return area;
         }
+        if (block != null && editable) {
+            areasByBlock.put(block.nid(), area);
+        }
+        area.holder.getChildren().add(area.area);
         Node references = references(lines);
         if (references != null) {
             area.holder.getChildren().add(references);
@@ -1734,13 +1765,11 @@ public final class DocumentSurfaceView {
         network.ike.komet.document.print.InlineText text = foot.note().drawn();
         LineRunModel.Spec spec = new LineRunModel.Spec(List.of(new LineRunModel.Paragraph(
                 List.of(new LineRunModel.Line(foot.line(), text.text())), "", st.footnote(), text.runs())));
-        Area area = new Area(member, block, List.of(foot.line()), spec, false, section);
+        Area area = new Area(member, block, List.of(foot.line()), spec, false, section, true);
         target.add(area);
-        area.holder.getChildren().add(area.area);
         area.modelOrdinal = modelOrdinal;
         area.splittable = true;
         area.note = foot.note().number();
-        area.documentBlock = DocumentBlock.prose(area.holder, area.area, area.model, foot.line().text());
     }
 
     /** The left margin: the first introducing date, right-aligned against the body. */
@@ -2019,31 +2048,8 @@ public final class DocumentSurfaceView {
     }
 
     /**
-     * The space a print block keeps around itself, as the Typst writer's page sets it: paragraphs
-     * 1.1em apart where lines are 0.65em apart (so 0.45em beyond a line), a heading 1.4em of its
-     * own size above and 0.75em below, the title 1.2em below, list items tight, a table or a
-     * verbatim block a paragraph's gap below.
-     */
-    private Insets printSpacing(Block.Kind kind, LineRunModel.Spec spec) {
-        // Measured against Typst's label-to-label distances (PageFidelity): a Typst block's first line is
-        // its cap height, 0.65em shorter than a JavaFX line, and the area carries 4pt of padding, so the
-        // gaps here are what Typst's 1.1em paragraph spacing and heading spacing leave after that.
-        // Second round of measurement: a one-line area is 8pt taller than its line, which is what Typst's
-        // heading spacing amounts to, and a paragraph's 4pt of padding already covers the paragraph gap.
-        double base = st.base();
-        double gap = 0;
-        return switch (kind) {
-            case SECTION -> Insets.EMPTY;
-            case DOCUMENT -> Insets.EMPTY;
-            case LIST_ITEM, BIBLIOGRAPHY_ENTRY -> new Insets(0, 0, 0, base * 1.5);
-            case TABLE_ROW -> Insets.EMPTY;
-            default -> new Insets(0, 0, gap, 0);
-        };
-    }
-
-    /**
-     * Builds the Page layout's areas for a print theme: the same line-run areas as the Reading
-     * view, in the theme's Noto fonts and print spacing, without front matter, comments or
+     * Builds the Page layout's units for a print theme: bare areas with the same specs the
+     * Reading view draws, in the theme's Noto fonts, without front matter, comments or
      * attribute lines, so the paged engine lays out what the Typst writer writes.
      *
      * @param theme the print theme
@@ -2190,8 +2196,7 @@ public final class DocumentSurfaceView {
                 }
                 // A listing's tint is one block behind its lines, as Typst draws it: a line is taller than its pitch,
                 // and painted line by line each would cover the one above.
-                boolean listing = unitArea.area.getStyle() != null && unitArea.area.getStyle().contains("#F4F3F1");
-                PageLine laid = new PageLine(unitArea, spec, u, k, line, whole, listing);
+                PageLine laid = new PageLine(unitArea, spec, u, k, line, whole, unitArea.listing);
                 checkLine(laid, line, unit);
                 pageLines.add(laid);
             }
