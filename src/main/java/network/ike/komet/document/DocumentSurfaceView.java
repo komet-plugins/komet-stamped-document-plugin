@@ -293,8 +293,12 @@ public final class DocumentSurfaceView {
     private final List<Area> sources = new ArrayList<>();
     /** The Page layout's units: one area per paragraph-like piece of the print model, what the layout oracles place. */
     private final List<Area> units = new ArrayList<>();
-    /** The Page layout's line areas: one per laid-out line, what the page stack shows. */
+    /** The Page layout's lines as the oracle laid them, one per line, in order; each builds its area when its page is first shown. */
+    private final List<PageLine> pageLines = new ArrayList<>();
+    /** The Page layout's line areas built so far: those of the pages the stack has shown, what the selection and the layers redraw. */
     private final List<Area> pages = new ArrayList<>();
+    /** The commit highlighted in every area, 0 for none; a page line built later takes it. */
+    private long highlightedCommit;
     private final Map<Node, Area> areaByNode = new HashMap<>();
     private final Map<String, double[]> metrics = new HashMap<>();
     private final Map<Long, Area> areasByBlock = new HashMap<>();
@@ -559,6 +563,58 @@ public final class DocumentSurfaceView {
     }
 
     /**
+     * One line of the Page layout as the oracle laid it: which unit, which line of it, the text
+     * it draws, and where it stands. A line's area — the control that draws it, hovers, selects —
+     * is built from this when its page first comes near the viewport, so a long document carries
+     * the controls of the pages it has shown rather than one per line of the book (the regulatory
+     * book, 2026-11-09: 6,300 fewer rich text areas), and re-laying it to Typst's lines once they
+     * arrive is a pass over positions, not a rebuild of every control.
+     */
+    private final class PageLine {
+        final Area unitArea;
+        final LineRunModel.Spec spec;
+        /** The line's ordinal among every laid line. */
+        final int index;
+        final int unit;
+        final int lineOfUnit;
+        final int page;
+        final double x;
+        final double baseline;
+        /** Whether the line is the whole unit, wrapped by JavaFX, rather than one of the oracle's lines. */
+        final boolean whole;
+        /** Whether the line is a listing's, which draws on the listing's one tint. */
+        final boolean listing;
+        /** A figure's height on its page at the scale it is shown, known once a page asked for its lines. */
+        double drawnHeight;
+        /** The line's area, once its page was shown. */
+        Area area;
+
+        PageLine(Area unitArea, LineRunModel.Spec spec, int unit, int lineOfUnit, network.ike.komet.document.print.LayoutOracle.Line line,
+                 boolean whole, boolean listing) {
+            this.unitArea = unitArea;
+            this.spec = spec;
+            this.index = pageLines.size();
+            this.unit = unit;
+            this.lineOfUnit = lineOfUnit;
+            this.page = line.page();
+            this.x = line.x();
+            this.baseline = line.baseline();
+            this.whole = whole;
+            this.listing = listing;
+        }
+
+        /** @return the line's style, its first paragraph's */
+        StyleAttributeMap style() {
+            return spec.paragraphs().getFirst().style();
+        }
+
+        /** @return the footnote the line is part of, or 0 */
+        int note() {
+            return unitArea.note;
+        }
+    }
+
+    /**
      * Shows an assembly: rebuilds both views from its members' lines and blocks and stacks the
      * current one on the surface. The selection is kept when the same lines are still there.
      *
@@ -577,6 +633,7 @@ public final class DocumentSurfaceView {
         foldedDocument = shown.host().document().anchor();
         areas.clear();
         pages.clear();
+        pageLines.clear();
         units.clear();
         areaByNode.clear();
         areasByBlock.clear();
@@ -1997,6 +2054,7 @@ public final class DocumentSurfaceView {
         }
         units.clear();
         pages.clear();
+        pageLines.clear();
         areaByNode.clear();
         if (assembly == null) {
             return;
@@ -2083,16 +2141,18 @@ public final class DocumentSurfaceView {
     }
 
     /**
-     * Builds the Page layout's line areas from a layout: for every line the oracle placed, a
-     * line-run area over the characters of its unit's text, each source line keeping its share,
-     * a hyphen where the oracle broke a word, justified where the paragraph is and the line is
-     * not its last — the same hover, selection and context menu as the Reading view's areas.
+     * Lays the Page layout's lines from a layout: for every line the oracle placed, the slice of
+     * its unit's text it draws — each source line keeping its share, a hyphen where the oracle
+     * broke a word, justified where the paragraph is and the line is not its last — and where it
+     * stands. The line areas themselves, with the same hover, selection and context menu as the
+     * Reading view's areas, are built page by page as the stack shows them ({@link #linesOn}).
      *
      * @param layout the oracle's answer for the units of {@link #pageUnits}
      * @param units  those units
      */
     public void layoutLines(network.ike.komet.document.print.LayoutOracle.Layout layout, List<network.ike.komet.document.print.LayoutOracle.Unit> units) {
         pages.clear();
+        pageLines.clear();
         areaByNode.clear();
         if (editing != null) {
             cancelEdit(editing);
@@ -2105,15 +2165,7 @@ public final class DocumentSurfaceView {
             for (int k = 0; k < own.size(); k++) {
                 network.ike.komet.document.print.LayoutOracle.Line line = own.get(k);
                 if (unitArea.drawn != null) {
-                    Area area = new Area(unitArea.member, unitArea.block, unitArea.spec.lines(), unitArea.spec, false, unitArea.section);
-                    area.modelOrdinal = unitArea.modelOrdinal;
-                    area.drawn = unitArea.drawn;
-                    area.unit = u;
-                    area.lineOfUnit = k;
-                    area.page = line.page();
-                    area.x = line.x();
-                    area.baseline = line.baseline();
-                    pages.add(area);
+                    pageLines.add(new PageLine(unitArea, unitArea.spec, u, k, line, false, false));
                     continue;
                 }
                 LineRunModel.Spec spec;
@@ -2136,35 +2188,56 @@ public final class DocumentSurfaceView {
                 if (spec.paragraphs().isEmpty()) {
                     continue;
                 }
-                Area area = new Area(unitArea.member, unitArea.block, spec.lines(), spec, false, unitArea.section);
-                area.modelOrdinal = unitArea.modelOrdinal;
-                area.note = unitArea.note;
-                area.splittable = unitArea.splittable;
-                area.heading = unitArea.heading;
-                area.unit = u;
-                area.lineOfUnit = k;
-                area.page = line.page();
-                area.x = line.x();
-                area.baseline = line.baseline();
-                area.whole = whole;
-                if (whole && unit.kind() == network.ike.komet.document.print.LayoutOracle.Kind.TABLE_ROW && !unitArea.cellSpecs.isEmpty()) {
-                    pageRow(area, unitArea);
-                }
-                // No chrome of the control's own on a page line: the sheet is the paper. A listing's tint is one
-                // block behind its lines, as Typst draws it: a line is taller than its pitch, and painted line by
-                // line each covers the one above.
-                area.listing = unitArea.area.getStyle() != null && unitArea.area.getStyle().contains("#F4F3F1");
-                area.area.setStyle("-fx-background-color: transparent; -fx-background-insets: 0; -fx-background-radius: 0; -fx-border-width: 0; -fx-padding: 0;");
-                area.area.getStyleClass().add("stamped-page-line");
-                area.area.setId("stampedDocumentPageLine" + pages.size());
-                checkLine(area, line, unit, spec);
-                pages.add(area);
-                areaByNode.put(area.area, area);
+                // A listing's tint is one block behind its lines, as Typst draws it: a line is taller than its pitch,
+                // and painted line by line each would cover the one above.
+                boolean listing = unitArea.area.getStyle() != null && unitArea.area.getStyle().contains("#F4F3F1");
+                PageLine laid = new PageLine(unitArea, spec, u, k, line, whole, listing);
+                checkLine(laid, line, unit);
+                pageLines.add(laid);
             }
         }
         if (view == View.PAGE_LAYOUT) {
             render();
         }
+    }
+
+    /**
+     * Builds a laid line's area: a line-run area over the characters of its unit's text, the
+     * selection and the highlighted commit as they stand, and for a table row its grid of cells.
+     * No chrome of the control's own on a page line: the sheet is the paper.
+     */
+    private Area buildLine(PageLine laid) {
+        Area unitArea = laid.unitArea;
+        Area area = new Area(unitArea.member, unitArea.block, laid.spec.lines(), laid.spec, false, unitArea.section);
+        area.modelOrdinal = unitArea.modelOrdinal;
+        area.unit = laid.unit;
+        area.lineOfUnit = laid.lineOfUnit;
+        area.page = laid.page;
+        area.x = laid.x;
+        area.baseline = laid.baseline;
+        if (unitArea.drawn != null) {
+            area.drawn = unitArea.drawn;
+        } else {
+            area.note = unitArea.note;
+            area.splittable = unitArea.splittable;
+            area.heading = unitArea.heading;
+            area.whole = laid.whole;
+            area.listing = laid.listing;
+            if (laid.whole && !unitArea.cellSpecs.isEmpty()) {
+                pageRow(area, unitArea);
+            }
+            area.area.setStyle("-fx-background-color: transparent; -fx-background-insets: 0; -fx-background-radius: 0; -fx-border-width: 0; -fx-padding: 0;");
+            area.area.getStyleClass().add("stamped-page-line");
+            area.area.setId("stampedDocumentPageLine" + laid.index);
+            areaByNode.put(area.area, area);
+        }
+        if (highlightedCommit != 0) {
+            area.highlightedStamp = highlightedCommit;
+            area.decorate();
+        }
+        pages.add(area);
+        laid.area = area;
+        return area;
     }
 
     /** Whether a paragraph's drawn text ends a source line at the offset, and that source line ends in a hard break. */
@@ -2199,21 +2272,20 @@ public final class DocumentSurfaceView {
     private final List<String> lineFindings = new ArrayList<>();
 
     /** Checks a page line against the oracle's: the text it draws is Typst's line, and it starts at or right of the measure's left edge. */
-    private void checkLine(Area area, network.ike.komet.document.print.LayoutOracle.Line line, network.ike.komet.document.print.LayoutOracle.Unit unit,
-                           LineRunModel.Spec spec) {
+    private void checkLine(PageLine laid, network.ike.komet.document.print.LayoutOracle.Line line, network.ike.komet.document.print.LayoutOracle.Unit unit) {
         linesChecked++;
-        String drawn = LineRunModel.Spec.text(spec.paragraphs().getFirst()).stripTrailing();
-        String expected = area.whole ? unit.text() : line.text(unit).stripTrailing();
+        String drawn = LineRunModel.Spec.text(laid.spec.paragraphs().getFirst()).stripTrailing();
+        String expected = laid.whole ? unit.text() : line.text(unit).stripTrailing();
         if (!drawn.equals(expected)) {
             linesTextMismatch++;
             if (lineFindings.size() < 8) {
-                lineFindings.add("line " + pages.size() + " of unit " + unit.index() + " draws '" + drawn + "' for Typst's '" + expected + "'");
+                lineFindings.add("line " + pageLines.size() + " of unit " + unit.index() + " draws '" + drawn + "' for Typst's '" + expected + "'");
             }
         }
         if (line.x() < pageContentLeft - 0.5) {
             linesLeftOfMeasure++;
             if (lineFindings.size() < 8) {
-                lineFindings.add("line " + pages.size() + " of unit " + unit.index() + " starts at x " + line.x() + ", left of the measure at " + pageContentLeft);
+                lineFindings.add("line " + pageLines.size() + " of unit " + unit.index() + " starts at x " + line.x() + ", left of the measure at " + pageContentLeft);
             }
         }
     }
@@ -2238,23 +2310,23 @@ public final class DocumentSurfaceView {
     /** @return the tint behind each listing on a page: Typst's block, its fill and its inset, the lines drawn over it */
     public List<PageStackView.Placed> backdropsOn(int page, double contentLeft, double contentWidth) {
         Map<Integer, double[]> spans = new java.util.LinkedHashMap<>();
-        for (Area area : pages) {
-            if (area.page == page && area.listing) {
-                double[] m = metrics(area.spec.paragraphs().getFirst().style());
-                double top = area.baseline - m[0];
+        for (PageLine laid : pageLines) {
+            if (laid.page == page && laid.listing) {
+                double[] m = metrics(laid.style());
+                double top = laid.baseline - m[0];
                 double bottom = top + m[1];
-                spans.merge(area.unit, new double[] {top, bottom},
+                spans.merge(laid.unit, new double[] {top, bottom},
                         (a, b) -> new double[] {Math.min(a[0], b[0]), Math.max(a[1], b[1])});
             }
         }
         List<PageStackView.Placed> out = new ArrayList<>();
         // The rule above the page's footnotes: under it Typst keeps a gap, then the first note's cap height.
-        pages.stream().filter(area -> area.page == page && area.note > 0).min(Comparator.comparingDouble(area -> area.baseline)).ifPresent(area -> {
-            double size = area.spec.paragraphs().getFirst().style().getFontSize();
+        pageLines.stream().filter(laid -> laid.page == page && laid.note() > 0).min(Comparator.comparingDouble(laid -> laid.baseline)).ifPresent(laid -> {
+            double size = laid.style().getFontSize();
             Region rule = new Region();
             rule.setMouseTransparent(true);
             rule.setStyle("-fx-background-color: black;");
-            double top = area.baseline - size * network.ike.komet.document.print.LayoutOracle.CAP_HEIGHT - size / network.ike.komet.document.print.LayoutOracle.FOOTNOTE_SCALE * network.ike.komet.document.print.LayoutOracle.FOOTNOTE_GAP;
+            double top = laid.baseline - size * network.ike.komet.document.print.LayoutOracle.CAP_HEIGHT - size / network.ike.komet.document.print.LayoutOracle.FOOTNOTE_SCALE * network.ike.komet.document.print.LayoutOracle.FOOTNOTE_GAP;
             out.add(new PageStackView.Placed(rule, contentLeft, top, 0, contentWidth * network.ike.komet.document.print.LayoutOracle.FOOTNOTE_RULE, 0.5, false));
         });
         for (double[] span : spans.values()) {
@@ -2299,13 +2371,23 @@ public final class DocumentSurfaceView {
         areaByNode.put(area.drawing, area);
     }
 
-    /** @return the line areas on a page, placed for the page stack */
+    /**
+     * The line areas on a page, placed for the page stack. A line's area is built the first time
+     * its page is asked for, and kept: a page scrolled back to costs nothing to show again.
+     *
+     * @param page         the 0-based page
+     * @param contentLeft  the measure's left edge on the page
+     * @param contentWidth the measure's width
+     * @param bandHeight   the page's content height, which bounds a figure
+     * @return the page's lines, in order
+     */
     public List<PageStackView.Placed> linesOn(int page, double contentLeft, double contentWidth, double bandHeight) {
         List<PageStackView.Placed> out = new ArrayList<>();
-        for (Area area : pages) {
-            if (area.page != page) {
+        for (PageLine laid : pageLines) {
+            if (laid.page != page) {
                 continue;
             }
+            Area area = laid.area == null ? buildLine(laid) : laid.area;
             if (area.drawn != null) {
                 double scale = network.ike.komet.document.print.LayoutOracle.Unit.figureScale(area.drawn.width(), area.drawn.height(), contentWidth, bandHeight);
                 if (area.drawing == null) {
@@ -2313,6 +2395,7 @@ public final class DocumentSurfaceView {
                     areaByNode.put(area.drawing, area);
                 }
                 area.drawnHeight = area.drawn.height() * scale;
+                laid.drawnHeight = area.drawnHeight;
                 out.add(new PageStackView.Placed(area.drawing, contentLeft, area.baseline, area.drawnHeight, area.drawn.width() * scale, area.drawnHeight, false));
                 continue;
             }
@@ -2360,18 +2443,63 @@ public final class DocumentSurfaceView {
         return area == null ? new int[] {-1, -1} : new int[] {area.unit, area.lineOfUnit};
     }
 
+    /**
+     * Every line's place on a page, in order, without building anything: what the page stack
+     * finds and restores the reader's place by. A line's top is where {@link #linesOn} puts its
+     * area's top edge.
+     *
+     * @param page         the 0-based page
+     * @param contentWidth the measure's width
+     * @param bandHeight   the page's content height, which bounds a figure
+     * @return the places
+     */
+    public List<PageStackView.Place> placesOn(int page, double contentWidth, double bandHeight) {
+        List<PageStackView.Place> out = new ArrayList<>();
+        for (PageLine laid : pageLines) {
+            if (laid.page != page) {
+                continue;
+            }
+            double top;
+            if (laid.unitArea.drawn != null) {
+                network.ike.komet.document.DecisionFigure drawn = laid.unitArea.drawn;
+                double scale = network.ike.komet.document.print.LayoutOracle.Unit.figureScale(drawn.width(), drawn.height(), contentWidth, bandHeight);
+                top = laid.baseline - drawn.height() * scale;
+            } else {
+                double[] m = metrics(laid.style());
+                top = laid.baseline - (laid.whole && !laid.unitArea.cellSpecs.isEmpty()
+                        ? m[0] + network.ike.komet.document.print.TypstOracle.TABLE_INSET + 1 : m[0] + 2 + 1);
+            }
+            out.add(new PageStackView.Place(laid.unit, laid.lineOfUnit, top));
+        }
+        return out;
+    }
+
+    /** @return how many laid lines there are, and how many have their area built, as {@code {laid, built}}; for tests */
+    int[] pageLineCounts() {
+        return new int[] {pageLines.size(), pages.size()};
+    }
+
+    /** Draws the selection in the line areas of a page, once the stack has laid them out in their sheet. */
+    void renderSelection(int page) {
+        for (PageLine laid : pageLines) {
+            if (laid.page == page && laid.area != null) {
+                applySelection(laid.area);
+            }
+        }
+    }
+
     /** @return the marginalia of the units whose first line is on a page: the introducing identicons, with the hover highlight, and an edited mark */
     List<PageStackView.Mark> marginaliaOn(int page) {
         List<PageStackView.Mark> out = new ArrayList<>();
-        for (Area area : pages) {
-            if (area.page != page || area.lineOfUnit != 0 || area.note > 0) {
+        for (PageLine laid : pageLines) {
+            if (laid.page != page || laid.lineOfUnit != 0 || laid.note() > 0) {
                 continue;                                         // a note's line is its marked block's
             }
-            Node node = unitMarginalia(area.unit);
+            Node node = unitMarginalia(laid.unit);
             if (node != null) {
                 // a figure's marks stand at its head, as a block's stand at its first line
-                double ascent = metrics(area.spec.paragraphs().getFirst().style())[0];
-                out.add(new PageStackView.Mark(node, area.drawn == null ? area.baseline : area.baseline - area.drawnHeight + ascent, ascent));
+                double ascent = metrics(laid.style())[0];
+                out.add(new PageStackView.Mark(node, laid.unitArea.drawn == null ? laid.baseline : laid.baseline - laid.drawnHeight + ascent, ascent));
             }
         }
         return out;
@@ -2379,9 +2507,9 @@ public final class DocumentSurfaceView {
 
     /** @return the section the running head names on a page: that of the first line on it, blank for none */
     String sectionOn(int page) {
-        for (Area area : pages) {
-            if (area.page == page) {
-                return area.section == null ? "" : area.section;
+        for (PageLine laid : pageLines) {
+            if (laid.page == page) {
+                return laid.unitArea.section == null ? "" : laid.unitArea.section;
             }
         }
         return "";
@@ -2717,6 +2845,7 @@ public final class DocumentSurfaceView {
 
     /** Highlights every run of a commit, in every area, as a History view's selection does; 0 clears. */
     void highlightCommit(long stampNid) {
+        highlightedCommit = stampNid;
         for (Area area : areas) {
             if (area != editing) {
                 area.highlightedStamp = stampNid;

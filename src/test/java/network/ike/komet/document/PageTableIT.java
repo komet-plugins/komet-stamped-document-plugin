@@ -57,6 +57,7 @@ import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -252,6 +253,14 @@ class PageTableIT {
             return surface.lineCheck();
         });
         assertTrue(check.contains(" 0 drawing other text"), check);
+        // laying the lines builds no line area: a page's are built when the stack first asks for that page
+        int[] counts = onFx(surface::pageLineCounts);
+        assertTrue(counts[0] > 0 && counts[0] <= layout.lines().size(), "the lines laid: " + counts[0] + " of " + layout.lines().size());
+        assertEquals(0, counts[1], "no line built before a page is shown");
+        List<PageStackView.Place> places = onFx(() -> surface.placesOn(0, geometry.contentWidth(), geometry.bandHeight()));
+        assertEquals(0, onFx(surface::pageLineCounts)[1], "places cost no building");
+        assertEquals(places.size(), onFx(() -> surface.linesOn(0, geometry.contentLeft(), geometry.contentWidth(), geometry.bandHeight())).size(),
+                "a place per line on the page");
 
         int last = layout.ofUnit(rows.getLast().index()).getFirst().page();
         for (int page = 1; page <= last; page++) {
@@ -262,6 +271,15 @@ class PageTableIT {
             assertInstanceOf(network.ike.komet.document.print.PageTableRow.class, top.node(), "the top of page " + page);
             assertEquals(rows.getFirst().index(), surface.identity(top)[0], "the top of page " + page);
             assertEquals(geometry.contentWidth(), top.width(), 0.01, "a row spans the content");
+            // a page's lines are built once and kept
+            List<PageStackView.Placed> again = onFx(() -> surface.linesOn(on, geometry.contentLeft(), geometry.contentWidth(), geometry.bandHeight()));
+            assertSame(top.node(), again.stream().min(java.util.Comparator.comparingDouble(PageStackView.Placed::baseline)).orElseThrow().node(),
+                    "page " + page + " keeps its areas");
+        }
+        counts = onFx(surface::pageLineCounts);
+        assertTrue(counts[1] > 0 && counts[1] <= counts[0], "the pages asked for are built: " + counts[1] + " of " + counts[0]);
+        if (layout.pages() > last + 1) {
+            assertTrue(counts[1] < counts[0], "a page not asked for stays unbuilt: " + counts[1] + " of " + counts[0]);
         }
     }
 

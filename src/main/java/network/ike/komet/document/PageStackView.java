@@ -41,9 +41,10 @@ import java.util.Optional;
  * discouraged anti-pattern for Komet). Every page is a white sheet of the print settings' size
  * at a point per pixel, with a gap between sheets and the running head and folio drawn in the
  * margins as Typst draws them; the sheets' content — the surface's line areas at the layout
- * oracle's baselines, and the marginalia beside them — is built only for the sheets near the
- * viewport and dropped again once they are far from it, so a long document costs as much as
- * the few pages in view. The page under the reader's eye is a property the card's footer shows;
+ * oracle's baselines, and the marginalia beside them — is asked for only for the sheets near the
+ * viewport, where the content builds it on first asking, and dropped from the sheet again once
+ * it is far from it, so a long document costs as much as the few pages in view plus the pages
+ * once passed. The page under the reader's eye is a property the card's footer shows;
  * a jump to a page scrolls.
  */
 public final class PageStackView extends ScrollPane {
@@ -68,6 +69,13 @@ public final class PageStackView extends ScrollPane {
     /** One marginal node placed on a page beside a block's first line. */
     record Mark(Node node, double baseline, double ascent) { }
 
+    /**
+     * One line's place on a page without its node: the unit and the line of it, and its top edge
+     * on the page. The stack finds and restores the reader's place by places, so a page far from
+     * the viewport never has to build its lines to be looked at.
+     */
+    record Place(int unit, int lineOfUnit, double top) { }
+
     /** Where the reader is: a unit and the line of it at the viewport's top, and that line's offset from the top. */
     record Anchor(int unit, int lineOfUnit, double offset) { }
 
@@ -77,8 +85,18 @@ public final class PageStackView extends ScrollPane {
         /** @return the page count, at least 1 */
         int pageCount();
 
-        /** @return the line areas on a page, in order */
+        /**
+         * The line areas on a page, in order. The content builds them when first asked, so the
+         * stack asks only for the pages it is about to show.
+         */
         List<Placed> lines(int page);
+
+        /** @return every line's place on a page, in order, which costs no building */
+        List<Place> places(int page);
+
+        /** Told once a page's lines stand laid out in their sheet, for what must follow their first layout. */
+        default void built(int page) {
+        }
 
         /**
          * What stands behind a page's lines, such as a listing's tint.
@@ -95,9 +113,6 @@ public final class PageStackView extends ScrollPane {
 
         /** @return the section the running head names on a page, blank for none */
         String section(int page);
-
-        /** @return the unit and the line of it a placed line stands for, as {@code {unit, line}} */
-        int[] identity(Placed placed);
     }
 
     private final PrintSettings settings;
@@ -202,11 +217,10 @@ public final class PageStackView extends ScrollPane {
         double top = viewportTop();
         for (int p = Math.max(0, pageAt(top)); p < sheets.size(); p++) {
             double sheetTop = sheetTop(p);
-            for (Placed placed : content.lines(p)) {
-                double lineTop = sheetTop + placed.baseline() - placed.ascent();
+            for (Place place : content.places(p)) {
+                double lineTop = sheetTop + place.top();
                 if (lineTop >= top - 1) {
-                    int[] id = content.identity(placed);
-                    return Optional.of(new Anchor(id[0], id[1], lineTop - top));
+                    return Optional.of(new Anchor(place.unit(), place.lineOfUnit(), lineTop - top));
                 }
             }
         }
@@ -218,26 +232,25 @@ public final class PageStackView extends ScrollPane {
         if (content == null || anchor == null) {
             return;
         }
-        Placed fallback = null;
+        Place fallback = null;
         int fallbackPage = -1;
         for (int p = 0; p < sheets.size(); p++) {
-            for (Placed placed : content.lines(p)) {
-                int[] id = content.identity(placed);
-                if (id[0] != anchor.unit()) {
+            for (Place place : content.places(p)) {
+                if (place.unit() != anchor.unit()) {
                     continue;
                 }
-                if (id[1] == anchor.lineOfUnit()) {
-                    scrollTo(p, placed.baseline() - placed.ascent(), anchor.offset());
+                if (place.lineOfUnit() == anchor.lineOfUnit()) {
+                    scrollTo(p, place.top(), anchor.offset());
                     return;
                 }
                 if (fallback == null) {
-                    fallback = placed;
+                    fallback = place;
                     fallbackPage = p;
                 }
             }
         }
         if (fallback != null) {
-            scrollTo(fallbackPage, fallback.baseline() - fallback.ascent(), anchor.offset());
+            scrollTo(fallbackPage, fallback.top(), anchor.offset());
         }
     }
 
@@ -329,6 +342,7 @@ public final class PageStackView extends ScrollPane {
         built.set(page, true);
         sheet.applyCss();
         sheet.layout();
+        content.built(page);
     }
 
     /** The running head and folio in the margins, where Typst puts them: the head 30% of the top margin above the content, the folio 30% of the bottom margin below. */

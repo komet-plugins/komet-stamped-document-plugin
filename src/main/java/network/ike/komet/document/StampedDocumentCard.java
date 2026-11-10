@@ -1515,13 +1515,19 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
             }
 
             @Override
-            public String section(int page) {
-                return surface.sectionOn(page);
+            public List<PageStackView.Place> places(int page) {
+                return surface.placesOn(page, pageGeometry.contentWidth(), pageGeometry.bandHeight());
             }
 
             @Override
-            public int[] identity(PageStackView.Placed placed) {
-                return surface.identity(placed);
+            public void built(int page) {
+                // a selection applied before an area's first layout breaks the incubator's highlight: the sheet is laid out now
+                surface.renderSelection(page);
+            }
+
+            @Override
+            public String section(int page) {
+                return surface.sectionOn(page);
             }
         };
     }
