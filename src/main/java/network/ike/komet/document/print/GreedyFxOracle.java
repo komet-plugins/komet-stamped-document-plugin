@@ -108,6 +108,12 @@ public final class GreedyFxOracle implements LayoutOracle {
             if (unit.kind() == Kind.FOOTNOTE) {
                 continue;                                         // placed with the page its mark lands on
             }
+            if (unit.pageBefore() && baseline >= 0) {
+                // A front list's title, or the body after the lists, opens a page, as the writer's weak page break does.
+                foot.close(page++, lines);
+                baseline = -1;
+                previous = null;
+            }
             double pitch = UnitSpacing.pitch(unit);
             double cap = unit.fontSize() * CAP_HEIGHT;
             if (unit.kind() == Kind.FIGURE) {

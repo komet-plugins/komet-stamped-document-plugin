@@ -90,6 +90,25 @@ class ModelUnitsTest {
     }
 
     @Test
+    void eachFrontListOpensAPageAndSoDoesTheBodyAfterTheLists() {
+        DocumentModel model = new DocumentModel("Title", List.of(
+                new DocumentModel.FrontList(DocumentModel.FrontList.Kind.CONTENTS, List.of(new DocumentModel.Entry("1 One", 0, "a", 3))),
+                new DocumentModel.FrontList(DocumentModel.FrontList.Kind.TABLES, List.of(new DocumentModel.Entry("Table 1. Costs", 0, "t", 3))),
+                new Heading(1, "1 One", "a"),
+                new Paragraph("Prose."),
+                new Table("Table 1. Costs", List.of(1), 0, List.of(List.of("x")), "t")));
+
+        List<Unit> units = ModelUnits.of(model, 12);
+
+        assertEquals(List.of("Title", "Contents", "1 One", "Tables", "Table 1. Costs", "1 One", "Prose.", "Table 1. Costs", "x"),
+                units.stream().map(Unit::text).toList());
+        assertEquals(List.of(false, true, false, true, false, true, false, false, false), units.stream().map(Unit::pageBefore).toList(),
+                "the lists' titles and the body's first unit open pages: the title page stands alone");
+        assertTrue(ModelUnits.of(new DocumentModel("Title", List.of(new Heading(1, "One"), new Paragraph("Prose."))), 12).stream()
+                .noneMatch(Unit::pageBefore), "no list, no page opened");
+    }
+
+    @Test
     void spacingFollowsTypstsRules() {
         Unit title = new Unit(0, 0, Kind.TITLE, "T", 21.6, true, 0, 0, 14.4, false);
         Unit heading = new Unit(1, 1, Kind.HEADING, "H", 18, true, 0, 16.2, 9, true);

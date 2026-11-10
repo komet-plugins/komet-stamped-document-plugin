@@ -73,6 +73,28 @@ class GreedyFxOracleTest {
     }
 
     @Test
+    void aUnitThatOpensAPageStartsOneUnlessThePageIsEmpty() {
+        LayoutOracle.Geometry geometry = new LayoutOracle.Geometry(612, 792, 72, 72, 468, 648);
+        Unit title = new Unit(0, 0, Kind.TITLE, "Title", 21.6, true, 0, 0, 14.4, false);
+        Unit contents = new Unit(1, 1, Kind.HEADING, "Contents", 18, true, 0, 16.2, 9, true).withPageBefore(true);
+        Unit entry = new Unit(2, 1, Kind.ENTRY, "1 One", 12, false, 0, 13.2, 0, false);
+        Unit body = new Unit(3, 2, Kind.HEADING, "1 One", 18, true, 0, 16.2, 9, true).withPageBefore(true);
+        Unit text = new Unit(4, 2, Kind.PARAGRAPH, "The body.", 12, false, 0, 13.2, 0, false);
+        var layout = oracle.layout(List.of(title, contents, entry, body, text), geometry);
+
+        assertEquals(3, layout.pages(), "the title page, the contents, the body");
+        assertEquals(0, layout.pageOf(0));
+        assertEquals(1, layout.pageOf(1), "the list opens a page");
+        assertEquals(1, layout.pageOf(2));
+        assertEquals(2, layout.pageOf(3), "the body opens a page after the lists");
+        assertEquals(72 + 18 * LayoutOracle.CAP_HEIGHT, layout.ofUnit(1).getFirst().baseline(), 1e-6, "at the top of its page, with no space above");
+
+        var alone = oracle.layout(List.of(contents, entry), geometry);
+        assertEquals(1, alone.pages(), "a page already empty is not left blank");
+        assertEquals(0, alone.pageOf(1));
+    }
+
+    @Test
     void aFigureThatDoesNotFitMovesToTheNextPageWhole() {
         LayoutOracle.Geometry geometry = new LayoutOracle.Geometry(612, 792, 72, 72, 468, 648);
         Unit first = new Unit(0, 0, Kind.FIGURE, LayoutOracle.FIGURE_WORD, 12, false, 0, 0, 0, false, 468, 500);

@@ -27,6 +27,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -46,6 +47,15 @@ class FrontListsTest {
         lines.add(new Line(4, pageA - 1, 72, 100, 0, 5, false));
         lines.add(new Line(5, pageB - 1, 72, 100, 0, 5, false));
         return new Layout(Math.max(pageA, pageB), lines, true, 0, List.of());
+    }
+
+    @Test
+    void theTailSharesTheTextsLastLineOnlyWhenTheGapAndTheNumberFit() {
+        assertTrue(FrontLists.tailFits(30, 11, 18), "room for the gap and the number: the leader takes what is left, if anything");
+        assertTrue(FrontLists.tailFits(29, 11, 18), "exactly the gap and the number");
+        assertFalse(FrontLists.tailFits(28, 11, 18), "a point short: the tail takes a line of its own, as Typst breaks at the gap");
+        assertFalse(FrontLists.tailFits(0, 11, 18), "a line filled to the edge");
+        assertFalse(FrontLists.tailFits(-2, 11, 18), "a line past the edge");
     }
 
     @Test

@@ -203,11 +203,25 @@ class PageListsIT {
             assertEquals(layout.pageOf(targets.get(entry.target())) + 1, entry.page(), "the page printed for " + entry.text() + " is its target's");
             assertEquals(entry.page(), settled.pages().get(entry.target()));
         }
-        assertEquals(1, settled.pages().get(model.entries().getFirst().target()), "the body follows the lists on the first page");
-        assertTrue(settled.pages().get(model.entries().get(1).target()) > 1, "Two starts on a later page");
-        for (int u = 1; u < 9; u++) {
-            assertEquals(0, layout.pageOf(u), "the lists stand on the first page: unit " + u);
+        assertEquals(4, settled.pages().get(model.entries().getFirst().target()), "the title page, the contents, the tables, then the body on a page of its own");
+        assertTrue(settled.pages().get(model.entries().get(1).target()) > 4, "Two starts on a later page");
+        assertEquals(0, layout.pageOf(0), "the title stands alone on the first page");
+        for (int u = 1; u < 6; u++) {
+            assertEquals(1, layout.pageOf(u), "the contents list opens the second page: unit " + u);
         }
+        for (int u = 6; u < 9; u++) {
+            assertEquals(2, layout.pageOf(u), "the tables list opens the third: unit " + u);
+        }
+        assertEquals(3, layout.pageOf(9), "the body opens the fourth");
+        for (int u = 2; u < 9; u++) {
+            if (units.get(u).kind() == LayoutOracle.Kind.ENTRY) {
+                List<LayoutOracle.Line> own = layout.ofUnit(u);
+                assertTrue(own.size() >= 2 && own.getLast().tail(units.get(u)), "the oracle read the entry's tail: unit " + u + " " + own);
+                assertEquals(own.get(own.size() - 2).baseline(), own.getLast().baseline(), 0.01, "a short entry's tail shares its line: unit " + u);
+                assertEquals(own.getLast().page(), own.getFirst().page());
+            }
+        }
+        assertEquals(List.of(0, 1, 2, 3), List.of(estimate.pageOf(0), estimate.pageOf(1), estimate.pageOf(6), estimate.pageOf(9)), "the estimate opens the same pages");
 
         String check = onFx(() -> {
             surface.beginLineCheck(geometry.contentLeft());
@@ -215,7 +229,10 @@ class PageListsIT {
             return surface.lineCheck();
         });
         assertTrue(check.contains(" 0 drawing other text"), check);
-        List<PageStackView.Placed> first = onFx(() -> surface.linesOn(0, geometry.contentLeft(), geometry.contentWidth(), geometry.bandHeight()));
+        assertTrue(onFx(() -> surface.linesOn(0, geometry.contentLeft(), geometry.contentWidth(), geometry.bandHeight())).stream()
+                .noneMatch(p -> p.node().getStyleClass().contains("stamped-page-entry-tail")), "no entry on the title page");
+        List<PageStackView.Placed> first = new ArrayList<>(onFx(() -> surface.linesOn(1, geometry.contentLeft(), geometry.contentWidth(), geometry.bandHeight())));
+        first.addAll(onFx(() -> surface.linesOn(2, geometry.contentLeft(), geometry.contentWidth(), geometry.bandHeight())));
         List<Node> tails = first.stream().map(PageStackView.Placed::node).filter(n -> n.getStyleClass().contains("stamped-page-entry-tail")).toList();
         assertEquals(6, tails.size(), "every entry's last line ends in its leader and page");
         List<String> numbers = tails.stream().map(tail -> ((Pane) tail).getChildren().stream().filter(Text.class::isInstance).map(Text.class::cast)

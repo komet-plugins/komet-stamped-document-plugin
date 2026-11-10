@@ -59,8 +59,16 @@ public final class ModelUnits {
         if (!model.title().isEmpty()) {
             previous = add(out, notes, block++, Kind.TITLE, model.title(), base * 1.8, true, 0, previous, base);
         }
+        boolean afterLists = false;
         for (Block top : model.blocks()) {
+            int first = out.size();
             previous = block(out, notes, block++, top, base, previous, 0);
+            boolean list = top instanceof DocumentModel.FrontList;
+            if ((list || afterLists) && out.size() > first) {
+                // each front list opens a page, and so does the body after the last of them: the title page stands alone
+                out.set(first, out.get(first).withPageBefore(true));
+            }
+            afterLists = list;
         }
         return out;
     }

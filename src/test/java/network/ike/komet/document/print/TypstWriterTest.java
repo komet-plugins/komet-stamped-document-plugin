@@ -513,6 +513,13 @@ class TypstWriterTest {
         assertTrue(typst.contains("= Contents\n\n#ike-entry(0, repeat[.])[1 Intro][#ike-page(<ike-b1>)]\n#ike-entry(1, repeat[.])[1.1 Deeper][#ike-page(<ike-b2>)]\n\n"), typst);
         assertTrue(typst.contains("= Tables\n\n#ike-entry(0, repeat[.])[Table 1. Costs][#ike-page(<ike-b3>)]\n\n"), typst);
         assertTrue(typst.contains("= 1 Intro <ike-b1>\n\n"), "a heading an entry names carries its label");
+        assertTrue(typst.contains(TypstWriter.PAGE_BREAK + "= Contents\n"), "each list opens a page: the title page stands alone");
+        assertTrue(typst.contains(TypstWriter.PAGE_BREAK + "= Tables\n"), typst);
+        assertTrue(typst.contains(TypstWriter.PAGE_BREAK + "= 1 Intro <ike-b1>\n"), "and so does the body after the last list");
+        assertEquals(3, typst.split(java.util.regex.Pattern.quote(TypstWriter.PAGE_BREAK), -1).length - 1, "no other page break");
+        assertTrue(TypstWriter.ENTRY_HELPERS.contains("#body#h(1em)#box(width: 1fr"), "a gap of an em before the leader, which Typst breaks the line at when the number has no room");
+        assertTrue(TypstWriter.ENTRY_HELPERS.contains("#set par(justify: false)"), "an entry's lines are ragged");
+        assertEquals(1, TypstWriter.ENTRY_GAP, "the pages keep the same gap");
         assertTrue(typst.contains("== 1.1 Deeper <ike-b2>\n\n"), typst);
         assertTrue(typst.contains("=== Unlisted\n\n"), "a heading no entry names carries none");
         assertTrue(typst.contains("  kind: table,\n) <ike-b3>\n\n"), "a table an entry names carries its label");
@@ -524,8 +531,12 @@ class TypstWriterTest {
         DocumentModel numbered = listed().withEntryPages(Map.of("b1", 2, "b2", 3, "b3", 4));
         String words = TypstWriter.write(numbered, TypstWriter.PageSetup.DEFAULT, TypstWriter.Labels.WORDS);
 
-        assertTrue(words.contains("#ike-entry(0, [])[1 Intro][#ike-page-room([2])]\n#ike-entry(1, [])[1.1 Deeper][#ike-page-room([3])]\n"), words);
-        assertTrue(words.contains("#ike-entry(0, [])[Table 1. Costs][#ike-page-room([4])]\n"), words);
+        String tail = "#metadata(" + TypstOracle.TAIL + ")<" + TypstWriter.TAIL_LABEL + ">";
+        assertTrue(words.contains("#ike-entry(0, [])[1 Intro][#ike-page-room([2])" + tail + "]\n#ike-entry(1, [])[1.1 Deeper][#ike-page-room([3])" + tail + "]\n"), words);
+        assertTrue(words.contains("#ike-entry(0, [])[Table 1. Costs][#ike-page-room([4])" + tail + "]\n"), words);
+        assertTrue(TypstOracle.QUERY.contains("<" + TypstWriter.TAIL_LABEL + ">"), "the oracle asks where each tail ended");
+        assertFalse(TypstWriter.write(numbered, TypstWriter.PageSetup.DEFAULT).contains(TypstWriter.TAIL_LABEL), "the printed form carries no tail label");
+        assertTrue(words.contains(TypstWriter.PAGE_BREAK + "#metadata("), "the measured form breaks the pages where the printed one does, before the block's label");
         assertFalse(words.contains("#ike-page(<"), "a measured source holds the room of the number the last pass found, and no digits the oracle could read");
         assertTrue(words.contains("= 1 Intro <ike-b1>"), "the targets keep their labels, so the printed form reads the same document");
         String blocks = TypstWriter.write(numbered, TypstWriter.PageSetup.DEFAULT, TypstWriter.Labels.BLOCKS);

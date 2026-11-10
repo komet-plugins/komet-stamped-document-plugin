@@ -237,6 +237,11 @@ public final class DocumentSurfaceView {
             return StyleAttributeMap.builder().merge(prose).setFontSize(base * network.ike.komet.document.print.LayoutOracle.FOOTNOTE_SCALE).build();
         }
 
+        /** Prose set ragged right, as a front list's entry is: the Typst writer's entry block turns justification off. */
+        StyleAttributeMap ragged() {
+            return StyleAttributeMap.builder().merge(prose).setTextAlignment(javafx.scene.text.TextAlignment.LEFT).build();
+        }
+
         /** A block's title on the page: bold and ragged, at the scale of the body the Typst writer sets it. */
         StyleAttributeMap blockTitle(double scale) {
             return StyleAttributeMap.builder().merge(bold).setFontSize(base * scale).build();
@@ -513,6 +518,8 @@ public final class DocumentSurfaceView {
         int entryDepth;
         /** A page line of a front list's entry, its unit's last: the leader and page drawn after its text. */
         Region entryTail;
+        /** The width of the page number {@link #entryTail} draws, in the entry's font. */
+        double entryNumberWidth;
         /** A page line: the unit it is a line of, which line of it, the page, its left edge and baseline there. */
         int unit = -1;
         int lineOfUnit;
@@ -620,6 +627,12 @@ public final class DocumentSurfaceView {
         final boolean listing;
         /** Whether the line is its unit's last: a front list's entry draws its leader and page after it. */
         boolean lastOfUnit;
+        /**
+         * A front list entry's last line: where the Typst oracle read its leader and page ending
+         * ({@link network.ike.komet.document.print.LayoutOracle.Line#tail}), or {@code null} when the
+         * layout is the greedy estimate, which the pages place by the writer's rule instead.
+         */
+        network.ike.komet.document.print.LayoutOracle.Line tail;
         /** A figure's height on its page at the scale it is shown, known once a page asked for its lines. */
         double drawnHeight;
         /** The line's area, once its page was shown. */
@@ -1208,7 +1221,7 @@ public final class DocumentSurfaceView {
                 StoredBlock block = target == null ? document.root() : member.document().blocks().get((Long) target[1]);
                 List<StoredLine> carrier = block == null ? hostTitle : titleLine(member.document(), block, hostTitle);
                 Area area = addArea(member, block == null ? document.root() : block, carrier,
-                        paragraphs(carrier, " ", st.prose(), t -> entry.text()), 0, false, list.title(), true);
+                        paragraphs(carrier, " ", st.ragged(), t -> entry.text()), 0, false, list.title(), true);
                 area.heading = false;                             // it names a section; it is not one
                 area.splittable = false;
                 area.frontList = true;
@@ -2219,22 +2232,26 @@ public final class DocumentSurfaceView {
         List<network.ike.komet.document.print.LayoutOracle.Unit> out = new ArrayList<>();
         double base = theme.baseFontSize();
         network.ike.komet.document.print.LayoutOracle.Kind previous = null;
+        boolean afterLists = false;                               // the unit after the front lists opens the body's first page
         for (int i = 0; i < units.size(); i++) {
             Area area = units.get(i);
             Block.Kind blockKind = printKind(area.block);
+            if (area.note > 0) {
+                // No spacing and no place in the flow: an oracle sets it at the foot of the page its mark lands on.
+                out.add(new network.ike.komet.document.print.LayoutOracle.Unit(i, area.modelOrdinal, network.ike.komet.document.print.LayoutOracle.Kind.FOOTNOTE, area.spec.plainText(),
+                        base * network.ike.komet.document.print.LayoutOracle.FOOTNOTE_SCALE, false, 0, 0, 0, false).withInline(area.spec.runs(), List.of(), area.note));
+                continue;
+            }
+            // Each front list opens a page, and so does the body after the last of them, as the writer's page breaks set it.
+            boolean opensPage = area.frontList ? area.heading : afterLists;
+            afterLists = area.frontList;
             if (area.drawn != null) {
                 double[] spacing = network.ike.komet.document.print.UnitSpacing.of(
                         network.ike.komet.document.print.LayoutOracle.Kind.FIGURE, previous, base, base);
                 out.add(new network.ike.komet.document.print.LayoutOracle.Unit(i, area.modelOrdinal,
                         network.ike.komet.document.print.LayoutOracle.Kind.FIGURE, network.ike.komet.document.print.LayoutOracle.FIGURE_WORD,
-                        base, false, 0, spacing[0], spacing[1], false, area.drawn.width(), area.drawn.height()));
+                        base, false, 0, spacing[0], spacing[1], false, area.drawn.width(), area.drawn.height()).withPageBefore(opensPage));
                 previous = network.ike.komet.document.print.LayoutOracle.Kind.FIGURE;
-                continue;
-            }
-            if (area.note > 0) {
-                // No spacing and no place in the flow: an oracle sets it at the foot of the page its mark lands on.
-                out.add(new network.ike.komet.document.print.LayoutOracle.Unit(i, area.modelOrdinal, network.ike.komet.document.print.LayoutOracle.Kind.FOOTNOTE, area.spec.plainText(),
-                        base * network.ike.komet.document.print.LayoutOracle.FOOTNOTE_SCALE, false, 0, 0, 0, false).withInline(area.spec.runs(), List.of(), area.note));
                 continue;
             }
             network.ike.komet.document.print.LayoutOracle.Kind kind = area.frontList
@@ -2259,7 +2276,8 @@ public final class DocumentSurfaceView {
             double above = spacing[0];
             double below = spacing[1];
             out.add(new network.ike.komet.document.print.LayoutOracle.Unit(i, area.modelOrdinal, kind, area.spec.plainText(), size, bold, indent,
-                    above, below, kind == network.ike.komet.document.print.LayoutOracle.Kind.HEADING).withInline(area.spec.runs(), area.marks, 0).withColumns(area.columns));
+                    above, below, kind == network.ike.komet.document.print.LayoutOracle.Kind.HEADING).withInline(area.spec.runs(), area.marks, 0).withColumns(area.columns)
+                    .withPageBefore(opensPage));
             previous = kind;
         }
         return out;
@@ -2289,6 +2307,8 @@ public final class DocumentSurfaceView {
             network.ike.komet.document.print.LayoutOracle.Unit unit = units.get(u);
             List<network.ike.komet.document.print.LayoutOracle.Line> own = new ArrayList<>(layout.ofUnit(u));
             own.sort(Comparator.comparingInt(network.ike.komet.document.print.LayoutOracle.Line::from));
+            // an entry's tail is no line of text: the text's last line keeps it, to draw the leader and page where it ended
+            network.ike.komet.document.print.LayoutOracle.Line tail = !own.isEmpty() && own.getLast().tail(unit) ? own.removeLast() : null;
             for (int k = 0; k < own.size(); k++) {
                 network.ike.komet.document.print.LayoutOracle.Line line = own.get(k);
                 if (unitArea.drawn != null) {
@@ -2319,6 +2339,7 @@ public final class DocumentSurfaceView {
                 // and painted line by line each would cover the one above.
                 PageLine laid = new PageLine(unitArea, spec, u, k, line, whole, unitArea.listing);
                 laid.lastOfUnit = k == own.size() - 1;
+                laid.tail = laid.lastOfUnit ? tail : null;
                 checkLine(laid, line, unit);
                 pageLines.add(laid);
             }
@@ -2565,19 +2586,40 @@ public final class DocumentSurfaceView {
                 height = m[1] + 4 + 2;                              // one line and the padding; the justify filler's line is clipped away
                 clip = true;
             }
+            // A front list's entry ends in a gap, its leader and its target's page, from the text's end to the measure's
+            // right edge, as the Typst writer's entry block sets them — or, when the gap and the number have no room on
+            // the text's last line, on a line of their own under it, as Typst breaks the entry there. Which line is
+            // Typst's to say: the oracle read it from the measured source; the greedy estimate goes by the writer's rule.
+            boolean entryEnd = !area.entryTarget.isEmpty() && laid.lastOfUnit;
+            double size = style.getFontSize() == null ? st.base() : style.getFontSize();
+            double gap = size * network.ike.komet.document.print.TypstWriter.ENTRY_GAP;
+            double pitch = size * network.ike.komet.document.print.LayoutOracle.PITCH;
+            boolean tailOwnLine = false;
+            if (entryEnd) {
+                if (area.entryTail == null) {
+                    String number = Integer.toString(entryPages.getOrDefault(area.entryTarget, 0));
+                    area.entryTail = entryTail(style, number, m[0]);
+                    area.entryNumberWidth = textWidth(style, number);
+                    areaByNode.put(area.entryTail, area);
+                    entryGesture(area.entryTail, area.entryTarget);
+                }
+                tailOwnLine = laid.tail != null ? laid.tail.baseline() > area.baseline + pitch / 2
+                        : !network.ike.komet.document.print.FrontLists.tailFits(available - natural * scale, gap, area.entryNumberWidth);
+                if (!tailOwnLine && natural > 0) {
+                    // JavaFX sets the text without kerning, a hair wider than Typst did: where Typst kept the gap and the
+                    // number on the text's line, the text gives way to them rather than run under the number.
+                    scale = Math.min(scale, (available - gap - area.entryNumberWidth) / natural);
+                }
+            }
             out.add(new PageStackView.Placed(area.area, area.x - 4, area.baseline, ascent, width, height, clip, scale));
-            if (!area.entryTarget.isEmpty() && laid.lastOfUnit) {
-                // A front list's entry ends in its leader and its target's page, from the text's end to the measure's right edge,
-                // as the Typst writer's entry block sets them.
-                double end = area.x + natural * scale;
-                double room = contentLeft + contentWidth - end;
-                if (room > 1) {
-                    if (area.entryTail == null) {
-                        area.entryTail = entryTail(style, Integer.toString(entryPages.getOrDefault(area.entryTarget, 0)), m[0]);
-                        areaByNode.put(area.entryTail, area);
-                        entryGesture(area.entryTail, area.entryTarget);
-                    }
-                    out.add(new PageStackView.Placed(area.entryTail, end, area.baseline, m[0], room, m[1], false));
+            if (entryEnd) {
+                if (tailOwnLine) {
+                    double x = laid.tail != null ? laid.tail.x() : area.x;
+                    double baseline = laid.tail != null ? laid.tail.baseline() : area.baseline + pitch;
+                    out.add(new PageStackView.Placed(area.entryTail, x, baseline, m[0], contentLeft + contentWidth - x, m[1], false));
+                } else {
+                    double end = area.x + natural * scale;
+                    out.add(new PageStackView.Placed(area.entryTail, end + gap, area.baseline, m[0], contentLeft + contentWidth - end - gap, m[1], false));
                 }
             }
         }
@@ -2629,6 +2671,15 @@ public final class DocumentSurfaceView {
         tail.getStyleClass().add("stamped-page-entry-tail");
         tail.setMinHeight(0);
         return tail;
+    }
+
+    /** @return the width of a text set in a style's font, as the page draws it */
+    private double textWidth(StyleAttributeMap style, String text) {
+        double size = style.getFontSize() == null ? st.base() : style.getFontSize();
+        String family = style.getFontFamily() == null ? network.ike.komet.document.print.DocumentFonts.SERIF : style.getFontFamily();
+        javafx.scene.text.Text measured = new javafx.scene.text.Text(text);
+        measured.setFont(Font.font(family, size));
+        return measured.getLayoutBounds().getWidth();
     }
 
     /** A front list's entry on a page goes where it points when clicked. */

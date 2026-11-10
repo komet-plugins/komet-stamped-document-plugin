@@ -195,16 +195,30 @@ public final class TypstWriter {
     /** The prefix of the label a front list's entry names its block by: {@code <ike-b123>} for the key {@code b123}. */
     public static final String TARGET_LABEL = "ike-";
 
+    /** The label after a measured entry's page room, carrying {@link TypstOracle#TAIL}: where its leader and page ended. */
+    public static final String TAIL_LABEL = "ike-tail";
+
+    /** The least room, in ems, between an entry's text and its page number: see {@link #ENTRY_HELPERS}. */
+    public static final double ENTRY_GAP = 1;
+
+    /** The inset at each end of an entry's leader, in ems, inside the room the leader takes. */
+    public static final double ENTRY_INSET = 0.25;
+
     /**
      * A front list's entry, and the page its target lands on. An entry is a block that never
-     * breaks over a page, its text, a leader in a box that takes the rest of the line, and the
-     * page: the printed document asks the page counter at the target's label, so Typst's own
-     * number stands there; a measured source ({@link Labels#WORDS}) holds the room of the number
-     * the last layout pass found — an empty box as wide as the digits would set — and its leader
-     * box empty: a box of a fraction takes the line's rest whatever it holds, and the oracle
-     * reads no dots and no digits as words, which it would otherwise align with the section
-     * number that opens the next entry. A target the document does not hold prints no page
-     * rather than failing the compile.
+     * breaks over a page, its text set ragged, a gap of {@link #ENTRY_GAP}, a leader in a box
+     * that takes the rest of the line, and the page: the printed document asks the page counter
+     * at the target's label, so Typst's own number stands there; a measured source
+     * ({@link Labels#WORDS}) holds the room of the number the last layout pass found — an empty
+     * box as wide as the digits would set — and its leader box empty: a box of a fraction takes
+     * the line's rest whatever it holds, and the oracle reads no dots and no digits as words,
+     * which it would otherwise align with the section number that opens the next entry. The gap
+     * is a spacing, which Typst breaks a line at like a space: when the text's last line has no
+     * room for the gap and the number, the leader and the number take a line of their own under
+     * it, the number against the measure's right edge, rather than crowding the text or running
+     * past the edge (seen on the regulatory book, 2026-11-10). The pages follow the same rule
+     * ({@link network.ike.komet.document.DocumentSurfaceView}). A target the document does not
+     * hold prints no page rather than failing the compile.
      */
     static final String ENTRY_HELPERS = """
             #let ike-page(key) = context {
@@ -213,7 +227,8 @@ public final class TypstWriter {
             }
             #let ike-page-room(number) = context box(width: measure(number).width)
             #let ike-entry(depth, leader, body, page) = block(width: 100%, breakable: false, above: 0.65em, below: 0.65em,
-              inset: (left: depth * 1em))[#body#box(width: 1fr, inset: (x: 0.25em), leader)#page]
+              inset: (left: depth * 1em))[#set par(justify: false)
+              #body#h(1em)#box(width: 1fr, inset: (x: 0.25em), leader)#page]
             """;
 
     /**
@@ -239,16 +254,26 @@ public final class TypstWriter {
             }
             out.append("#ike-title[").append(markup(document.title())).append("]\n\n");
         }
+        Block previous = null;
         for (Block block : document.blocks()) {
+            if (block instanceof DocumentModel.FrontList || previous instanceof DocumentModel.FrontList) {
+                // each front list opens a page, and so does the body after the last of them: the title page stands alone;
+                // weak, so a page already empty (a document with no title) is not left blank
+                out.append(PAGE_BREAK);
+            }
             if (labels != Labels.NONE) {
                 out.append(marker(index++));
             }
             block(block, out, "");
+            previous = block;
         }
         if (labels != Labels.NONE) {
             out.append("#metadata(none) <").append(END_LABEL).append(">\n");
         }
     }
+
+    /** The page break before a front list and before the body that follows the lists: see {@link #body}. */
+    public static final String PAGE_BREAK = "#pagebreak(weak: true)\n\n";
 
     /** The label on a block a front list's entry names, with its leading space; empty for every other block. */
     private static String target(String key) {
@@ -259,7 +284,9 @@ public final class TypstWriter {
     private static void frontList(DocumentModel.FrontList list, StringBuilder out, String indent) {
         out.append(indent).append("= ").append(markup(list.title())).append("\n\n");
         for (DocumentModel.Entry entry : list.entries()) {
-            String page = CHUNK_WORDS.get() ? "#ike-page-room([" + entry.page() + "])" : "#ike-page(<" + TARGET_LABEL + entry.target() + ">)";
+            // the measured form labels the tail's end, so the oracle reads which line the leader and the page took
+            String page = CHUNK_WORDS.get() ? "#ike-page-room([" + entry.page() + "])#metadata(" + TypstOracle.TAIL + ")<" + TAIL_LABEL + ">"
+                    : "#ike-page(<" + TARGET_LABEL + entry.target() + ">)";
             out.append(indent).append("#ike-entry(").append(Math.max(0, entry.depth())).append(", ").append(CHUNK_WORDS.get() ? "[]" : "repeat[.]")
                     .append(")[").append(markup(entry.text())).append("][").append(page).append("]\n");
         }

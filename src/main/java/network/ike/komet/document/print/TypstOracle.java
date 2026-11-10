@@ -102,9 +102,18 @@ public final class TypstOracle implements LayoutOracle {
         return "#show footnote.entry: it => [#metadata(" + NOTE_START + ")<" + NOTE_LABEL + ">#it#metadata(" + NOTE_END + ")<" + NOTE_LABEL + ">]\n";
     }
 
+    /**
+     * The value of the label after a measured front list entry's tail ({@link TypstWriter#TAIL_LABEL}),
+     * which follows the room of its page number: where the leader and the number ended, on the
+     * text's last line or on a line of their own when Typst broke the entry at the gap before
+     * them. Read like an end label, trusted for its line; well below any note's key.
+     */
+    public static final int TAIL = -1_000_000;
+
     /** The expression that lists every label with its value, page and position, in document order. */
     public static final String QUERY = "query(selector(<" + WORD_LABEL + ">).or(<" + WORD_END_LABEL + ">).or(<" + TypstWriter.BLOCK_LABEL
-            + ">).or(<" + TypstWriter.END_LABEL + ">).or(<" + NOTE_LABEL + ">)).map(it => (v: it.value, p: it.location().page(), x: it.location().position().x, y: it.location().position().y))";
+            + ">).or(<" + TypstWriter.END_LABEL + ">).or(<" + NOTE_LABEL + ">).or(<" + TypstWriter.TAIL_LABEL
+            + ">)).map(it => (v: it.value, p: it.location().page(), x: it.location().position().x, y: it.location().position().y))";
 
     /** How close, in points, the best suffix's width must come to the tail's for a hyphenation point to be taken. */
     static final double HYPHEN_TOLERANCE = 1.5;
@@ -257,6 +266,7 @@ public final class TypstOracle implements LayoutOracle {
      */
     public static Layout align(List<Item> items, List<Unit> units, Geometry geometry, Measure width) {
         Map<Integer, List<Word>> wordsByBlock = new LinkedHashMap<>();
+        Map<Integer, List<Item>> tailsByBlock = new HashMap<>();     // a front list's entries' tails, one each, in order
         int block = -1;
         int pages = 0;
         int outer = -1;                                           // the block a note interrupts
@@ -275,6 +285,7 @@ public final class TypstOracle implements LayoutOracle {
                     block = noteKey(++note);
                 }
                 case Integer index when index == NOTE_END -> block = outer;
+                case Integer index when index == TAIL -> tailsByBlock.computeIfAbsent(block, b -> new ArrayList<>()).add(item);
                 case Integer index -> block = index;
                 case String text -> {
                     open = new Word(text, item.page(), item.x(), item.y(), item.page(), item.x(), item.y());
@@ -315,7 +326,15 @@ public final class TypstOracle implements LayoutOracle {
             for (List<Word> repeat : repeats) {
                 place(repeat, header).forEach((unit, own) -> lines.add(rowLine(unit, own.getFirst().word(), geometry)));
             }
+            List<Item> tails = tailsByBlock.getOrDefault(e.getKey(), List.of());
+            int tail = 0;
             for (Unit unit : e.getValue()) {
+                if (unit.kind() == Kind.ENTRY && tail < tails.size()) {
+                    // The entry's leader and page: a line of the unit's from its text's end, at the tail's baseline — the
+                    // text's last line's, or its own under it when Typst broke the entry at the gap before them.
+                    Item at = tails.get(tail++);
+                    lines.add(new Line(unit.index(), at.page(), geometry.contentLeft() + unit.indent(), at.y(), unit.text().length(), unit.text().length(), false));
+                }
                 List<Placed> own = placed.getOrDefault(unit, List.of());
                 if (own.isEmpty()) {
                     unplaced++;

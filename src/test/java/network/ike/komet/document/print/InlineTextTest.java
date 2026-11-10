@@ -40,6 +40,15 @@ class InlineTextTest {
     }
 
     @Test
+    void anEntryLeavesItsFootnotesOutMarkupAndAll() {
+        assertEquals("Table 1. The quantities behind the tree", InlineText.withoutNotes("Table 1. The quantities behind the tree footnote:[Our estimate.]"),
+                "the note and the space its mark took");
+        assertEquals("*Costs* and more", InlineText.withoutNotes("*Costs footnote:a[a note]* and more footnote:a[]"), "a note inside a span, and a repeated mark");
+        assertEquals("Plain text", InlineText.withoutNotes("Plain text"), "unchanged without a note");
+        assertEquals("No notes, *just* _markup_", InlineText.withoutNotes("No notes, *just* _markup_"));
+    }
+
+    @Test
     void nestedSpansCompound() {
         assertEquals(List.of(run(0, 4, false, true, true)), InlineText.of("*_both_*").runs());
         assertEquals(List.of(run(0, 4, true, true, false)), InlineText.of("*`code`*").runs());

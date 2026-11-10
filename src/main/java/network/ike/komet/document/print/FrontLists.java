@@ -61,6 +61,21 @@ public final class FrontLists {
     public record Settled(DocumentModel model, Layout layout, int passes, Map<String, Integer> pages) { }
 
     /**
+     * Whether an entry's leader and page fit on its text's last line, as Typst decides it for
+     * the writer's entry block: the text, a gap, then the number must fit the measure, the
+     * leader's box taking whatever is left — else Typst breaks the line at the gap, and the
+     * leader and the number take a line of their own under the text.
+     *
+     * @param room        the room from the text's end to the measure's right edge, in points
+     * @param gap         the gap the writer sets between the text and the leader, in points
+     * @param numberWidth the width of the page number, in points
+     * @return whether the tail shares the text's last line
+     */
+    public static boolean tailFits(double room, double gap, double numberWidth) {
+        return room >= gap + numberWidth;
+    }
+
+    /**
      * The page each entry's target begins on in a layout.
      *
      * @param layout      the layout

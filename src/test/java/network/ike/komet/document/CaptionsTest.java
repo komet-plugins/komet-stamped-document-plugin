@@ -206,6 +206,32 @@ class CaptionsTest {
     }
 
     @Test
+    void anEntryLeavesAFootnoteWithTheBlockItAnnotates() {
+        String text = """
+                = Doc
+                :toc:
+                :list-of-tables:
+                :sectnums:
+
+                == Costs footnote:[Our estimate, open to revision.]
+
+                .The quantities behind the tree footnote:[The benefit per patient is our estimate.]
+                |===
+                | x | y
+                |===
+                """;
+        StoredDocument document = StoredFixture.parse(text);
+        Captions captions = Captions.of(DocumentAssembly.single(document, "doc.adoc"), CaptionsTest::figure, 2);
+        List<DocumentModel.FrontList> lists = captions.frontLists(StoredDocumentModel.lists(document));
+
+        assertEquals(List.of("1 Costs"), lists.get(0).entries().stream().map(DocumentModel.Entry::text).toList(), "the heading's note stays on the heading's page");
+        assertEquals(List.of("Table 1. The quantities behind the tree"), lists.get(1).entries().stream().map(DocumentModel.Entry::text).toList(),
+                "the caption's note stays with the table");
+        assertEquals("Table 1. The quantities behind the tree footnote:[The benefit per patient is our estimate.]", captions.all().getFirst().text(),
+                "the caption itself keeps its note");
+    }
+
+    @Test
     void nothingIsCaptionedInADocumentWithoutTitles() {
         Captions captions = Captions.of(DocumentAssembly.single(StoredFixture.parse("= Plain\n\n|===\n| a\n|===\n"), "p.adoc"), CaptionsTest::figure);
         assertTrue(captions.isEmpty());

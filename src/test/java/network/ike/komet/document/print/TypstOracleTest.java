@@ -96,6 +96,36 @@ class TypstOracleTest {
     }
 
     @Test
+    void anEntrysTailIsReadAsALineOfItsOwnAtTheTailsBaseline() {
+        // Block 1: a contents list of two entries; the first's tail shares its line, the second's took a line of its own.
+        Unit title = new Unit(0, 1, Kind.HEADING, "Contents", 18, true, 0, 0, 9, true);
+        Unit one = new Unit(1, 1, Kind.ENTRY, "1 One", 12, false, 0, 13.2, 0, false);
+        Unit two = new Unit(2, 1, Kind.ENTRY, "2 Two words", 12, false, 12, 7.8, 0, false);
+        List<Item> items = new ArrayList<>();
+        items.add(new Item(1, 0, 72, 72));
+        word(items, "Contents", 0, 72, 84, 150);
+        word(items, "1", 0, 72, 101.5, 78);
+        word(items, "One", 0, 81, 101.5, 102);
+        items.add(new Item(TypstOracle.TAIL, 0, 540, 101.5));
+        word(items, "2", 0, 84, 117.9, 90);
+        word(items, "Two", 0, 93, 117.9, 114);
+        word(items, "words", 0, 117, 117.9, 150);
+        items.add(new Item(TypstOracle.TAIL, 0, 540, 134.3));
+        items.add(new Item(null, 0, 72, 150));
+
+        Layout layout = TypstOracle.align(items, List.of(title, one, two), LETTER, WIDTH);
+
+        assertEquals(List.of(new Line(1, 0, 72, 101.5, 0, 5, false), new Line(1, 0, 72, 101.5, 5, 5, false)), layout.ofUnit(1),
+                "the text's line, then the tail on the same baseline");
+        assertEquals(List.of(new Line(2, 0, 84, 117.9, 0, 11, false), new Line(2, 0, 84, 134.3, 11, 11, false)), layout.ofUnit(2),
+                "the tail a pitch under the text, at the entry's indent");
+        assertTrue(layout.ofUnit(1).getLast().tail(one) && layout.ofUnit(2).getLast().tail(two));
+        assertTrue(!layout.ofUnit(1).getFirst().tail(one) && !layout.ofUnit(0).getFirst().tail(title), "a line of text is no tail, nor a heading's");
+        assertEquals(0, layout.pageOf(2), "the tail begins nothing");
+        assertTrue(layout.notes().isEmpty(), layout.notes().toString());
+    }
+
+    @Test
     void aSplitWordBecomesAHyphenatedHeadAndATailOnTheNextLine() {
         Unit prose = new Unit(0, 0, Kind.PARAGRAPH, "see internationalization now", 12, false, 0, 13, 0, false);
         List<Item> items = new ArrayList<>();

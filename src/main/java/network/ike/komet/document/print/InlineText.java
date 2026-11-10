@@ -155,6 +155,42 @@ public record InlineText(String text, List<Run> runs, List<Note> notes, int[] of
         return reader.done(markup.length());
     }
 
+    /**
+     * Prose with its footnotes left out, markup and all: what a front list's entry prints, since
+     * a note belongs with the text it annotates on that text's own page, not in the list that
+     * names the block. The space before a dropped note goes with it, as its mark took it.
+     *
+     * @param markup the text
+     * @return the text without its footnote macros; the same text when it has none
+     */
+    public static String withoutNotes(String markup) {
+        List<Span> notes = new ArrayList<>();
+        collect(InlineMarkup.parse(markup), InlineMarkup.Element.FOOTNOTE, notes);
+        if (notes.isEmpty()) {
+            return markup;
+        }
+        StringBuilder out = new StringBuilder(markup);
+        for (Span note : notes.reversed()) {
+            int from = note.start();
+            while (from > 0 && out.charAt(from - 1) == ' ') {
+                from--;
+            }
+            out.delete(from, note.end());
+        }
+        return out.toString();
+    }
+
+    /** Every span of an element, at any depth, in source order. */
+    private static void collect(List<Span> spans, InlineMarkup.Element element, List<Span> out) {
+        for (Span span : spans) {
+            if (span.element() == element) {
+                out.add(span);
+            } else {
+                collect(span.children(), element, out);
+            }
+        }
+    }
+
     /** @return text with no markup at all, read as it stands */
     public static InlineText literal(String text) {
         int[] offsets = new int[text.length() + 1];

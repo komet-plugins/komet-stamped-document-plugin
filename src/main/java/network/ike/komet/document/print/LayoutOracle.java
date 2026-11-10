@@ -99,10 +99,12 @@ public interface LayoutOracle {
      * @param marks        where the text marks footnotes
      * @param note         a {@link Kind#FOOTNOTE} unit's number, 0 for any other
      * @param columns      a {@link Kind#TABLE_ROW} unit's table's relative column widths; empty for columns of one width
+     * @param pageBefore   whether the unit opens a page: a front list's title, and the body's first unit after the lists, as
+     *                     the Typst writer's weak page break sets them — a page already empty is not left blank
      */
     record Unit(int index, int block, Kind kind, String text, double fontSize, boolean bold, double indent, double spaceAbove,
                 double spaceBelow, boolean keepWithNext, double figureWidth, double figureHeight, List<InlineText.Run> runs,
-                List<InlineText.Mark> marks, int note, List<Integer> columns) {
+                List<InlineText.Mark> marks, int note, List<Integer> columns, boolean pageBefore) {
         public Unit {
             Objects.requireNonNull(kind, "kind is null");
             text = text == null ? "" : text;
@@ -114,7 +116,7 @@ public interface LayoutOracle {
         /** A figure, or a unit of one style. */
         public Unit(int index, int block, Kind kind, String text, double fontSize, boolean bold, double indent, double spaceAbove,
                     double spaceBelow, boolean keepWithNext, double figureWidth, double figureHeight) {
-            this(index, block, kind, text, fontSize, bold, indent, spaceAbove, spaceBelow, keepWithNext, figureWidth, figureHeight, List.of(), List.of(), 0, List.of());
+            this(index, block, kind, text, fontSize, bold, indent, spaceAbove, spaceBelow, keepWithNext, figureWidth, figureHeight, List.of(), List.of(), 0, List.of(), false);
         }
 
         /** A unit of text. */
@@ -125,12 +127,17 @@ public interface LayoutOracle {
 
         /** @return this unit with inline spans */
         public Unit withInline(List<InlineText.Run> styled, List<InlineText.Mark> marked, int number) {
-            return new Unit(index, block, kind, text, fontSize, bold, indent, spaceAbove, spaceBelow, keepWithNext, figureWidth, figureHeight, styled, marked, number, columns);
+            return new Unit(index, block, kind, text, fontSize, bold, indent, spaceAbove, spaceBelow, keepWithNext, figureWidth, figureHeight, styled, marked, number, columns, pageBefore);
         }
 
         /** @return this unit with its table's relative column widths */
         public Unit withColumns(List<Integer> widths) {
-            return new Unit(index, block, kind, text, fontSize, bold, indent, spaceAbove, spaceBelow, keepWithNext, figureWidth, figureHeight, runs, marks, note, widths);
+            return new Unit(index, block, kind, text, fontSize, bold, indent, spaceAbove, spaceBelow, keepWithNext, figureWidth, figureHeight, runs, marks, note, widths, pageBefore);
+        }
+
+        /** @return this unit opening a page, or not */
+        public Unit withPageBefore(boolean opens) {
+            return new Unit(index, block, kind, text, fontSize, bold, indent, spaceAbove, spaceBelow, keepWithNext, figureWidth, figureHeight, runs, marks, note, columns, opens);
         }
 
         /** @return the styled run holding a character, or {@code null} where the text is plain */
@@ -186,6 +193,16 @@ public interface LayoutOracle {
      * @param hyphenated whether the line ends in a hyphen the oracle inserted (the text has none there)
      */
     record Line(int unit, int page, double x, double baseline, int from, int to, boolean hyphenated) {
+
+        /**
+         * @return whether the line is a front list entry's tail — its leader and page, which the
+         *         Typst oracle reads from the measured source: an empty range at the text's end, at
+         *         the tail's baseline, the text's last line's or a line of its own under it. The
+         *         greedy oracle gives none: the pages then place the tail by the writer's rule.
+         */
+        public boolean tail(Unit of) {
+            return of.kind() == Kind.ENTRY && from >= of.text().length() && to == from;
+        }
 
         /** @return the line's characters of the unit's text, with the hyphen when the oracle broke a word */
         public String text(Unit of) {
