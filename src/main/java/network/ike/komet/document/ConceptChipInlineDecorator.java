@@ -219,6 +219,43 @@ public final class ConceptChipInlineDecorator implements InlineDecorator {
         return out;
     }
 
+    /**
+     * A {@code k:} interchange token of a text whose component the open store holds.
+     *
+     * @param start the token's first character
+     * @param end   the character after its last, the label's bracket included
+     * @param id    the component
+     * @param sctid the SNOMED CT identifier the token is written in, or {@code null}
+     */
+    public record Interchange(int start, int end, PublicId id, String sctid) { }
+
+    /**
+     * The deliberate concept references of a text: its {@code k:uuid=…[Label]} and
+     * {@code k:sctid=…[Label]} tokens that name a component the open store holds. A bare
+     * identifier is not one: authored prose that quotes a number or a UUID means the number.
+     * A token the store cannot resolve is left out, so it stays as written.
+     *
+     * @param text the text; may be null
+     * @return the tokens in order
+     */
+    public static List<Interchange> interchangeTokens(String text) {
+        if (text == null || text.indexOf("k:") < 0) {
+            return List.of();
+        }
+        List<Interchange> found = new ArrayList<>();
+        Matcher m = TOKEN.matcher(text);
+        while (m.find()) {
+            if (m.group("kind") == null) {
+                continue;
+            }
+            PublicId id = resolve(m);
+            if (id != null) {
+                found.add(new Interchange(m.start(), m.end(), id, "sctid".equals(m.group("kind")) ? m.group("kid") : null));
+            }
+        }
+        return found;
+    }
+
     private static void addText(List<InlinePiece> pieces, String text, StyleAttributeMap style) {
         if (!text.isEmpty()) {
             pieces.add(new InlinePiece.TextRun(text, style));

@@ -167,4 +167,63 @@ class LineRunModelTest {
         assertEquals(2, tail.paragraphs().getFirst().lines().size());
         assertTrue(spec.slice(0, 100, 120, false, false).paragraphs().isEmpty(), "a range past the text yields nothing");
     }
+
+    /** Reads {@code k:uuid=<word>[label]} as a token, as a store that holds every such concept would. */
+    private static List<LineRunModel.Token> tokens(String text) {
+        List<LineRunModel.Token> found = new java.util.ArrayList<>();
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile("k:uuid=\\w+\\[[^\\]]*]").matcher(text);
+        while (m.find()) {
+            found.add(new LineRunModel.Token(m.start(), m.end(), () -> null));
+        }
+        return found;
+    }
+
+    @Test
+    void aTokenGivesWayToOneCharacterWhereItsNodeStands() {
+        // as inlined prose is: the lines are shares of one text, and the first token's label runs over the line's end
+        String first = "The module is k:uuid=aa[Glo";
+        String second = "bal Module], whose parent is k:uuid=bb[Module].";
+        int parent = (first + second).indexOf("parent");
+        LineRunModel.Spec spec = new LineRunModel.Spec(List.of(new LineRunModel.Paragraph(List.of(
+                new LineRunModel.Line(line(1, first), first), new LineRunModel.Line(line(2, second), second)), "", PROSE,
+                List.of(new network.ike.komet.document.print.InlineText.Run(parent, parent + 6, false, true, false, null)))));
+
+        LineRunModel.Spec read = spec.withInlines(LineRunModelTest::tokens);
+        LineRunModel.Paragraph p = read.paragraphs().getFirst();
+
+        assertEquals("The module is  , whose parent is  .", LineRunModel.Spec.text(p), "each token is one character, its node's place");
+        assertEquals(List.of("The module is  ", ", whose parent is  ."), p.lines().stream().map(LineRunModel.Line::text).toList(),
+                "the line a token starts on keeps its place; the rest of the token is no one's");
+        assertEquals(List.of(14, 33), p.inlines().stream().map(LineRunModel.Inline::at).toList());
+        assertEquals("k:uuid=aa[Global Module]", p.inlines().getFirst().source(), "a node knows the text it stands for");
+        assertEquals(1, p.runs().size());
+        assertEquals("parent", LineRunModel.Spec.text(p).substring(p.runs().getFirst().from(), p.runs().getFirst().to()), "a span moves with its words");
+
+        LineRunModel model = read.build(LineRunModel.Decoration.NONE);
+        assertEquals("The module is  , whose parent is  .", model.getPlainText(0));
+        RichParagraph drawn = model.getParagraph(0);
+        List<jfx.incubator.scene.control.richtext.model.StyledSegment.Type> types = new java.util.ArrayList<>();
+        int length = 0;
+        for (int k = 0; k < drawn.getSegmentCount(); k++) {
+            types.add(drawn.getSegment(k).getType());
+            length += drawn.getSegment(k).getTextLength();
+        }
+        assertEquals(2, types.stream().filter(t -> t == jfx.incubator.scene.control.richtext.model.StyledSegment.Type.INLINE_NODE).count());
+        assertEquals(model.getPlainText(0).length(), length, "the segments and the plain text count the same characters");
+        assertEquals(1L, model.runAt(TextPos.ofLeading(0, 14)).orElseThrow().nid(), "a node belongs to the line its token starts on");
+        assertEquals(2L, model.runAt(TextPos.ofLeading(0, 33)).orElseThrow().nid());
+        assertSame(spec, spec.withInlines(text -> List.of()), "a spec with no tokens is itself");
+    }
+
+    @Test
+    void aParagraphJoinedBySeparatorsIsReadALineAtATime() {
+        LineRunModel.Spec spec = new LineRunModel.Spec(List.of(new LineRunModel.Paragraph(List.of(
+                new LineRunModel.Line(line(1, "See k:uuid=aa[One]"), "See k:uuid=aa[One]"),
+                new LineRunModel.Line(line(2, "and k:uuid=bb[Two]."), "and k:uuid=bb[Two].")), " ", PROSE)));
+
+        LineRunModel.Paragraph p = spec.withInlines(LineRunModelTest::tokens).paragraphs().getFirst();
+
+        assertEquals("See   and  .", LineRunModel.Spec.text(p));
+        assertEquals(List.of(4, 10), p.inlines().stream().map(LineRunModel.Inline::at).toList(), "offsets are in the joined text, separators counted");
+    }
 }

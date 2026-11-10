@@ -76,6 +76,13 @@ class ReadingInlineIT {
 
             NOTE: A note with *weight*.
 
+            Its module is k:uuid=MODULE[Module], or [k:uuid=MODULE[Module]],
+            not k:uuid=00000000-0000-4000-8000-000000000000[Nothing here].
+
+            |===
+            | Named | k:uuid=MODULE[Module] in a *cell*
+            |===
+
             ----
             a listing keeps *its stars* and `ticks`
             ----
@@ -112,7 +119,9 @@ class ReadingInlineIT {
         git(dir, "config", "user.name", "author");
         git(dir, "config", "user.email", "author@example.test");
         Path file = dir.resolve("reading.adoc");
-        Files.writeString(file, TEXT);
+        // a concept the starter data holds, named as prose names one, and one no store holds
+        String module = network.ike.foundation.ike.bindings.IkeConcept.ASCIIDOC_LITERAL_BLOCK.publicId().asUuidArray()[0].toString();
+        Files.writeString(file, TEXT.replace("MODULE", module));
         git(dir, "add", "reading.adoc");
         git(dir, "commit", "-q", "--no-gpg-sign", "-m", "The document");
         PublicId anchor = GitDocumentMaterializer.materialize(dir, file).anchor();
@@ -129,6 +138,9 @@ class ReadingInlineIT {
         List<String> italic = new ArrayList<>();
         List<String> mono = new ArrayList<>();
         List<String> footnotes = new ArrayList<>();
+        List<String> chipped = new ArrayList<>();
+        List<Node> chips = new ArrayList<>();
+        List<String> cells = new ArrayList<>();
         onFx(() -> {
             for (int b = 0; b < body.blockCount(); b++) {
                 StyledTextModel model = body.block(b).model();
@@ -142,6 +154,10 @@ class ReadingInlineIT {
                     for (int k = 0; k < paragraph.getSegmentCount(); k++) {
                         StyledSegment segment = paragraph.getSegment(k);
                         StyleAttributeMap style = segment.getStyleAttributeMap(null);
+                        if (segment.getType() == StyledSegment.Type.INLINE_NODE) {
+                            chipped.add(model.getPlainText(p));
+                            chips.add(segment.getInlineNodeGenerator().get());
+                        }
                         if (segment.getType() != StyledSegment.Type.TEXT || style == null) {
                             continue;
                         }
@@ -165,6 +181,20 @@ class ReadingInlineIT {
                     }
                 }
                 texts.add(text.toString());
+                for (Node cell : body.block(b).node().lookupAll(".doc-table-cell")) {
+                    for (Node child : ((javafx.scene.layout.Pane) cell).getChildren()) {
+                        if (child instanceof jfx.incubator.scene.control.richtext.RichTextArea area) {
+                            RichParagraph paragraph = area.getModel().getParagraph(0);
+                            StringBuilder kinds = new StringBuilder(area.getModel().getPlainText(0)).append('|');
+                            for (int k = 0; k < paragraph.getSegmentCount(); k++) {
+                                StyledSegment segment = paragraph.getSegment(k);
+                                kinds.append(segment.getType() == StyledSegment.Type.INLINE_NODE ? "chip"
+                                        : segment.getStyleAttributeMap(null).isBold() ? "bold" : "text").append(' ');
+                            }
+                            cells.add(kinds.toString().strip());
+                        }
+                    }
+                }
                 for (Node note : body.block(b).node().lookupAll(".stamped-document-footnote")) {
                     footnotes.add(((javafx.scene.control.Label) note).getText());
                 }
@@ -191,6 +221,13 @@ class ReadingInlineIT {
         assertTrue(mono.contains("code"), mono.toString());
         assertTrue(texts.stream().anyMatch(t -> t.endsWith("A note with weight.")), "an admonition: " + texts);
         assertTrue(bold.contains("weight"), bold.toString());
+
+        String named = "Its module is  , or  , not k:uuid=00000000-0000-4000-8000-000000000000[Nothing here].";
+        assertEquals(List.of(named, named), chipped, "a concept the store holds is a chip in place of its reference, brackets written around "
+                + "the reference going with it; one the store does not hold stays as written");
+        assertEquals(2, chips.size());
+        assertEquals(List.of("Named|text", "in a cell|chip text bold"), cells, "a table's cells read as prose does, a concept a chip and a strong word bold");
+        assertTrue(chips.getFirst() instanceof dev.ikm.komet.framework.controls.KonceptBadge, "the chip the rest of Komet draws: " + chips.getFirst());
 
         assertTrue(texts.stream().anyMatch(t -> t.contains("a listing keeps *its stars* and `ticks`")), "a listing is its source: " + texts);
         assertTrue(texts.stream().anyMatch(t -> t.contains(":topic-id: reading-inline")), "the header's lines are as written: " + texts);

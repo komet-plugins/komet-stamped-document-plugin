@@ -1608,10 +1608,13 @@ public final class DocumentSurfaceView {
                         .filter(piece -> !piece.text().isEmpty())
                         .map(piece -> new LineRunModel.Line(body.get(piece.line()), piece.text())).toList();
                 if (!own.isEmpty()) {
-                    CellText cell = new CellText(area, new LineRunModel.Spec(List.of(new LineRunModel.Paragraph(own, " ", style))));
+                    // a cell is prose: its marks read as a paragraph's are, and a concept it names drawn as a chip that folds to the column
+                    LineRunModel.Spec read = onScreen(new LineRunModel.Spec(List.of(new LineRunModel.Paragraph(own, " ", style))))
+                            .inlined(readingNotes).spec();
+                    CellText cell = new CellText(area, read.withInlines(text -> conceptChips(text, true)));
                     cells.add(cell);
                     box.getChildren().add(cell.rta);
-                    for (LineRunModel.Line line : own) {
+                    for (LineRunModel.Line line : read.paragraphs().getFirst().lines()) {
                         fit.words(c, line.text(), head);
                     }
                 }
@@ -1849,7 +1852,8 @@ public final class DocumentSurfaceView {
     private Area addArea(DocumentAssembly.Member member, StoredBlock block, List<StoredLine> lines, LineRunModel.Spec read, int depth, boolean editable, String section,
                          boolean inline) {
         LineRunModel.Inlined inlined = inline ? (print ? read.inlined(printNotes) : onScreen(read).inlined(readingNotes)) : null;
-        LineRunModel.Spec spec = inlined == null ? read : inlined.spec();
+        // on screen a concept the prose names is drawn as its chip; a page prints the reference as written
+        LineRunModel.Spec spec = inlined == null ? read : print ? inlined.spec() : inlined.spec().withInlines(text -> conceptChips(text, false));
         // a unit of the Page layout is bare: the oracles place it by its text and style, and its lines are built from it
         Area area = new Area(member, block, lines, spec, editable && !past, section, print);
         target.add(area);
@@ -1918,6 +1922,38 @@ public final class DocumentSurfaceView {
                     bindFoldMark(area);
                 });
         return area;
+    }
+
+    /**
+     * The concept references of a text, each to be drawn as the concept's chip: the chip the
+     * assistant's replies and the structured blocks draw, with its name as the open store has it,
+     * its status marks, and the journal's menu.
+     *
+     * @param text the drawn text of a paragraph or a cell
+     * @param cell whether the text is a table cell's
+     */
+    private List<LineRunModel.Token> conceptChips(String text, boolean cell) {
+        double base = st.base();
+        List<LineRunModel.Token> tokens = new ArrayList<>();
+        for (ConceptChipInlineDecorator.Interchange found : ConceptChipInlineDecorator.interchangeTokens(text)) {
+            int start = found.start();
+            int end = found.end();
+            if (start > 0 && end < text.length() && text.charAt(start - 1) == '[' && text.charAt(end) == ']') {
+                // a reference written inside brackets of its own, as the assistant has written some, is the reference: the brackets go with it
+                start--;
+                end++;
+            }
+            tokens.add(new LineRunModel.Token(start, end, () -> {
+                Node chip = host.viewProperties() != null
+                        ? KonceptChips.chip(found.id(), found.sctid(), host.viewProperties(), base)
+                        : KonceptChips.chip(found.id(), found.sctid(), host.view(), base);
+                if (cell && chip instanceof dev.ikm.komet.framework.controls.KonceptBadge badge) {
+                    badge.setMultiLineLabel(true);               // a cell wraps: the name folds to the column, as the cell's own text does
+                }
+                return chip;
+            }));
+        }
+        return tokens;
     }
 
     /** A spec whose spans are drawn in the screen's faces: the Reading view's prose. */

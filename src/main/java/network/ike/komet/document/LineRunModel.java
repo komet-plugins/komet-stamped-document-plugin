@@ -117,16 +117,23 @@ public final class LineRunModel extends StyledTextModelViewOnlyBase {
      * @param separator what joins consecutive lines ({@code " "} for prose, {@code ""} for one line per paragraph)
      * @param style     the base style of every run
      * @param runs      the inline spans drawn over the base style, by offset in the paragraph's drawn text, ascending
+     * @param inlines   the nodes drawn in the text, each in place of the one character at its offset, ascending
      */
-    public record Paragraph(List<Line> lines, String separator, StyleAttributeMap style, List<InlineText.Run> runs) {
+    public record Paragraph(List<Line> lines, String separator, StyleAttributeMap style, List<InlineText.Run> runs, List<Inline> inlines) {
 
         public Paragraph {
             runs = List.copyOf(runs);
+            inlines = List.copyOf(inlines);
         }
 
         /** A paragraph of one style. */
         public Paragraph(List<Line> lines, String separator, StyleAttributeMap style) {
-            this(lines, separator, style, List.of());
+            this(lines, separator, style, List.of(), List.of());
+        }
+
+        /** A paragraph of text alone, with its inline spans. */
+        public Paragraph(List<Line> lines, String separator, StyleAttributeMap style, List<InlineText.Run> runs) {
+            this(lines, separator, style, runs, List.of());
         }
 
         /**
@@ -182,6 +189,34 @@ public final class LineRunModel extends StyledTextModelViewOnlyBase {
             }
             return b.build();
         }
+    }
+
+    /**
+     * A node drawn in a paragraph's text, a concept's chip for one: it stands in place of one
+     * character of the drawn text, {@link #PLACE}, which is what the control counts a node as.
+     *
+     * @param at     the offset of its character in the paragraph's drawn text
+     * @param node   makes the node, each time the paragraph is drawn
+     * @param source the text it stands for, as written
+     */
+    public record Inline(int at, java.util.function.Supplier<javafx.scene.Node> node, String source) { }
+
+    /** The character a node takes in the drawn text: a space, as the control's own text of an inline node is. */
+    public static final char PLACE = ' ';
+
+    /**
+     * A stretch of text to draw as a node.
+     *
+     * @param start its first character
+     * @param end   the character after its last
+     * @param node  makes the node
+     */
+    public record Token(int start, int end, java.util.function.Supplier<javafx.scene.Node> node) { }
+
+    /** Finds what a text holds that is drawn as a node: the concept references of prose, resolved in the open store. */
+    public interface Tokens {
+        /** @return the tokens of the text, ascending, none overlapping */
+        List<Token> find(String text);
     }
 
     /**
@@ -300,6 +335,114 @@ public final class LineRunModel extends StyledTextModelViewOnlyBase {
                 at += text.length() + 1;
             }
             return new Inlined(new Spec(read), marks, notes);
+        }
+
+        /**
+         * This spec with what a reader of tokens finds drawn as nodes: each token's text gives
+         * way to one character, where its node stands, the line it starts on keeping it, and the
+         * inline spans move with the text. A paragraph whose lines are joined by a separator is
+         * read a line at a time, so a token is never taken across one.
+         *
+         * @param tokens finds the tokens of a text
+         * @return the spec, this one when nothing is found
+         */
+        public Spec withInlines(Tokens tokens) {
+            List<Paragraph> out = new ArrayList<>();
+            boolean any = false;
+            for (Paragraph p : paragraphs) {
+                Paragraph read = p.separator().isEmpty() ? inlinesOver(p, tokens) : inlinesByLine(p, tokens);
+                any |= read != p;
+                out.add(read);
+            }
+            return any ? new Spec(out) : this;
+        }
+
+        /** A paragraph with no separator: its lines are shares of one text, which is read whole. */
+        private static Paragraph inlinesOver(Paragraph p, Tokens tokens) {
+            String text = text(p);
+            List<Token> found = tokens.find(text);
+            if (found.isEmpty()) {
+                return p;
+            }
+            // where each offset of the text goes: a token's first character to its node's place, its others to just after it
+            int[] to = new int[text.length() + 1];
+            boolean[] kept = new boolean[text.length()];
+            StringBuilder drawn = new StringBuilder();
+            List<Inline> inlines = new ArrayList<>();
+            int next = 0;
+            for (int i = 0; i < text.length(); i++) {
+                while (next < found.size() && found.get(next).end() <= i) {
+                    next++;
+                }
+                Token token = next < found.size() && found.get(next).start() <= i ? found.get(next) : null;
+                to[i] = drawn.length();
+                if (token == null) {
+                    kept[i] = true;
+                    drawn.append(text.charAt(i));
+                } else if (i == token.start()) {
+                    kept[i] = true;
+                    inlines.add(new Inline(drawn.length(), token.node(), text.substring(token.start(), token.end())));
+                    drawn.append(PLACE);
+                }
+            }
+            to[text.length()] = drawn.length();
+            for (Inline before : p.inlines()) {
+                inlines.add(new Inline(to[Math.min(before.at(), text.length())], before.node(), before.source()));
+            }
+            inlines.sort(java.util.Comparator.comparingInt(Inline::at));
+            List<Line> lines = new ArrayList<>();
+            int at = 0;
+            for (Line line : p.lines()) {
+                int length = drawn(p, line).length();
+                StringBuilder share = new StringBuilder();
+                for (int i = at; i < at + length; i++) {
+                    if (kept[i]) {
+                        share.append(drawn.charAt(to[i]));
+                    }
+                }
+                at += length;
+                if (share.length() > 0) {
+                    lines.add(new Line(line.line(), share.toString()));       // a line wholly inside a token has no share
+                }
+            }
+            if (lines.isEmpty()) {
+                lines.add(new Line(p.lines().getFirst().line(), ""));
+            }
+            List<InlineText.Run> runs = new ArrayList<>();
+            for (InlineText.Run run : p.runs()) {
+                int from = to[Math.min(run.from(), text.length())];
+                int end = to[Math.min(run.to(), text.length())];
+                if (from < end) {
+                    runs.add(run.over(from, end));
+                }
+            }
+            return new Paragraph(lines, "", p.style(), runs, inlines);
+        }
+
+        /** A paragraph whose lines a separator joins: each line read on its own. */
+        private static Paragraph inlinesByLine(Paragraph p, Tokens tokens) {
+            if (!p.runs().isEmpty()) {
+                return p;                                         // spans are by offset in the joined text: such a paragraph has no separator
+            }
+            List<Line> lines = new ArrayList<>();
+            List<Inline> inlines = new ArrayList<>(p.inlines());
+            boolean any = false;
+            int at = 0;
+            for (int i = 0; i < p.lines().size(); i++) {
+                if (i > 0) {
+                    at += p.separator().length();
+                }
+                Line line = p.lines().get(i);
+                Paragraph one = inlinesOver(new Paragraph(List.of(new Line(line.line(), line.text())), "", p.style()), tokens);
+                String text = one.lines().getFirst().text();
+                for (Inline inline : one.inlines()) {
+                    inlines.add(new Inline(inline.at() + at, inline.node(), inline.source()));
+                    any = true;
+                }
+                lines.add(new Line(line.line(), text));
+                at += text.length();
+            }
+            return any ? new Paragraph(lines, p.separator(), p.style(), List.of(), inlines) : p;
         }
 
         /** @return the drawn text of one paragraph: its lines' texts joined by the separator */
@@ -447,7 +590,28 @@ public final class LineRunModel extends StyledTextModelViewOnlyBase {
                     style.setUnderline(true);
                 }
                 StyleAttributeMap lineStyle = style.build();
-                if (p.runs().isEmpty()) {
+                if (!p.inlines().isEmpty()) {
+                    // a node stands in the text in place of its one character, in the style of the text around it
+                    List<StyledPiece> pieces = p.runs().isEmpty() ? List.of(new StyledPiece(start, start + drawn.length(), null))
+                            : p.pieces(start, start + drawn.length());
+                    for (StyledPiece piece : pieces) {
+                        StyleAttributeMap pieceStyle = piece.style() == null ? lineStyle : overlay(piece.style(), run, decoration.underline(line.line()));
+                        int from = piece.from();
+                        for (Inline inline : p.inlines()) {
+                            if (inline.at() < from || inline.at() >= piece.to()) {
+                                continue;
+                            }
+                            if (inline.at() > from) {
+                                builder.addSegment(drawn.substring(from - start, inline.at() - start), pieceStyle);
+                            }
+                            builder.addInlineNode(inline.node(), pieceStyle);
+                            from = inline.at() + 1;
+                        }
+                        if (from < piece.to()) {
+                            builder.addSegment(drawn.substring(from - start, piece.to() - start), pieceStyle);
+                        }
+                    }
+                } else if (p.runs().isEmpty()) {
                     builder.addSegment(drawn, lineStyle);
                 } else {
                     for (StyledPiece piece : p.pieces(start, start + drawn.length())) {
