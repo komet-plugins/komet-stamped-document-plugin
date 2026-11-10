@@ -195,6 +195,12 @@ public final class Captions {
         final int[] counters = new int[16];
         int figures;
         int tables;
+        /**
+         * Whether the headings walked now take numbers: on from the start where numbering is asked at
+         * all, off from a {@code :sectnums!:} line until the next {@code :sectnums:}, as AsciiDoc has
+         * it, so a book numbers its chapters and leaves its glossary and index plain.
+         */
+        boolean numbering = true;
 
         Walk(DocumentAssembly assembly, Predicate<StoredBlock> isFigure, int numberedLevels) {
             this.assembly = assembly;
@@ -204,7 +210,7 @@ public final class Captions {
 
         /** The next section number at a level: this level counts up, the levels beneath start again. */
         private String number(int level) {
-            if (level < 1 || level > numberedLevels || level >= counters.length) {
+            if (!numbering || level < 1 || level > numberedLevels || level >= counters.length) {
                 return "";
             }
             counters[level]++;
@@ -248,6 +254,12 @@ public final class Captions {
             for (long nid : block.members()) {
                 Optional<StoredLine> line = document.line(nid);
                 if (line.isPresent()) {
+                    String text = line.get().text().strip();
+                    if (text.startsWith(":sectnums!:")) {
+                        numbering = false;
+                    } else if (text.startsWith(":sectnums:")) {
+                        numbering = true;
+                    }
                     assembly.includeOf(line.get().nid()).filter(DocumentAssembly.Include::resolved).ifPresent(include -> member(include.child()));
                     continue;
                 }

@@ -190,7 +190,9 @@ public final class StoredDocumentModel {
 
     /**
      * The lists a document asks for in its header: {@code :toc:}, with {@code :toclevels:}, and
-     * the dialect's {@code :list-of-figures:} and {@code :list-of-tables:}.
+     * the dialect's {@code :list-of-figures:} and {@code :list-of-tables:}; and whether it numbers
+     * its sections at all — a {@code :sectnums!:} later in the document ends a numbered range,
+     * which the captions honour heading by heading, rather than taking the numbering back.
      *
      * @param document the host document
      * @return the lists
@@ -212,8 +214,6 @@ public final class StoredDocumentModel {
                 tables = true;
             } else if (text.startsWith(":sectnums:")) {
                 sectionNumbers = true;
-            } else if (text.startsWith(":sectnums!:")) {
-                sectionNumbers = false;
             } else {
                 Matcher levels = TOC_LEVELS.matcher(text);
                 if (levels.matches()) {

@@ -122,12 +122,47 @@ class CaptionsTest {
     }
 
     @Test
+    void numberingStopsAtSectnumsOffAndResumesAtSectnumsOn() {
+        String text = """
+                = Doc
+                :sectnums:
+
+                == First
+
+                Text.
+
+                :sectnums!:
+
+                == Preface-like
+
+                Text.
+
+                :sectnums:
+
+                == Second
+
+                Text.
+
+                :sectnums!:
+
+                == Glossary
+
+                Text.
+                """;
+        StoredDocument document = StoredFixture.parse(text);
+        Captions captions = Captions.of(DocumentAssembly.single(document, "doc.adoc"), CaptionsTest::figure, 2);
+        assertEquals(List.of("1", "", "2", ""), captions.headings().stream().map(Captions.Heading::number).toList(),
+                "a heading between :sectnums!: and :sectnums: takes no number, and the count carries on past it");
+    }
+
+    @Test
     void theHeaderSaysWhetherSectionsAreNumbered() {
         DocumentModel.Lists lists = StoredDocumentModel.lists(StoredFixture.parse("= Doc\n:sectnums:\n:sectnumlevels: 2\n\nText.\n"));
         assertTrue(lists.sectionNumbers());
         assertEquals(2, lists.sectionLevels());
         DocumentModel.Lists off = StoredDocumentModel.lists(StoredFixture.parse("= Doc\n:sectnums:\n:sectnums!:\n\nText.\n"));
-        assertFalse(off.sectionNumbers());
+        assertTrue(off.sectionNumbers(), "numbering was asked for; the toggle ends a range, which the captions honour");
+        assertFalse(StoredDocumentModel.lists(StoredFixture.parse("= Doc\n:sectnums!:\n\nText.\n")).sectionNumbers());
         assertEquals(3, StoredDocumentModel.lists(StoredFixture.parse(TEXT)).sectionLevels(), "three levels by default");
         assertFalse(StoredDocumentModel.lists(StoredFixture.parse(TEXT)).sectionNumbers());
     }
