@@ -608,6 +608,7 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
             CheckMenuItem item = new CheckMenuItem(switch (layer) {
                 case DATES -> "Dates";
                 case STAMPS -> "Stamps";
+                case COMMENTS -> "Comments";
                 case TINTS -> "Commit tints";
                 case REVIEW_QUEUE -> "Review queue";
                 case ANNOTATION_MARKS -> "Annotation marks";
@@ -2218,6 +2219,11 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
             recordAnnotation(kind, prepared.get(), "", signsAnnotations());
             return;
         }
+        if (surface.view() != DocumentSurfaceView.View.READING) {
+            // the margin is the Reading view's: from the source, the pages or the graph the note is asked for in a dialog
+            annotateSelection(kind, null, null);
+            return;
+        }
         String prompt = kind == AnnotationKind.REFUTATION ? "Why do you dispute these lines?" : "Your comment";
         surface.composeAnnotation(kind, prompt, kind == AnnotationKind.REFUTATION, signsAnnotations(),
                 text -> recordAnnotation(kind, prepared.get(), text, signsAnnotations()));
@@ -2241,6 +2247,14 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
             }
         }
         return signAnnotations;
+    }
+
+    @Override
+    public void layerShown(DocumentSurfaceView.Layer layer) {
+        CheckMenuItem item = layerItems.get(layer);
+        if (item != null) {
+            item.setSelected(true);                                // its listener remembers the choice
+        }
     }
 
     @Override

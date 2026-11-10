@@ -166,6 +166,9 @@ public final class DocumentSurfaceView {
         /** The person changed whether annotations are signed. */
         default void setSignsAnnotations(boolean sign) { }
 
+        /** The surface switched a layer on itself, as it does the comments' when one is written: the card's menu follows. */
+        default void layerShown(Layer layer) { }
+
         /** What the reader has folded in the shown document, as the view's keys, to be given back by {@link #rememberedFolds}. */
         default void rememberFolds(List<String> keys) { }
 
@@ -175,15 +178,14 @@ public final class DocumentSurfaceView {
         }
     }
 
-    /** The toggles of the Provenance layer. */
     /**
      * What the Provenance layer draws over the document, each switched on its own: the dates in
-     * the left margin, the stamps in the right, the commit tints over the text, the review
-     * queue, and the annotation marks. The margins' notes, the comments in force, are not a
-     * layer: they are the document's own and stand in the right margin whether or not the
-     * stamps do.
+     * the left margin, the stamps in the right, the comments in force as notes in the right
+     * margin, the commit tints over the text, the review queue, and the annotation marks. The
+     * comments are a layer apart from the stamps: either stands in the right margin without the
+     * other, and the margin goes only when no layer that is on has anything to draw there.
      */
-    enum Layer { DATES, STAMPS, TINTS, REVIEW_QUEUE, ANNOTATION_MARKS }
+    enum Layer { DATES, STAMPS, COMMENTS, TINTS, REVIEW_QUEUE, ANNOTATION_MARKS }
 
     /** The views: three on the surface's areas, and the Graph, a tree the card hosts in their place. */
     enum View { READING, SOURCE, PAGE_LAYOUT, GRAPH }
@@ -293,7 +295,7 @@ public final class DocumentSurfaceView {
     private final Host host;
     private final DocumentSurface surface;
     private final Map<Long, Image> badges = new HashMap<>();
-    private final Set<Layer> layers = EnumSet.of(Layer.DATES, Layer.STAMPS, Layer.ANNOTATION_MARKS);
+    private final Set<Layer> layers = EnumSet.of(Layer.DATES, Layer.STAMPS, Layer.COMMENTS, Layer.ANNOTATION_MARKS);
     private final List<Area> areas = new ArrayList<>();
     private final List<Area> sources = new ArrayList<>();
     /** The Page layout's units: one area per paragraph-like piece of the print model, what the layout oracles place. */
@@ -694,7 +696,8 @@ public final class DocumentSurfaceView {
         String title = document.attributes().isEmpty() ? "" : document.attributes().getFirst();
         network.ike.komet.document.print.DocumentModel.Lists matter = network.ike.komet.document.print.StoredDocumentModel.lists(document);
         captions = Captions.of(shown, DocumentSurfaceView::isFigure, matter.sectionNumbers() ? matter.sectionLevels() : 0);
-        notedStamps.clear();
+        noteHomes = null;
+        composing = null;
         renderMember(shown.host(), 0, "");
         if (title.isEmpty() && document.root() != null) {
             title = document.root().title();
@@ -725,8 +728,9 @@ public final class DocumentSurfaceView {
             return;                                              // the card shows the pages or the graph in the surface's place
         }
         if (view == View.READING) {
-            // the left margin is the dates'; the right is the stamps', and the notes' while any comment is in force
-            surface.setMarginTracks(layers.contains(Layer.DATES) ? 2 : 0, layers.contains(Layer.STAMPS) || hasNotes() ? 2 : 0);
+            // the left margin is the dates'; the right stands while any layer that is on has something to draw in it
+            rightMargin = rightMarginInUse();
+            surface.setMarginTracks(layers.contains(Layer.DATES) ? 2 : 0, rightMargin ? 2 : 0);
             surface.setBlocks(areas.stream().map(a -> a.documentBlock).toList());
             applyFolds();
         } else {
@@ -2914,42 +2918,104 @@ public final class DocumentSurfaceView {
         fillNotes(area);
     }
 
-    /** The annotations whose notes are drawn already, so one that covers lines in several blocks is read once, beside its first. */
-    private final Set<Long> notedStamps = new HashSet<>();
+    /**
+     * The area each note stands beside, by its annotation's STAMP: the first block its lines are
+     * in, so an annotation that covers lines in several blocks is read once. Kept by area, not as
+     * a set of the notes drawn, since a block is filled again every time the surface builds it or
+     * a layer is switched, and a note drawn once must be drawn again in the same place.
+     */
+    private Map<Long, Area> noteHomes;
+    /** The area a note is being written beside, or null. */
+    private Area composing;
+    /** Whether the Reading view was last stacked with a right margin. */
+    private boolean rightMargin;
 
-    /** @return whether any line shown has a note for the margin: a comment in force, or a refutation with a reason */
-    private boolean hasNotes() {
+    /** Whether an annotation has words for the margin: a comment, or a refutation with a reason. */
+    private static boolean spoken(GitDocumentMaterializer.StoredAnnotation annotation) {
+        return annotation.stamp() != null && (annotation.kind() == AnnotationKind.COMMENT
+                || annotation.kind() == AnnotationKind.REFUTATION && annotation.text() != null && !annotation.text().isBlank());
+    }
+
+    private Map<Long, Area> noteHomes() {
+        if (noteHomes == null) {
+            Map<Long, Area> homes = new HashMap<>();
+            for (Area area : areas) {
+                for (StoredLine line : area.lines) {
+                    for (GitDocumentMaterializer.StoredAnnotation annotation : line.inForce()) {
+                        if (spoken(annotation)) {
+                            homes.putIfAbsent(annotation.stamp().nid(), area);
+                        }
+                    }
+                }
+            }
+            noteHomes = homes;
+        }
+        return noteHomes;
+    }
+
+    /**
+     * Whether the right margin has anything to stand in it: the stamps, a note being written, the
+     * comments in force while their layer is on, or the marks of the annotation and review layers.
+     * A layer that is on is drawn, whether or not the stamps are.
+     */
+    private boolean rightMarginInUse() {
+        if (layers.contains(Layer.STAMPS) || composing != null) {
+            return true;
+        }
         if (assembly == null) {
             return false;
         }
+        if (layers.contains(Layer.COMMENTS) && !noteHomes().isEmpty()) {
+            return true;
+        }
+        boolean marks = layers.contains(Layer.ANNOTATION_MARKS);
+        boolean queue = layers.contains(Layer.REVIEW_QUEUE);
+        if (!marks && !queue) {
+            return false;
+        }
         for (StoredLine line : assembly.lines()) {
-            for (GitDocumentMaterializer.StoredAnnotation annotation : line.inForce()) {
-                if (annotation.kind() == AnnotationKind.COMMENT
-                        || annotation.kind() == AnnotationKind.REFUTATION && annotation.text() != null && !annotation.text().isBlank()) {
-                    return true;
-                }
+            if (queue && queued(line)) {
+                return true;
+            }
+            if (marks && (!line.affirmers().isEmpty() || !line.refuters().isEmpty()
+                    || line.inForce().stream().anyMatch(a -> a.kind() == AnnotationKind.COMMENT))) {
+                return true;
             }
         }
         return false;
     }
 
+    /** Stacks the view again where the reader is: a margin came or went, and the place must not. */
+    private void restackInPlace() {
+        // the pages and the graph stand in the surface's place: there is nothing of its own to keep
+        DocumentSurface.Viewpoint at = view == View.READING || view == View.SOURCE ? surface.viewpoint() : null;
+        stack();
+        if (at != null) {
+            surface.restoreViewpoint(new DocumentSurface.Viewpoint(at.blockIndex(), at.fraction(), null));
+        }
+    }
+
     /**
-     * The margin's notes: every comment in force on the area's lines, and every refutation with
-     * a reason, each beside the first block its lines are in, with who wrote it and when.
+     * The margin's notes, while the Comments layer is on: every comment in force on the area's
+     * lines, and every refutation with a reason, each beside the first block its lines are in,
+     * with who wrote it and when. A note being written stays whatever the layer says.
      */
     private void fillNotes(Area area) {
-        area.notes.getChildren().removeIf(n -> !n.getStyleClass().contains("stamped-document-note-composer"));
+        area.notes.getChildren().removeIf(n -> !n.getStyleClass().contains(COMPOSER_STYLE));
+        if (!layers.contains(Layer.COMMENTS)) {
+            return;
+        }
+        Set<Long> drawn = new HashSet<>();
         for (StoredLine line : area.lines) {
             for (GitDocumentMaterializer.StoredAnnotation annotation : line.inForce()) {
-                boolean spoken = annotation.kind() == AnnotationKind.COMMENT
-                        || annotation.kind() == AnnotationKind.REFUTATION && annotation.text() != null && !annotation.text().isBlank();
-                if (!spoken || annotation.stamp() == null || !notedStamps.add(annotation.stamp().nid())) {
-                    continue;
+                if (spoken(annotation) && noteHomes().get(annotation.stamp().nid()) == area && drawn.add(annotation.stamp().nid())) {
+                    area.notes.getChildren().add(note(annotation, area));
                 }
-                area.notes.getChildren().add(note(annotation, area));
             }
         }
     }
+
+    private static final String COMPOSER_STYLE = "stamped-document-note-composer";
 
     /** One note: the author's identicon and the day, then the text, on a quiet rule; its tooltip says what it is. */
     private Node note(GitDocumentMaterializer.StoredAnnotation annotation, Area area) {
@@ -2988,11 +3054,12 @@ public final class DocumentSurfaceView {
     public void composeAnnotation(AnnotationKind kind, String prompt, boolean required, boolean signed, java.util.function.Consumer<String> record) {
         int[] span = selectedAreas();
         if (span == null) {
-            host.status("Select the lines first, then " + kind.verb().toLowerCase() + " them.");
+            host.status(view == View.READING ? "Select the lines first, then " + kind.verb().toLowerCase() + " them."
+                    : "A note is written in the Reading view's margin; switch to the Reading view to " + kind.verb().toLowerCase() + " these lines.");
             return;
         }
+        closeComposer(false);
         Area area = areas.get(span[0]);
-        area.notes.getChildren().removeIf(n -> n.getStyleClass().contains("stamped-document-note-composer"));
         javafx.scene.control.TextArea text = new javafx.scene.control.TextArea();
         text.setId("stampedDocumentNoteText");
         text.setPromptText(prompt);
@@ -3006,9 +3073,8 @@ public final class DocumentSurfaceView {
         hint.setWrapText(true);
         VBox composer = new VBox(2, text, hint);
         composer.setFillWidth(true);
-        composer.getStyleClass().add("stamped-document-note-composer");
+        composer.getStyleClass().add(COMPOSER_STYLE);
         composer.setStyle("-fx-border-color: transparent transparent transparent #378add; -fx-border-width: 0 0 0 2; -fx-padding: 1 0 1 6;");
-        Runnable close = () -> area.notes.getChildren().remove(composer);
         text.addEventFilter(javafx.scene.input.KeyEvent.KEY_PRESSED, e -> InlineMarks.forKey(e).ifPresent(mark -> {
             // the same keys as the block editor's, over the note's whole text
             javafx.scene.control.IndexRange range = text.getSelection();
@@ -3019,7 +3085,7 @@ public final class DocumentSurfaceView {
         }));
         text.setOnKeyPressed(e -> {
             if (e.getCode() == javafx.scene.input.KeyCode.ESCAPE) {
-                close.run();
+                closeComposer(true);
                 e.consume();
             } else if (e.getCode() == javafx.scene.input.KeyCode.ENTER && !e.isShiftDown()) {
                 String body = text.getText().strip();
@@ -3027,15 +3093,57 @@ public final class DocumentSurfaceView {
                     hint.setText("A reason is needed");
                     hint.setStyle("-fx-text-fill: #a32d2d;");
                 } else {
-                    close.run();
+                    closeComposer(false);                           // the record reads the document again, which stacks it
                     record.accept(body);
                 }
                 e.consume();
             }
         });
         area.notes.getChildren().addFirst(composer);
+        composing = area;
+        area.documentBlock.setPinned(true);                         // stays built while it is written in, wherever the reader scrolls
+        // the note is focused when it joins the scene: its block may be built, or its margin stacked, a pulse from now
+        text.sceneProperty().addListener((obs, was, is) -> {
+            if (is != null) {
+                javafx.application.Platform.runLater(text::requestFocus);
+            }
+        });
+        if (!layers.contains(Layer.COMMENTS)) {
+            // what is written will stand in the margin once recorded, so the layer it stands in comes on
+            layers.add(Layer.COMMENTS);
+            host.layerShown(Layer.COMMENTS);
+            redecorate();
+        } else if (!rightMargin) {
+            restackInPlace();                                       // the margin comes for the note, whatever else is off
+        }
         unfoldToShow(span[0]);
+        surface.ensureBuilt(span[0]);
         javafx.application.Platform.runLater(text::requestFocus);   // once it is in the scene and laid out
+    }
+
+    /** @return whether a note is being written in the margin */
+    boolean composing() {
+        return composing != null;
+    }
+
+    /**
+     * Takes away the note being written, if one is.
+     *
+     * @param restack whether to give the margin back to the body when nothing else stands in it
+     */
+    private void closeComposer(boolean restack) {
+        Area area = composing;
+        if (area == null) {
+            return;
+        }
+        composing = null;
+        area.notes.getChildren().removeIf(n -> n.getStyleClass().contains(COMPOSER_STYLE));
+        if (area.documentBlock != null && area != editing) {
+            area.documentBlock.setPinned(false);
+        }
+        if (restack && view == View.READING && rightMargin && !rightMarginInUse()) {
+            restackInPlace();
+        }
     }
 
     private static Label mark(String text, String colour, String tooltip) {
@@ -3172,7 +3280,7 @@ public final class DocumentSurfaceView {
         for (Area page : pages) {
             page.decorate();
         }
-        stack();
+        restackInPlace();
     }
 
     /**
