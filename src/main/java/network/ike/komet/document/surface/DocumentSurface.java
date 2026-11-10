@@ -131,8 +131,8 @@ public final class DocumentSurface extends BorderPane {
         setTop(header);
         setCenter(scroll);
         setBottom(footer);
-        scroll.vvalueProperty().addListener((obs, was, is) -> virtualize());
-        scroll.viewportBoundsProperty().addListener((obs, was, is) -> virtualize());
+        scroll.vvalueProperty().addListener((obs, was, is) -> lookSoon());
+        scroll.viewportBoundsProperty().addListener((obs, was, is) -> lookSoon());
     }
 
     // ── Regions (dev-interaction-surface-family) ──────────────────────────
@@ -207,14 +207,14 @@ public final class DocumentSurface extends BorderPane {
             blocks.add(block);
             if (virtual) {
                 block.released();
-                stack.getChildren().add(placeholder(block, block.estimatedHeight()));
+                stack.getChildren().add(cell(block));
             } else {
                 stack.getChildren().add(stackNode(block));
                 block.realized();
             }
         }
         if (virtual) {
-            Platform.runLater(this::virtualize);
+            lookSoon();
         }
     }
 
@@ -234,19 +234,81 @@ public final class DocumentSurface extends BorderPane {
 
     private boolean virtual;
     private boolean virtualizing;
+    private boolean lookPending;
     /** How many times in a row the surface looked before it was laid out. */
     private int unlaidLooks;
 
-    /** An unbuilt block's stand-in: a region of its expected height, hidden as the block would be. */
-    private Node placeholder(DocumentBlock block, double height) {
-        javafx.scene.layout.Region stand = new javafx.scene.layout.Region();
-        stand.getStyleClass().add(PLACEHOLDER_STYLE);
-        double h = height > 0 ? height : DEFAULT_ESTIMATE;
-        stand.setMinHeight(h);
-        stand.setPrefHeight(h);
-        stand.setMaxHeight(h);
-        block.setRow(stand);
-        return followShown(block.node(), stand);
+    /**
+     * Looks once the current pulse has laid the stack out: scroll events come many to a pulse and
+     * a look reads the blocks' places from the last layout, so one look a pulse is enough, and a
+     * look after a change waits a pulse for the new heights.
+     */
+    private void lookSoon() {
+        if (!virtual || lookPending) {
+            return;
+        }
+        lookPending = true;
+        Platform.runLater(() -> Platform.runLater(() -> {
+            lookPending = false;
+            virtualize();
+        }));
+    }
+
+    /**
+     * A block's place in the stack while the document is built as it is read: a cell holding a
+     * stand-in of the block's expected height, and, once the block is built, its row. The row is
+     * built into the cell once and then only switched on and off, since a node that joins the
+     * scene pays for its styles every time, and that was the whole cost of scrolling.
+     */
+    private static final class Cell extends javafx.scene.layout.StackPane {
+        final javafx.scene.layout.Region stand = new javafx.scene.layout.Region();
+        /** Holds the row, and is what is switched: the row's own visibility may be bound, as a hidden block's is. */
+        final javafx.scene.layout.StackPane holder = new javafx.scene.layout.StackPane();
+        Node row;
+
+        Cell(double height) {
+            stand.getStyleClass().add(PLACEHOLDER_STYLE);
+            standAt(height);
+            holder.setAlignment(javafx.geometry.Pos.TOP_LEFT);
+            holder.setVisible(false);
+            holder.setManaged(false);
+            getChildren().addAll(stand, holder);
+            setAlignment(javafx.geometry.Pos.TOP_LEFT);
+        }
+
+        void standAt(double height) {
+            double h = height > 0 ? height : DEFAULT_ESTIMATE;
+            stand.setMinHeight(h);
+            stand.setPrefHeight(h);
+            stand.setMaxHeight(h);
+        }
+
+        /** Shows the row, built into the cell the first time. */
+        void show(Node built) {
+            if (row == null) {
+                row = built;
+                holder.getChildren().add(row);
+            }
+            holder.setVisible(true);
+            holder.setManaged(true);
+            stand.setVisible(false);
+            stand.setManaged(false);
+        }
+
+        /** Shows the stand-in at the height the row stood at; the row stays, switched off. */
+        void hide(double height) {
+            standAt(height);
+            holder.setVisible(false);
+            holder.setManaged(false);
+            stand.setVisible(true);
+            stand.setManaged(true);
+        }
+    }
+
+    private Node cell(DocumentBlock block) {
+        Cell cell = new Cell(block.estimatedHeight());
+        block.setRow(cell);
+        return followShown(block.node(), cell);
     }
 
     /**
@@ -262,17 +324,14 @@ public final class DocumentSurface extends BorderPane {
         if (contentHeight <= 0 || scroll.getViewportBounds().getHeight() <= 0) {
             // not laid out yet: every block would read as at the top; look once the stack has its heights
             if (unlaidLooks++ < 20) {
-                Platform.runLater(this::virtualize);
+                lookSoon();
             }
             return;
         }
         unlaidLooks = 0;
         virtualizing = true;
         try {
-            // laid out first, so a block built on the last look has its height and its place before the next is judged
-            stack.applyCss();
-            stack.layout();
-            contentHeight = stack.getBoundsInLocal().getHeight();
+            // the blocks' places are read from the last layout: forcing one here measured every built block's text each scroll
             double viewport = Math.max(1, scroll.getViewportBounds().getHeight());
             double range = Math.max(0, contentHeight - viewport);
             double top = scroll.getVvalue() * range;
@@ -296,36 +355,37 @@ public final class DocumentSurface extends BorderPane {
                 }
             }
             if (changed) {
-                Platform.runLater(this::virtualize);                     // the heights moved: look again once they are laid out
+                lookSoon();                                              // the heights moved: look again once they are laid out
             }
         } finally {
             virtualizing = false;
         }
     }
 
-    /** Builds one block in place of its placeholder. */
+    /** Builds one block into its cell, or switches it back on. */
     private void realize(int index) {
         DocumentBlock block = blocks.get(index);
-        if (block.isRealized() || index >= stack.getChildren().size()) {
+        if (block.isRealized() || index >= stack.getChildren().size() || !(stack.getChildren().get(index) instanceof Cell cell)) {
             return;
         }
-        Node row = stackNode(block);
-        stack.getChildren().set(index, row);
+        if (cell.row == null) {
+            Node row = stackNode(block);                                 // sets the block's row: put the cell back as what stands in the stack
+            cell.show(row);
+        } else {
+            cell.show(cell.row);
+        }
+        block.setRow(cell);
         block.realized();
     }
 
-    /** Lets a built block go, a placeholder of the height it stood at in its place. */
+    /** Switches a built block off, its stand-in at the height it stood at. */
     private void release(int index) {
         DocumentBlock block = blocks.get(index);
-        if (!block.isRealized() || index >= stack.getChildren().size()) {
+        if (!block.isRealized() || index >= stack.getChildren().size() || !(stack.getChildren().get(index) instanceof Cell cell)) {
             return;
         }
-        double height = block.stackNode().getBoundsInParent().getHeight();
-        Node row = block.stackNode();
-        if (row instanceof GridPane grid) {
-            grid.getChildren().clear();                                  // the body and marginalia are the block's to keep
-        }
-        stack.getChildren().set(index, placeholder(block, height > 0 ? height : block.estimatedHeight()));
+        double height = cell.getBoundsInParent().getHeight();
+        cell.hide(height > 0 ? height : block.estimatedHeight());
         block.released();
     }
 
