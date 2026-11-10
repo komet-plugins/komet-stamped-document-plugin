@@ -279,6 +279,8 @@ public final class DocumentSurfaceView {
     private Styles st = Styles.SCREEN;
     /** The document's footnote count while the Page layout is built. */
     private network.ike.komet.document.print.InlineText.Numbering printNotes = new network.ike.komet.document.print.InlineText.Numbering();
+    /** The Reading view's footnote count: one per shown document, as the pages have theirs. */
+    private network.ike.komet.document.print.InlineText.Numbering readingNotes = new network.ike.komet.document.print.InlineText.Numbering();
     /** What the structured blocks of the shown document know of each other; a new one each time a document is shown. */
     private BlockContext blocks = new BlockContext();
     /** Where the build in progress adds its areas: the Reading view's, or the Page layout's. */
@@ -698,6 +700,7 @@ public final class DocumentSurfaceView {
         captions = Captions.of(shown, DocumentSurfaceView::isFigure, matter.sectionNumbers() ? matter.sectionLevels() : 0);
         noteHomes = null;
         composing = null;
+        readingNotes = new network.ike.komet.document.print.InlineText.Numbering();
         renderMember(shown.host(), 0, "");
         if (title.isEmpty() && document.root() != null) {
             title = document.root().title();
@@ -947,14 +950,14 @@ public final class DocumentSurfaceView {
                         // The print model: the host's title is the document title, a child's a heading at its include offset.
                         modelOrdinal++;
                         StyleAttributeMap style = member.host() ? st.title() : st.heading(Math.max(1, offsetOf(member)));
-                        Area title = add(member, block, heading, paragraphs(heading, " ", style,
+                        Area title = addProse(member, block, heading, paragraphs(heading, " ", style,
                                 t -> captions.heading(block, t.startsWith("= ") ? t.substring(2) : t)), depth, false, under);
                         if (title != null) {
                             title.heading = true;
                             title.splittable = false;
                         }
                     } else {
-                        add(member, block, heading, paragraphs(heading, " ", st.title(),
+                        addProse(member, block, heading, paragraphs(heading, " ", st.title(),
                                 t -> captions.heading(block, t.startsWith("= ") ? t.substring(2) : t)), depth, false, under);
                     }
                 }
@@ -984,7 +987,7 @@ public final class DocumentSurfaceView {
                 if (print && nesting == 0) {
                     modelOrdinal++;
                 }
-                add(member, block, heading.isEmpty() ? own : heading, paragraphs(heading.isEmpty() ? own : heading, " ", style,
+                addProse(member, block, heading.isEmpty() ? own : heading, paragraphs(heading.isEmpty() ? own : heading, " ", style,
                         t -> captions.heading(block, t.replaceFirst("^=+\\s*", ""))), depth, false, block.title());
                 renderChildren(member, children, depth, block.title());
             }
@@ -996,7 +999,7 @@ public final class DocumentSurfaceView {
                     modelOrdinal++;
                 }
                 LineRunModel.Spec spec = paragraphs(own, " ", st.prose(), print ? DocumentSurfaceView::printProse : DocumentSurfaceView::readingProse);
-                add(member, block, own, print ? spec : withoutEmptyLines(spec), depth, true, section);
+                addProse(member, block, own, print ? spec : withoutEmptyLines(spec), depth, true, section);
             }
             case ADMONITION -> {
                 if (print && nesting == 0) {
@@ -1011,7 +1014,7 @@ public final class DocumentSurfaceView {
                     }
                     lines.add(new LineRunModel.Line(own.get(i), text));
                 }
-                Area area = add(member, block, own, new LineRunModel.Spec(List.of(new LineRunModel.Paragraph(lines, " ", st.prose()))), depth, true, section);
+                Area area = addProse(member, block, own, new LineRunModel.Spec(List.of(new LineRunModel.Paragraph(lines, " ", st.prose()))), depth, true, section);
                 if (area != null && area.area != null) {
                     area.area.setStyle("-fx-background-color: #FFF8E1; -fx-background-radius: 4;");
                 }
@@ -1060,7 +1063,7 @@ public final class DocumentSurfaceView {
                 if (print) {
                     caption(member, block, network.ike.komet.document.print.TypstWriter.TITLE_SCALE, depth, section);
                 } else if (!own.isEmpty()) {
-                    add(member, block, own, paragraphs(own, " ", st.bold(), t -> t.replaceFirst("^\\.", "")), depth, false, section);
+                    addProse(member, block, own, paragraphs(own, " ", st.bold(), t -> t.replaceFirst("^\\.", "")), depth, false, section);
                 }
                 nesting++;
                 int n = 0;
@@ -1079,7 +1082,7 @@ public final class DocumentSurfaceView {
                     }
                     lines.add(new LineRunModel.Line(own.get(i), i == 0 ? marker + " " + text : text));
                 }
-                add(member, block, own, new LineRunModel.Spec(List.of(new LineRunModel.Paragraph(lines, " ", st.prose()))), depth, true, section);
+                addProse(member, block, own, new LineRunModel.Spec(List.of(new LineRunModel.Paragraph(lines, " ", st.prose()))), depth, true, section);
                 renderChildren(member, children, depth + 1, section);
             }
             case TABLE -> {
@@ -1723,7 +1726,9 @@ public final class DocumentSurfaceView {
      */
     private void title(Area area, StoredBlock block) {
         if (!block.title().isEmpty()) {
-            Label title = new Label(captions.text(block));
+            // a caption is a label, in one weight: its words without their markup, and without a note's macro
+            Label title = new Label(network.ike.komet.document.print.InlineText.of(
+                    network.ike.komet.document.print.InlineText.withoutNotes(captions.text(block))).text());
             title.setFont(Font.font("System", javafx.scene.text.FontWeight.BOLD, 13));
             title.setWrapText(true);                                     // a figure's title is read whole, not cut to the column
             title.setMaxWidth(Double.MAX_VALUE);
@@ -1764,6 +1769,23 @@ public final class DocumentSurfaceView {
      * @return the first area of the block's own lines, or {@code null} when every line was an include shown in place
      */
     private Area add(DocumentAssembly.Member member, StoredBlock block, List<StoredLine> lines, LineRunModel.Spec spec, int depth, boolean editable, String section) {
+        return add(member, block, lines, spec, depth, editable, section, false);
+    }
+
+    /**
+     * Adds a block whose text is prose: a paragraph, a list item, an admonition, a heading. The
+     * Reading view reads its inline markup as the pages do, so strong text is bold, monospace is
+     * set in the mono font, and a link or a cross reference reads as its words; what is not prose,
+     * a listing, a header's attribute lines, a block's delimiters, stays as written.
+     */
+    private Area addProse(DocumentAssembly.Member member, StoredBlock block, List<StoredLine> lines, LineRunModel.Spec spec, int depth, boolean editable, String section) {
+        return add(member, block, lines, spec, depth, editable, section, true);
+    }
+
+    private Area add(DocumentAssembly.Member member, StoredBlock block, List<StoredLine> lines, LineRunModel.Spec spec, int depth, boolean editable, String section,
+                     boolean prose) {
+        // the pages read every block the print model calls prose; the Reading view the blocks its caller says are
+        boolean inline = print ? printsInline(block) : prose;
         List<DocumentAssembly.Part> parts = assembly.parts(lines);
         if (parts.size() == 1 && !parts.getFirst().included()) {
             if (print) {
@@ -1774,9 +1796,9 @@ public final class DocumentSurfaceView {
                 if (kept.isEmpty()) {
                     return null;
                 }
-                return addArea(member, block, kept, kept.size() == lines.size() ? spec : restrict(spec, kept), depth, editable, section);
+                return addArea(member, block, kept, kept.size() == lines.size() ? spec : restrict(spec, kept), depth, editable, section, inline);
             }
-            return addArea(member, block, lines, spec, depth, editable, section);
+            return addArea(member, block, lines, spec, depth, editable, section, inline);
         }
         Area first = null;
         for (DocumentAssembly.Part part : parts) {
@@ -1797,7 +1819,7 @@ public final class DocumentSurfaceView {
                     continue;
                 }
                 List<StoredLine> kept = print ? printable(block, part.lines()) : part.lines();
-                Area area = addArea(member, block, kept, restrict(spec, kept), depth, false, section);
+                Area area = addArea(member, block, kept, restrict(spec, kept), depth, false, section, inline);
                 if (first == null) {
                     first = area;
                 }
@@ -1826,7 +1848,7 @@ public final class DocumentSurfaceView {
 
     private Area addArea(DocumentAssembly.Member member, StoredBlock block, List<StoredLine> lines, LineRunModel.Spec read, int depth, boolean editable, String section,
                          boolean inline) {
-        LineRunModel.Inlined inlined = inline ? read.inlined(printNotes) : null;
+        LineRunModel.Inlined inlined = inline ? (print ? read.inlined(printNotes) : onScreen(read).inlined(readingNotes)) : null;
         LineRunModel.Spec spec = inlined == null ? read : inlined.spec();
         // a unit of the Page layout is bare: the oracles place it by its text and style, and its lines are built from it
         Area area = new Area(member, block, lines, spec, editable && !past, section, print);
@@ -1846,7 +1868,20 @@ public final class DocumentSurfaceView {
             areasByBlock.put(block.nid(), area);
         }
         area.holder.getChildren().add(area.area);
-        Node references = references(lines);
+        if (inlined != null) {
+            // a footnote's mark stands in the text; its words stand beneath the block, where the page has them at its foot
+            for (LineRunModel.FootNote foot : inlined.notes()) {
+                Label note = new Label(foot.note().drawn().text());
+                note.setFont(SMALL);
+                note.setWrapText(true);
+                note.setMaxWidth(Double.MAX_VALUE);
+                note.setStyle("-fx-text-fill: #4b5563;");
+                note.getStyleClass().add("stamped-document-footnote");
+                area.holder.getChildren().add(note);
+            }
+        }
+        // a footnote read into the text stands beneath it with its number, so the references line need not say it again
+        Node references = references(lines, inlined == null || inlined.notes().isEmpty());
         if (references != null) {
             area.holder.getChildren().add(references);
         }
@@ -1883,6 +1918,16 @@ public final class DocumentSurfaceView {
                     bindFoldMark(area);
                 });
         return area;
+    }
+
+    /** A spec whose spans are drawn in the screen's faces: the Reading view's prose. */
+    private static LineRunModel.Spec onScreen(LineRunModel.Spec spec) {
+        List<LineRunModel.Paragraph> paragraphs = new ArrayList<>();
+        for (LineRunModel.Paragraph p : spec.paragraphs()) {
+            paragraphs.add(new LineRunModel.Paragraph(p.lines(), p.separator(),
+                    StyleAttributeMap.builder().merge(p.style()).set(LineRunModel.SCREEN, Boolean.TRUE).build(), p.runs()));
+        }
+        return new LineRunModel.Spec(paragraphs);
     }
 
     /** Whether a block's printed text is prose, its inline markup read; a listing's is its source. */
@@ -2154,10 +2199,13 @@ public final class DocumentSurfaceView {
     }
 
     /** The references on the block's lines, as one small line, or null when there are none. */
-    private Node references(List<StoredLine> own) {
+    private Node references(List<StoredLine> own, boolean footnotes) {
         List<String> parts = new ArrayList<>();
         for (StoredLine line : own) {
             for (StoredReference r : assembly.references().getOrDefault(line.nid(), List.of())) {
+                if (!footnotes && r.kind() == design.knowledge.stamp.adoc.dialect.Reference.Kind.FOOTNOTE) {
+                    continue;
+                }
                 parts.add(switch (r.kind()) {
                     case INDEX_TERM -> "⌕ " + r.target();
                     case CROSS_REFERENCE -> "↗ " + r.target() + (r.text().isEmpty() ? "" : " (" + r.text() + ")");

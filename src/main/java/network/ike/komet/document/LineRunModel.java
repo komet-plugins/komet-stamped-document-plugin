@@ -59,6 +59,18 @@ public final class LineRunModel extends StyledTextModelViewOnlyBase {
     public static final StyleAttribute<Boolean> JUSTIFY_FILL = StyleAttribute.character("network.ike.komet.document.justifyFill", Boolean.class);
 
     /**
+     * Marks a base style as the screen's, the Reading view's: an inline span over it is drawn in
+     * faces the screen has. The app's body face has no italic, and asked for one JavaFX gives its
+     * bold; and the pages' mono face is loaded only once a page is laid out.
+     */
+    public static final StyleAttribute<Boolean> SCREEN = StyleAttribute.character("network.ike.komet.document.screen", Boolean.class);
+    /** The screen's mono face, as the Reading view's listings have it, and its size beside the body's. */
+    static final String SCREEN_MONO = "Menlo";
+    static final double SCREEN_MONO_SCALE = 12.0 / 14.0;
+    /** A face the app loads with an italic, close to its body face. */
+    static final String SCREEN_ITALIC = "Open Sans";
+
+    /**
      * One run of the model: the span of one source line in one paragraph.
      *
      * @param paragraph the paragraph index
@@ -145,13 +157,18 @@ public final class LineRunModel extends StyledTextModelViewOnlyBase {
             return out;
         }
 
-        /** The base style with a span over it: inline raw in the mono font at the raw size, as the Typst writer sets it. */
+        /**
+         * The base style with a span over it: on a page, inline raw in the mono font at the raw
+         * size, as the Typst writer sets it; on the screen, in the screen's mono face, and an
+         * italic in a face that has one.
+         */
         private StyleAttributeMap styled(InlineText.Run run) {
+            boolean screen = Boolean.TRUE.equals(style.get(SCREEN));
             StyleAttributeMap.Builder b = StyleAttributeMap.builder().merge(style);
             if (run.mono()) {
-                b.setFontFamily(DocumentFonts.MONO);
+                b.setFontFamily(screen ? SCREEN_MONO : DocumentFonts.MONO);
                 if (style.getFontSize() != null) {
-                    b.setFontSize(style.getFontSize() * TypstWriter.RAW_SCALE);
+                    b.setFontSize(style.getFontSize() * (screen ? SCREEN_MONO_SCALE : TypstWriter.RAW_SCALE));
                 }
             }
             if (run.bold()) {
@@ -159,6 +176,9 @@ public final class LineRunModel extends StyledTextModelViewOnlyBase {
             }
             if (run.italic()) {
                 b.setItalic(true);
+                if (screen && !run.mono()) {
+                    b.setFontFamily(SCREEN_ITALIC);
+                }
             }
             return b.build();
         }
