@@ -228,7 +228,13 @@ public final class Captions {
         final Map<Long, Caption> byBlock = new HashMap<>();
         final List<Caption> all = new ArrayList<>();
         final List<Heading> headings = new ArrayList<>();
-        final Set<String> walked = new HashSet<>();
+        /** The showings walked: a file shown twice is walked in each place, for what the second showing reads that the first did not. */
+        final Set<DocumentAssembly.Member> walked = new HashSet<>();
+        /**
+         * The headings listed, by block: a section its file shows twice is one section. It is numbered
+         * and listed where it is first shown, and reads the same number wherever it is shown again.
+         */
+        final Set<Long> listed = new HashSet<>();
         final int numberedLevels;
         /** The section counters by level, 1 the first. */
         final int[] counters = new int[16];
@@ -264,27 +270,34 @@ public final class Captions {
         }
 
         void member(DocumentAssembly.Member member) {
-            if (member == null || member.document() == null || member.document().root() == null || !walked.add(member.path())) {
+            if (member == null || member.shown() == null || member.shown().root() == null || !walked.add(member)) {
                 return;
             }
-            block(member, member.document().root());
+            block(member, member.shown().root());
         }
 
         private void block(DocumentAssembly.Member member, StoredBlock block) {
-            StoredDocument document = member.document();
+            StoredDocument document = member.shown();
             if (block.kind() == Block.Kind.SECTION && !block.title().isEmpty()) {
-                int level = block.level() + member.depth();
-                headings.add(new Heading(level, block.title(), block.nid(), member, number(level)));
+                if (listed.add(block.nid())) {
+                    int level = block.level() + member.depth();
+                    headings.add(new Heading(level, block.title(), block.nid(), member, number(level)));
+                }
             } else if (block.kind() == Block.Kind.DOCUMENT && !member.host() && !block.title().isEmpty()) {
-                int level = Math.max(1, member.depth());
-                headings.add(new Heading(level, block.title(), block.nid(), member, number(level)));
+                if (listed.add(block.nid())) {
+                    int level = Math.max(1, member.depth());
+                    headings.add(new Heading(level, block.title(), block.nid(), member, number(level)));
+                }
             }
             if (!block.title().isEmpty() && block.kind() != Block.Kind.SECTION && block.kind() != Block.Kind.DOCUMENT) {
                 Kind kind = block.kind() == Block.Kind.TABLE ? Kind.TABLE : isFigure.test(block) ? Kind.FIGURE : null;
                 if (kind != null) {
-                    Caption caption = new Caption(kind, kind == Kind.FIGURE ? ++figures : ++tables, block.title(), block.nid(), member);
-                    byBlock.put(block.nid(), caption);
-                    all.add(caption);
+                    if (!byBlock.containsKey(block.nid())) {
+                        // a figure or a table its file shows twice is one: counted and listed where it is first shown
+                        Caption caption = new Caption(kind, kind == Kind.FIGURE ? ++figures : ++tables, block.title(), block.nid(), member);
+                        byBlock.put(block.nid(), caption);
+                        all.add(caption);
+                    }
                     if (kind == Kind.TABLE) {
                         return;                                          // a table's rows and cells are its own
                     }
@@ -299,7 +312,7 @@ public final class Captions {
                     } else if (text.startsWith(":sectnums:")) {
                         numbering = true;
                     }
-                    assembly.includeOf(line.get().nid()).filter(DocumentAssembly.Include::resolved).ifPresent(include -> member(include.child()));
+                    assembly.includeOf(member, line.get().nid()).filter(DocumentAssembly.Include::resolved).ifPresent(include -> member(include.child()));
                     continue;
                 }
                 StoredBlock child = document.blocks().get(nid);

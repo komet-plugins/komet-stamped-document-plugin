@@ -177,7 +177,7 @@ class DocumentAssemblyTest {
     }
 
     @Test
-    void aFileReadsOnceAndACycleEndsWhereItBegan() {
+    void aFileNamedTwiceReadsTwiceAndACycleEndsWhereItBegan() {
         StoredDocument leaf = document(":topic-id: leaf", "= Leaf", "", "A claim.");
         StoredDocument part = document(":topic-id: part", "= Part", "", "include::leaf.adoc[]", "", "include::../book.adoc[]");
         StoredDocument book = document("= Book", "", "include::parts/part.adoc[]", "", "include::parts/leaf.adoc[]", "", "include::parts/part.adoc[]");
@@ -185,22 +185,27 @@ class DocumentAssemblyTest {
 
         DocumentAssembly assembly = DocumentAssembly.of(book, "docs/book.adoc", path -> Optional.ofNullable(store.get(path)));
 
-        assertEquals(List.of("docs/book.adoc", "docs/parts/part.adoc", "docs/parts/leaf.adoc"), assembly.members().stream().map(Member::path).toList(),
-                "a nested aggregator is followed; the leaf reads once, where the part first names it");
-        assertEquals(List.of(
-                "= Book", "", "include::parts/part.adoc[]",
-                ":topic-id: part", "= Part", "", "include::leaf.adoc[]",
+        assertEquals(List.of("docs/book.adoc", "docs/parts/part.adoc", "docs/parts/leaf.adoc", "docs/parts/leaf.adoc", "docs/parts/part.adoc",
+                        "docs/parts/leaf.adoc"), assembly.members().stream().map(Member::path).toList(),
+                "a nested aggregator is followed, and a file named again is shown again (dev-document-front-matter): the part twice, the leaf in each part and once by the book");
+        List<String> partShown = List.of(":topic-id: part", "= Part", "", "include::leaf.adoc[]",
                 ":topic-id: leaf", "= Leaf", "", "A claim.",
-                "", "include::../book.adoc[]",
-                "", "include::parts/leaf.adoc[]", "", "include::parts/part.adoc[]"), texts(assembly.lines()));
+                "", "include::../book.adoc[]");
+        List<String> expected = new ArrayList<>(List.of("= Book", "", "include::parts/part.adoc[]"));
+        expected.addAll(partShown);
+        expected.addAll(List.of("", "include::parts/leaf.adoc[]", ":topic-id: leaf", "= Leaf", "", "A claim.", "", "include::parts/part.adoc[]"));
+        expected.addAll(partShown);
+        assertEquals(expected, texts(assembly.lines()));
         assertEquals(2, assembly.children().getLast().depth());
         List<Include> left = assembly.unresolved();
-        assertEquals(3, left.size(), "the cycle back to the book, the leaf a second time, the part a second time");
+        assertEquals(2, left.size(), "only the cycle back to the book stays a line, once in each showing of the part");
         for (Include include : left) {
-            assertTrue(include.note().startsWith("shown once"), include.note());
+            assertTrue(include.note().startsWith("a cycle: docs/book.adoc"), include.note());
             assertNull(include.child());
+            assertSame(part, include.in().document(), "the cycle is the part's include");
         }
-        assertSame(part, left.getFirst().in().document(), "the cycle is the part's include");
+        assertEquals(book.lines().size() + part.lines().size() + leaf.lines().size(), assembly.storedLines(),
+                "every showing of a file is the same stored lines: nothing is counted twice");
     }
 
     @Test

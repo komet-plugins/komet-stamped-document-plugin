@@ -15,6 +15,8 @@
  */
 package network.ike.komet.document;
 
+import design.knowledge.stamp.adoc.dialect.Block;
+import network.ike.komet.document.GitDocumentMaterializer.StoredBlock;
 import network.ike.komet.document.GitDocumentMaterializer.StoredDocument;
 import network.ike.komet.document.GitDocumentMaterializer.StoredLine;
 import network.ike.komet.document.GitDocumentMaterializer.StoredReference;
@@ -22,6 +24,8 @@ import network.ike.komet.document.GitDocumentMaterializer.StoredReference;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -36,13 +40,22 @@ import java.util.function.Function;
  * IKE-Network/ike-issues#1307): the host document the person opened, and, wherever one of its
  * lines is an {@code include::} directive naming a file the store holds, that file's document
  * as a flowed child — its own lines, STAMPs, annotations and commit summaries, stacked in the
- * host's include order. A child that includes in turn is followed the same way, each file once,
- * so a file named twice or a cycle reads once, where it first appears.
+ * host's include order. A child that includes in turn is followed the same way.
+ *
+ * <p>A file may be shown more than once, and an include may show part of a file (topic
+ * {@code dev-document-front-matter}): {@code include::summary.adoc[tag=brief]} shows the lines
+ * between the file's {@code tag::brief[]} and {@code end::brief[]} lines ({@link IncludeTags}),
+ * and a second include of the same file shows it again. Each showing is a {@link Member} of its
+ * own, and every showing of a file holds the same stored lines: one nid and one history for a
+ * line, however many places it is read in. Nothing is copied. Only a file that would be shown
+ * inside itself is refused, since that include would never end.
  *
  * <p>Every line keeps the document it belongs to: a selection is located to one member and
  * that member's own line numbers, which is what an annotation trailer names. The surface order
  * — the host's lines with each resolved include line followed by its child's lines — is the
- * order both views stack and the ordinals a {@link LineSelection} runs over.
+ * order both views stack and the ordinals a {@link LineSelection} runs over. A line shown twice
+ * has an ordinal in each showing, so a place on the surface is a member and a line:
+ * {@link #ordinal(Member, long)}.
  *
  * <p>Resolution follows the materializer ({@link IncludeResolver}): the text's own attribute
  * entries, the AsciiDoc roots the caller lists, then the including file's directory, against
@@ -55,18 +68,53 @@ public final class DocumentAssembly {
     private static final Path RESOLUTION_ROOT = Path.of("/").toAbsolutePath();
 
     /**
-     * One document on the surface: the host, or a child in include order.
+     * One showing of a document on the surface: the host, or a child in include order. A file
+     * included twice has two members. They are told apart by where they stand, so a member equals
+     * itself alone.
      *
-     * @param document   the document as the store holds it
+     * @param document   the document as the store holds it, whole: its lines are the file's, which is what a line
+     *                   number counts through
      * @param path       its repository-relative path, forward slashes
      * @param depth      how many includes deep it sits ({@code 0} for the host)
      * @param includedBy the member whose include line brought it in, {@code null} for the host
+     * @param shown      what this showing reads of the document: the document itself, or, for an include that
+     *                   names tags, the same lines and blocks cut down to the tagged regions
+     * @param tags       the include's tag attribute as written, {@code tag=brief}; empty for a showing of the whole file
      */
-    public record Member(StoredDocument document, String path, int depth, Member includedBy) {
+    public record Member(StoredDocument document, String path, int depth, Member includedBy, StoredDocument shown, String tags) {
+
+        /** A showing of the whole file. */
+        public Member(StoredDocument document, String path, int depth, Member includedBy) {
+            this(document, path, depth, includedBy, document, "");
+        }
 
         /** @return whether this is the host, the document the person opened */
         public boolean host() {
             return includedBy == null;
+        }
+
+        /** @return whether the showing reads the whole file, rather than its tagged regions */
+        public boolean whole() {
+            return shown == document;
+        }
+
+        /** @return whether the showing reads every line of a block: a block cut by a region's edge is read, never edited, there */
+        public boolean holds(StoredBlock block) {
+            if (whole() || block == null) {
+                return true;
+            }
+            StoredBlock stored = document.blocks().get(block.nid());
+            return stored != null && lineCount(document, stored) == lineCount(shown, block);
+        }
+
+        @Override
+        public boolean equals(Object other) {
+            return this == other;
+        }
+
+        @Override
+        public int hashCode() {
+            return System.identityHashCode(this);
         }
 
         /** @return the file name of the path */
@@ -83,7 +131,8 @@ public final class DocumentAssembly {
      * @param line   the directive's line
      * @param target the target as written
      * @param child  the child it shows in place, or {@code null} when it stays a line
-     * @param note   why it stays a line: not in the store, already shown, a cycle; empty when it resolved
+     * @param note   why it stays a line: not in the store, a file inside itself, no line under its tags; for an
+     *               include that resolved, the tags it names that its file does not have, else empty
      */
     public record Include(Member in, StoredLine line, String target, Member child, String note) {
 
@@ -125,11 +174,16 @@ public final class DocumentAssembly {
     private final List<Include> includes = new ArrayList<>();
     private final List<Entry> entries = new ArrayList<>();
     private final List<StoredLine> lines = new ArrayList<>();
+    /** A line's first ordinal: where it is first shown. */
     private final Map<Long, Integer> ordinals = new HashMap<>();
+    /** A line's ordinal in each showing. */
+    private final Map<Member, Map<Long, Integer>> placed = new IdentityHashMap<>();
     private final Map<Long, StoredLine> linesByNid = new HashMap<>();
+    /** The include on a line, where the line is first shown. */
     private final Map<Long, Include> includesByLine = new HashMap<>();
+    /** The include on a line in each showing: a file shown twice follows its own includes twice. */
+    private final Map<Member, Map<Long, Include>> includesByPlace = new IdentityHashMap<>();
     private final Map<Long, List<StoredReference>> references = new HashMap<>();
-    private final Set<String> visited = new LinkedHashSet<>();
     private final Function<String, Optional<StoredDocument>> store;
     private final Function<String, List<Path>> underRoots;
     private final Map<String, Optional<StoredDocument>> looked = new HashMap<>();
@@ -139,9 +193,6 @@ public final class DocumentAssembly {
         this.store = store;
         this.underRoots = underRoots;
         this.host = new Member(host, hostPath == null ? "" : hostPath, 0, null);
-        if (!this.host.path().isEmpty()) {
-            visited.add(this.host.path());
-        }
         flatten(this.host);
     }
 
@@ -187,11 +238,22 @@ public final class DocumentAssembly {
         return new DocumentAssembly(document, path, p -> Optional.empty(), rest -> List.of());
     }
 
-    /** Appends a member's lines in surface order, each resolved include line followed by its child's. */
+    /** Appends the lines a member shows in surface order, each resolved include line followed by its child's. */
     private void flatten(Member member) {
         members.add(member);
         StoredDocument document = member.document();
         references.putAll(document.references());
+        Set<Long> region = null;
+        if (!member.whole()) {
+            region = new HashSet<>();
+            for (StoredLine line : member.shown().lines()) {
+                region.add(line.nid());
+            }
+        }
+        Map<Long, Integer> places = new HashMap<>();
+        placed.put(member, places);
+        Map<Long, Include> followed = new HashMap<>();
+        includesByPlace.put(member, followed);
         Map<Integer, IncludeResolver.Resolution> byLine = new HashMap<>();
         if (!member.path().isEmpty()) {
             List<String> texts = document.lines().stream().map(StoredLine::text).toList();
@@ -203,9 +265,13 @@ public final class DocumentAssembly {
         }
         for (int i = 0; i < document.lines().size(); i++) {
             StoredLine line = document.lines().get(i);
+            if (region != null && !region.contains(line.nid())) {
+                continue;                                         // outside the tagged regions this showing reads
+            }
             entries.add(new Entry(line, member, i));
             lines.add(line);
             ordinals.putIfAbsent(line.nid(), lines.size() - 1);
+            places.put(line.nid(), lines.size() - 1);
             linesByNid.putIfAbsent(line.nid(), line);
             IncludeResolver.Resolution resolution = byLine.get(i + 1);
             if (resolution == null) {
@@ -213,7 +279,8 @@ public final class DocumentAssembly {
             }
             Include include = follow(member, line, resolution);
             includes.add(include);
-            includesByLine.put(line.nid(), include);
+            includesByLine.putIfAbsent(line.nid(), include);
+            followed.put(line.nid(), include);
             if (include.resolved()) {
                 flatten(include.child());
             }
@@ -230,14 +297,118 @@ public final class DocumentAssembly {
                     tried >= 0 ? "not in the store (" + reason.substring(tried) + ")" : "not resolved: " + reason);
         }
         String path = resolution.resolved().get().toString().replace('\\', '/');
-        if (!visited.add(path)) {
-            return new Include(member, line, resolution.target(), null, "shown once, where it first appears: " + path);
+        for (Member within = member; within != null; within = within.includedBy()) {
+            if (within.path().equals(path)) {
+                // the one include that cannot be followed: it would show the file inside itself, without end
+                return new Include(member, line, resolution.target(), null, "a cycle: " + path + " is already being shown here, and would include itself");
+            }
         }
         Optional<StoredDocument> child = stored(path);
         if (child.isEmpty()) {
             return new Include(member, line, resolution.target(), null, "not in the store: " + path);
         }
-        return new Include(member, line, resolution.target(), new Member(child.get(), path, member.depth() + 1, member), "");
+        Optional<IncludeTags> tags = IncludeTags.of(resolution.reference().text());
+        if (tags.isEmpty()) {
+            return new Include(member, line, resolution.target(), new Member(child.get(), path, member.depth() + 1, member), "");
+        }
+        // a region is a run of the child's stored lines: the same lines the whole file shows, and no copy of them
+        IncludeTags.Region region = tags.get().select(child.get().lines().stream().map(StoredLine::text).toList());
+        String missing = region.missing().isEmpty() ? "" : "no tag " + String.join(", ", region.missing()) + " in " + path;
+        if (region.shown().isEmpty()) {
+            return new Include(member, line, resolution.target(), null,
+                    missing.isEmpty() ? "no line of " + path + " is under " + tags.get().written() : missing);
+        }
+        Set<Long> kept = new HashSet<>();
+        for (int index : region.shown()) {
+            kept.add(child.get().lines().get(index).nid());
+        }
+        return new Include(member, line, resolution.target(),
+                new Member(child.get(), path, member.depth() + 1, member, project(child.get(), kept), tags.get().written()), missing);
+    }
+
+    /**
+     * A document cut down to some of its lines: the same lines, and the blocks that hold any of
+     * them, each with the members it keeps. A section whose heading is left out is no section
+     * there: what is kept of it stands where the section stood, as the lines would read to
+     * AsciiDoc in the including document. A document whose title line is left out has no title.
+     */
+    static StoredDocument project(StoredDocument document, Set<Long> kept) {
+        List<StoredLine> lines = document.lines().stream().filter(line -> kept.contains(line.nid())).toList();
+        Map<Long, StoredBlock> blocks = new LinkedHashMap<>();
+        StoredBlock root = null;
+        if (document.root() != null) {
+            List<Long> members = projectMembers(document, document.root(), kept, blocks);
+            boolean titled = heads(document, document.root(), kept);
+            root = new StoredBlock(document.root().nid(), document.root().kind(), document.root().level(), titled ? document.root().title() : "",
+                    titled ? document.root().parameters() : "", members, document.root().stamp(), members);
+            blocks.put(root.nid(), root);
+        }
+        Map<Long, List<StoredReference>> references = new HashMap<>();
+        document.references().forEach((line, found) -> {
+            if (kept.contains(line)) {
+                references.put(line, found);
+            }
+        });
+        Map<Long, List<GitDocumentMaterializer.StoredSentence>> sentences = new HashMap<>();
+        document.sentences().forEach((block, found) -> {
+            // a block kept whole keeps its sentences; a block cut by the region's edge is read from its lines
+            if (blocks.containsKey(block) && lineCount(document, document.blocks().get(block)) == lineCount(blocks, blocks.get(block))) {
+                sentences.put(block, found);
+            }
+        });
+        boolean titled = root != null && !root.title().isEmpty();
+        return new StoredDocument(document.anchor(), document.commit(), lines, document.manifestVersions(),
+                titled ? document.attributes() : List.of(), root, blocks, references, sentences);
+    }
+
+    /** The members a block keeps: its kept lines, and its child blocks that keep any; a section without its heading gives up its members to its parent. */
+    private static List<Long> projectMembers(StoredDocument document, StoredBlock block, Set<Long> kept, Map<Long, StoredBlock> blocks) {
+        List<Long> members = new ArrayList<>();
+        for (long nid : block.members()) {
+            if (kept.contains(nid)) {
+                members.add(nid);
+                continue;
+            }
+            StoredBlock child = document.blocks().get(nid);
+            if (child == null) {
+                continue;                                         // a line the region leaves out
+            }
+            List<Long> held = projectMembers(document, child, kept, blocks);
+            if (held.isEmpty()) {
+                continue;
+            }
+            if (child.kind() == Block.Kind.SECTION && !heads(document, child, kept)) {
+                members.addAll(held);
+                continue;
+            }
+            blocks.put(child.nid(), new StoredBlock(child.nid(), child.kind(), child.level(), child.title(), child.parameters(), held, child.stamp(), held));
+            members.add(child.nid());
+        }
+        return members;
+    }
+
+    /** Whether a section's or a document's heading line is among the lines kept. */
+    private static boolean heads(StoredDocument document, StoredBlock block, Set<Long> kept) {
+        for (long nid : block.members()) {
+            if (kept.contains(nid) && document.line(nid).map(line -> line.text().startsWith("=")).orElse(false)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** How many lines a block holds, its child blocks' among them. */
+    private static int lineCount(StoredDocument document, StoredBlock block) {
+        return lineCount(document.blocks(), block);
+    }
+
+    private static int lineCount(Map<Long, StoredBlock> blocks, StoredBlock block) {
+        int count = 0;
+        for (long nid : block.members()) {
+            StoredBlock child = blocks.get(nid);
+            count += child == null ? 1 : lineCount(blocks, child);
+        }
+        return count;
     }
 
     private boolean stored(Path path) {
@@ -275,14 +446,49 @@ public final class DocumentAssembly {
         return includes.stream().filter(i -> !i.resolved()).toList();
     }
 
-    /** @return every line in surface order */
+    /** @return every line in surface order; a line shown twice is here twice */
     public List<StoredLine> lines() {
         return List.copyOf(lines);
     }
 
-    /** @return the ordinal of a line in surface order, or {@code -1} */
+    /** @return how many stored lines the assembly shows: a line shown twice is one line */
+    public int storedLines() {
+        return ordinals.size();
+    }
+
+    /** @return the ordinal of a line in surface order where it is first shown, or {@code -1} */
     public int ordinal(long nid) {
         return ordinals.getOrDefault(nid, -1);
+    }
+
+    /**
+     * The ordinal of a line in one showing: the place a reader points at when the line is shown
+     * more than once.
+     *
+     * @param member the showing
+     * @param nid    the line
+     * @return the ordinal in surface order, or {@code -1} when that showing does not read the line
+     */
+    public int ordinal(Member member, long nid) {
+        Map<Long, Integer> places = placed.get(member);
+        return places == null ? -1 : places.getOrDefault(nid, -1);
+    }
+
+    /** @return every ordinal a line stands at, in surface order: one for each showing that reads it */
+    public List<Integer> ordinals(long nid) {
+        List<Integer> all = new ArrayList<>();
+        for (Member member : members) {
+            int ordinal = ordinal(member, nid);
+            if (ordinal >= 0) {
+                all.add(ordinal);
+            }
+        }
+        return all;
+    }
+
+    /** @return the showings of a file, in surface order */
+    public List<Member> showings(String path) {
+        return members.stream().filter(m -> m.path().equals(path)).toList();
     }
 
     /** @return the line with that nid, if any member holds it */
@@ -295,7 +501,7 @@ public final class DocumentAssembly {
         return ordinal < 0 || ordinal >= entries.size() ? Optional.empty() : Optional.of(entries.get(ordinal).member());
     }
 
-    /** @return the member holding the line with that nid */
+    /** @return the member that first shows the line with that nid */
     public Optional<Member> memberOf(long nid) {
         return memberAt(ordinal(nid));
     }
@@ -305,9 +511,22 @@ public final class DocumentAssembly {
         return ordinal < 0 || ordinal >= entries.size() ? -1 : entries.get(ordinal).indexInMember();
     }
 
-    /** @return the include directive on that line, if the line is one */
+    /** @return the include directive on that line, if the line is one, as it was followed where the line is first shown */
     public Optional<Include> includeOf(long lineNid) {
         return Optional.ofNullable(includesByLine.get(lineNid));
+    }
+
+    /**
+     * The include directive on a line of one showing: a file shown twice follows its own includes
+     * once for each showing, and each has its own children.
+     *
+     * @param member  the showing the line is read in
+     * @param lineNid the line
+     * @return the include as that showing followed it, if the line is one
+     */
+    public Optional<Include> includeOf(Member member, long lineNid) {
+        Map<Long, Include> followed = includesByPlace.get(member);
+        return followed == null ? Optional.empty() : Optional.ofNullable(followed.get(lineNid));
     }
 
     /** @return the active references of every member, by the nid of the line they occur on */
@@ -356,7 +575,7 @@ public final class DocumentAssembly {
      * @return the ordinal, or {@code -1}
      */
     public int ordinalIn(Member member, int index) {
-        return index < 0 || index >= member.document().lines().size() ? -1 : ordinal(member.document().lines().get(index).nid());
+        return index < 0 || index >= member.document().lines().size() ? -1 : ordinal(member, member.document().lines().get(index).nid());
     }
 
     /**
@@ -368,10 +587,21 @@ public final class DocumentAssembly {
      * @return the parts in order; one text part when nothing is shown in place
      */
     public List<Part> parts(List<StoredLine> blockLines) {
+        return parts(null, blockLines);
+    }
+
+    /**
+     * A block's lines split for the Reading view, in one showing.
+     *
+     * @param member     the showing the block is read in, or {@code null} for where its lines are first shown
+     * @param blockLines the block's lines in order
+     * @return the parts in order; one text part when nothing is shown in place
+     */
+    public List<Part> parts(Member member, List<StoredLine> blockLines) {
         List<Part> parts = new ArrayList<>();
         List<StoredLine> run = new ArrayList<>();
         for (StoredLine line : blockLines) {
-            Include include = includesByLine.get(line.nid());
+            Include include = member == null ? includesByLine.get(line.nid()) : includeOf(member, line.nid()).orElse(null);
             if (include != null && include.resolved()) {
                 if (!run.isEmpty()) {
                     parts.add(new Part(List.copyOf(run), null));
@@ -388,7 +618,7 @@ public final class DocumentAssembly {
         return parts;
     }
 
-    /** @return the members by path, in surface order */
+    /** @return the members by path, in surface order; a file shown twice is here as its first showing */
     public Map<String, Member> byPath() {
         Map<String, Member> byPath = new LinkedHashMap<>();
         for (Member m : members) {

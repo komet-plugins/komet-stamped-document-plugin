@@ -70,12 +70,16 @@ public final class StoredDocumentModel {
     private static final Pattern LEVEL_OFFSET = Pattern.compile("leveloffset\\s*=\\s*([+-]?\\d+)");
     private static final Pattern INDEX_TERM_MACRO = Pattern.compile("indexterm:\\[[^\\]]*\\]\\s*");
     private static final Pattern CONCEALED_TERM = Pattern.compile("\\(\\(\\([^()]+\\)\\)\\)\\s*");
+    /** A line comment, which is not a block comment's delimiter: it prints nothing, inside a paragraph as outside one. */
+    private static final Pattern LINE_COMMENT = Pattern.compile("^//(?!//).*$");
     private static final Pattern FLOW_TERM = Pattern.compile("\\(\\(([^()]+)\\)\\)");
 
     /**
      * A flowed child of an assembly: an included document and the level its title lands at.
      *
-     * @param document    the child as the store holds it
+     * @param document    the child as its include shows it: the document as the store holds it, or, for an include
+     *                    that names tags, the document cut down to the tagged regions
+     *                    ({@link network.ike.komet.document.DocumentAssembly.Member#shown})
      * @param levelOffset the include's {@code leveloffset}, added to the including document's own; the child's
      *                    title becomes a heading at that level, at least 1
      */
@@ -190,18 +194,29 @@ public final class StoredDocumentModel {
         return "b" + Long.toString(blockNid).replace('-', 'n');
     }
 
+    /** A block's key where the block is first read, and none where its file is shown again: a front list's entry names one place. */
+    private String keyOf(StoredBlock block) {
+        return keyed.add(block.nid()) ? key(block.nid()) : "";
+    }
+
     private final StoredDocument document;
     private final Figures figures;
     private final Map<Long, StoredLine> linesByNid = new HashMap<>();
     private final int levelOffset;
     /** The child flowed in place of an include line, by the line's nid, across every member. */
     private final Map<Long, Child> includes;
+    /**
+     * The blocks that have given their key, across the host and every child: a block is shown twice
+     * when its file is included twice, and a key names one place, so the first showing carries it.
+     */
+    private final java.util.Set<Long> keyed;
 
-    private StoredDocumentModel(StoredDocument document, int levelOffset, Map<Long, Child> includes, Figures figures) {
+    private StoredDocumentModel(StoredDocument document, int levelOffset, Map<Long, Child> includes, Figures figures, java.util.Set<Long> keyed) {
         this.document = document;
         this.figures = figures;
         this.levelOffset = levelOffset;
         this.includes = includes;
+        this.keyed = keyed;
         for (StoredLine line : document.lines()) {
             linesByNid.put(line.nid(), line);
         }
@@ -230,6 +245,29 @@ public final class StoredDocumentModel {
     }
 
     /**
+     * The children of an assembly as the model reads them: for every include line that shows a
+     * document in place, what it shows, the whole file or the tagged regions the include names
+     * ({@code dev-document-front-matter}), and the level its headings are offset by.
+     *
+     * @param assembly the assembly
+     * @return the child flowed in place of each resolved include line, by the line's nid
+     */
+    public static Map<Long, Child> children(network.ike.komet.document.DocumentAssembly assembly) {
+        Map<Long, Child> includes = new HashMap<>();
+        Map<network.ike.komet.document.DocumentAssembly.Member, Integer> offsets = new HashMap<>();
+        for (network.ike.komet.document.DocumentAssembly.Include include : assembly.includes()) {   // surface order: an including member precedes its children
+            if (!include.resolved()) {
+                continue;
+            }
+            int offset = offsets.getOrDefault(include.in(), 0) + Child.levelOffset(include.line().text());
+            offsets.put(include.child(), offset);
+            // a file shown twice follows its own includes in each showing; the line's first showing is the one the model reads
+            includes.putIfAbsent(include.line().nid(), new Child(include.child().shown(), offset));
+        }
+        return includes;
+    }
+
+    /**
      * Reads an assembly, drawing the blocks that have figures.
      *
      * @param document the host document
@@ -239,7 +277,7 @@ public final class StoredDocumentModel {
      */
     public static DocumentModel of(StoredDocument document, Map<Long, Child> includes, Figures figures) {
         DocumentModel.Lists lists = lists(document);
-        StoredDocumentModel reader = new StoredDocumentModel(document, 0, Map.copyOf(includes), figures);
+        StoredDocumentModel reader = new StoredDocumentModel(document, 0, Map.copyOf(includes), figures, new java.util.HashSet<>());
         // the abstract stands first, on the title page; the lists follow it, after the title, as the printed document and the pages have them
         List<DocumentModel.Block> blocks = new ArrayList<>();
         abstractOf(document).ifPresent(block -> {
@@ -517,7 +555,7 @@ public final class StoredDocumentModel {
             title = document.root().title();
         }
         if (!isRoot && !title.isEmpty()) {
-            out.add(new Heading(levelOffset, figures.heading(document, document.root(), title), key(document.root().nid())));
+            out.add(new Heading(levelOffset, figures.heading(document, document.root(), title), keyOf(document.root())));
         }
         // the host's abstract is read first, onto the title page: it is not read again where it was written
         long titlePage = isRoot ? abstractOf(document).map(StoredBlock::nid).orElse(Long.MIN_VALUE) : Long.MIN_VALUE;
@@ -562,14 +600,14 @@ public final class StoredDocumentModel {
             // the first figure carries the block's caption, which the figures source has drawn beneath it
             String caption = figures.caption(document, block);
             for (int i = 0; i < drawn.size(); i++) {
-                out.add(new DocumentModel.Drawn(drawn.get(i), i == 0 ? caption : "", i == 0 ? key(block.nid()) : ""));
+                out.add(new DocumentModel.Drawn(drawn.get(i), i == 0 ? caption : "", i == 0 ? keyOf(block) : ""));
             }
             return;
         }
         if (block.kind() == Block.Kind.OPEN && StructuredBlocks.kindOf(block).isPresent()) {
             // one block of source, as a listing is: the parser's paragraphs of it are not paragraphs
             out.add(new Verbatim(block.title(), String.join("\n",
-                    StructuredBlocks.content(document, block).stream().map(StoredLine::text).toList()), key(block.nid())));
+                    StructuredBlocks.content(document, block).stream().map(StoredLine::text).toList()), keyOf(block)));
             return;
         }
         List<StoredLine> own = ownLines(block);
@@ -579,7 +617,7 @@ public final class StoredDocumentModel {
             case SECTION -> {
                 String heading = own.stream().map(StoredLine::text).filter(t -> t.matches("^=+\\s.*")).findFirst()
                         .map(t -> t.replaceFirst("^=+\\s*", "").strip()).orElse(block.title());
-                out.add(new Heading(block.level() + levelOffset, figures.heading(document, block, heading), key(block.nid())));
+                out.add(new Heading(block.level() + levelOffset, figures.heading(document, block, heading), keyOf(block)));
                 children(children, out);
             }
             case PARAGRAPH -> {
@@ -599,7 +637,7 @@ public final class StoredDocumentModel {
                 out.add(new Admonition(label, body));
             }
             case LISTING, LITERAL, DIAGRAM -> out.add(new Verbatim(block.title(), String.join("\n", verbatimLines(own).stream().map(StoredLine::text).toList()),
-                    key(block.nid())));
+                    keyOf(block)));
             case EXAMPLE, QUOTE, SIDEBAR, OPEN -> {
                 List<DocumentModel.Block> body = new ArrayList<>();
                 children(children, body);
@@ -617,7 +655,7 @@ public final class StoredDocumentModel {
             case IMAGE -> {
                 String target = own.stream().map(StoredLine::text).map(IMAGE_MACRO::matcher).filter(Matcher::matches)
                         .map(m -> m.group(1)).findFirst().orElse("");
-                out.add(new Image(target, block.title(), key(block.nid())));
+                out.add(new Image(target, block.title(), keyOf(block)));
             }
             case OPAQUE -> {
                 // Comments, attribute entries and passthrough print nothing; an include line whose child
@@ -625,7 +663,7 @@ public final class StoredDocumentModel {
                 for (StoredLine line : own) {
                     Child child = includes.get(line.nid());
                     if (child != null) {
-                        new StoredDocumentModel(child.document(), Math.max(1, levelOffset + child.levelOffset()), includes, figures).read(out, false);
+                        new StoredDocumentModel(child.document(), Math.max(1, levelOffset + child.levelOffset()), includes, figures, keyed).read(out, false);
                     }
                 }
             }
@@ -710,7 +748,7 @@ public final class StoredDocumentModel {
         List<List<String>> rows = cells.stream().map(row -> row.stream().map(TableCells.Cell::text).toList()).toList();
         List<Integer> widths = widths(block.parameters(), TableCells.columns(cells));
         boolean header = block.parameters().contains("header") && !rows.isEmpty();
-        return new Table(figures.caption(document, block), widths, header ? 1 : 0, rows, key(block.nid()));
+        return new Table(figures.caption(document, block), widths, header ? 1 : 0, rows, keyOf(block));
     }
 
     /** @return how many columns {@code cols} names, 0 when the table has none */
@@ -753,8 +791,8 @@ public final class StoredDocumentModel {
         for (StoredLine line : own) {
             String text = line.text();
             if (ANCHOR_LINE.matcher(text).matches() || ATTRIBUTE_LINE.matcher(text).matches() || DELIMITER.matcher(text).matches()
-                    || (BLOCK_TITLE.matcher(text).matches() && lines.isEmpty())) {
-                continue;
+                    || (BLOCK_TITLE.matcher(text).matches() && lines.isEmpty()) || LINE_COMMENT.matcher(text.strip()).matches()) {
+                continue;                                         // a comment among a paragraph's lines prints nothing, a tag line included
             }
             lines.add(text);
         }

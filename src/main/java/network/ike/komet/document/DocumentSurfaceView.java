@@ -392,12 +392,20 @@ public final class DocumentSurfaceView {
     /**
      * Words to select after the document is read again.
      *
-     * @param block the block they are in
-     * @param line  the stored line they are on
-     * @param words the words as drawn
-     * @param nth   which occurrence of them in the line's drawn text, from 0
+     * @param block   the block they are in
+     * @param line    the stored line they are on
+     * @param words   the words as drawn
+     * @param nth     which occurrence of them in the line's drawn text, from 0
+     * @param showing which showing of the block's file they were selected in, as its place among the assembly's members
      */
-    private record Reselect(long block, long line, String words, int nth) { }
+    private record Reselect(long block, long line, String words, int nth, int showing) {
+
+        /** Whether an area is of the block where the words were selected: the same block, in the same showing of its file. */
+        boolean in(Area area, DocumentAssembly assembly) {
+            return area.block != null && area.block.nid() == block
+                    && (assembly == null || showing < 0 || showing >= assembly.members().size() || assembly.members().get(showing) == area.member);
+        }
+    }
 
     public DocumentSurfaceView(Host host, DocumentSurface surface) {
         this.host = host;
@@ -533,9 +541,27 @@ public final class DocumentSurfaceView {
         return editing != null;
     }
 
-    /** @return the ordinal of a line by nid in surface order, or {@code -1} */
+    /** @return the ordinal of a line by nid in surface order, where it is first shown, or {@code -1} */
     int ordinal(long nid) {
         return assembly == null ? -1 : assembly.ordinal(nid);
+    }
+
+    /**
+     * The ordinal of a line in one showing of its file (topic {@code dev-document-front-matter}):
+     * a line that an abstract and the body both show stands at two ordinals, and a selection is
+     * of the place the reader pointed at.
+     *
+     * @param member the showing
+     * @param nid    the line
+     * @return the ordinal in surface order, or {@code -1} when that showing does not read the line
+     */
+    int ordinal(DocumentAssembly.Member member, long nid) {
+        return assembly == null ? -1 : assembly.ordinal(member, nid);
+    }
+
+    /** The ordinal of a line where an area shows it: every area is of one showing, so a line shown twice is told apart by its area. */
+    private int ordinal(Area area, long nid) {
+        return area == null || area.member == null ? ordinal(nid) : ordinal(area.member, nid);
     }
 
     // ── building ──────────────────────────────────────────────────────────────
@@ -839,7 +865,7 @@ public final class DocumentSurfaceView {
 
     /** Renders one member's blocks, or its lines as a ledger when the store holds no structure for it. */
     private void renderMember(DocumentAssembly.Member member, int depth, String section) {
-        StoredDocument document = member.document();
+        StoredDocument document = member.shown();                 // an include that names tags shows its regions alone
         if (document.root() == null) {
             for (StoredLine line : document.lines()) {
                 add(member, null, List.of(line), paragraphs(List.of(line), "", st.mono(), null), depth, false, section);
@@ -970,7 +996,8 @@ public final class DocumentSurfaceView {
             // every line of a ledger is one unwrapped row of the one font, so how tall a chunk stands is known before it is built
             double room = chunk.size() * ledgerPitch() + ledgerChrome;
             if (previous != null && previous != member) {
-                Label path = new Label((member.host() || member.depth() < previous.depth() ? "↩ " : "↳ ") + member.path());
+                Label path = new Label((member.host() || member.depth() < previous.depth() ? "↩ " : "↳ ") + member.path()
+                        + (member.tags().isEmpty() ? "" : " · " + member.tags()));
                 path.setFont(Font.font("Menlo", 11));
                 path.setStyle("-fx-text-fill: #5f6b7a;");
                 path.setPadding(new Insets(6, 0, 2, 8));
@@ -1151,7 +1178,7 @@ public final class DocumentSurfaceView {
 
     /** Renders one block of a member and its members into the Reading view's areas. */
     private void render(DocumentAssembly.Member member, StoredBlock block, int depth, int ordinal, String section) {
-        StoredDocument document = member.document();
+        StoredDocument document = member.shown();
         List<StoredLine> own = new ArrayList<>();
         List<StoredBlock> children = new ArrayList<>();
         for (long nid : block.members()) {
@@ -1236,7 +1263,7 @@ public final class DocumentSurfaceView {
                     frontLists(member, document);
                 }
                 List<StoredLine> front = own.stream().filter(l -> !l.text().startsWith("= "))
-                        .filter(l -> !print || assembly.includeOf(l.nid()).map(DocumentAssembly.Include::resolved).orElse(false)).toList();
+                        .filter(l -> !print || assembly.includeOf(member, l.nid()).map(DocumentAssembly.Include::resolved).orElse(false)).toList();
                 Area frontArea = null;
                 if (!front.isEmpty()) {
                     frontArea = add(member, block, front, paragraphs(front, "", st.monoGrey(), null), depth, false, under);
@@ -1272,7 +1299,9 @@ public final class DocumentSurfaceView {
                 if (print && nesting == 0 && !printable(own).isEmpty()) {
                     modelOrdinal++;
                 }
-                LineRunModel.Spec spec = paragraphs(own, " ", st.prose(), print ? DocumentSurfaceView::printProse : DocumentSurfaceView::readingProse);
+                // a comment among a paragraph's lines, an end::brief[] under its last words, draws nothing, as it prints nothing
+                LineRunModel.Spec spec = paragraphs(own, " ", st.prose(), print ? DocumentSurfaceView::printProse
+                        : t -> t.strip().startsWith("//") ? "" : readingProse(t));
                 addProse(member, block, own, print ? spec : withoutEmptyLines(spec), depth, true, section);
             }
             case ADMONITION -> {
@@ -1313,7 +1342,7 @@ public final class DocumentSurfaceView {
                     }
                     if (!print) {
                         title(area, block);
-                        attachStructured(area, member.document(), block);
+                        attachStructured(area, member.shown(), block);
                     }
                 }
             }
@@ -1551,8 +1580,8 @@ public final class DocumentSurfaceView {
                 boolean chief = levelled && entry.depth() <= 0;
                 Object[] target = targets.get(entry.target());
                 DocumentAssembly.Member member = target == null ? host : (DocumentAssembly.Member) target[0];
-                StoredBlock block = target == null ? document.root() : member.document().blocks().get((Long) target[1]);
-                List<StoredLine> carrier = block == null ? hostTitle : titleLine(member.document(), block, hostTitle);
+                StoredBlock block = target == null ? document.root() : member.shown().blocks().get((Long) target[1]);
+                List<StoredLine> carrier = block == null ? hostTitle : titleLine(member.shown(), block, hostTitle);
                 Area area = addArea(member, block == null ? document.root() : block, carrier,
                         paragraphs(carrier, " ", chief ? StyleAttributeMap.builder().merge(st.ragged()).setBold(true).build() : st.ragged(), t -> entry.text()),
                         0, false, list.title(), true);
@@ -1820,7 +1849,7 @@ public final class DocumentSurfaceView {
         Map<Long, StoredBlock> blockOf = new HashMap<>();
         for (StoredBlock row : children) {
             for (long nid : row.members()) {
-                member.document().line(nid).ifPresent(line -> {
+                member.shown().line(nid).ifPresent(line -> {
                     body.add(line);
                     blockOf.put(line.nid(), row);
                 });
@@ -1885,7 +1914,7 @@ public final class DocumentSurfaceView {
         Map<Long, StoredBlock> blockOf = new HashMap<>();
         for (StoredBlock row : children) {
             for (long nid : row.members()) {
-                member.document().line(nid).ifPresent(line -> {
+                member.shown().line(nid).ifPresent(line -> {
                     body.add(line);
                     blockOf.put(line.nid(), row);
                 });
@@ -2085,7 +2114,7 @@ public final class DocumentSurfaceView {
      * @param scale its size, in ems of the body
      */
     private void caption(DocumentAssembly.Member member, StoredBlock block, double scale, int depth, String section) {
-        List<StoredLine> lines = StructuredBlocks.lines(member.document(), block);
+        List<StoredLine> lines = StructuredBlocks.lines(member.shown(), block);
         if (block.title().isEmpty() || lines.isEmpty()) {
             return;
         }
@@ -2120,7 +2149,7 @@ public final class DocumentSurfaceView {
                      boolean prose) {
         // the pages read every block the print model calls prose; the Reading view the blocks its caller says are
         boolean inline = print ? printsInline(block) : prose;
-        List<DocumentAssembly.Part> parts = assembly.parts(lines);
+        List<DocumentAssembly.Part> parts = assembly.parts(member, lines);
         if (parts.size() == 1 && !parts.getFirst().included()) {
             if (print) {
                 if (block != null && block.kind() == Block.Kind.OPAQUE) {
@@ -2141,7 +2170,9 @@ public final class DocumentSurfaceView {
                 int before = target.size();
                 renderMember(child, depth, section);
                 if (target.size() > before && !print) {
-                    Label path = new Label("↳ " + child.path());
+                    // the file, the region of it this include shows, and any tag the include names that the file does not have
+                    Label path = new Label("↳ " + child.path() + (child.tags().isEmpty() ? "" : " · " + child.tags())
+                            + (part.include().note().isEmpty() ? "" : " — " + part.include().note()));
                     path.setFont(Font.font("Menlo", 11));
                     path.setStyle("-fx-text-fill: #5f6b7a;");
                     path.setPadding(new Insets(8, 0, 0, 0));
@@ -2186,7 +2217,8 @@ public final class DocumentSurfaceView {
         // on screen a concept the prose names is drawn as its chip; a page prints the reference as written
         LineRunModel.Spec spec = inlined == null ? read : print ? inlined.spec() : inlined.spec().withInlines(text -> conceptChips(text, false));
         // a unit of the Page layout is bare: the oracles place it by its text and style, and its lines are built from it
-        Area area = new Area(member, block, lines, spec, editable && !past, section, print);
+        // a block that a tagged region cuts is read there and edited where its file is shown whole: an edit is of the whole block
+        Area area = new Area(member, block, lines, spec, editable && !past && member.holds(block), section, print);
         area.inline = inlined != null;
         target.add(area);
         if (print) {
@@ -2201,7 +2233,7 @@ public final class DocumentSurfaceView {
             return area;
         }
         if (block != null && editable) {
-            areasByBlock.put(block.nid(), area);
+            areasByBlock.putIfAbsent(block.nid(), area);              // a block shown twice is found by nid where it is first shown
         }
         area.holder.getChildren().add(area.area);
         if (inlined != null) {
@@ -2222,7 +2254,7 @@ public final class DocumentSurfaceView {
             area.holder.getChildren().add(references);
         }
         for (StoredLine line : lines) {
-            assembly.includeOf(line.nid()).filter(i -> !i.resolved()).ifPresent(include -> {
+            assembly.includeOf(member, line.nid()).filter(i -> !i.resolved()).ifPresent(include -> {
                 Label note = new Label("include " + include.target() + " — " + include.note());
                 note.setFont(SMALL);
                 note.setWrapText(true);
@@ -2455,7 +2487,7 @@ public final class DocumentSurfaceView {
         int last = -1;
         for (int i = 0; i < areas.size(); i++) {
             Area area = areas.get(i);
-            if (area.model != null && area.model.runs().stream().anyMatch(r -> selection.contains(ordinal(r.nid())))) {
+            if (area.model != null && area.model.runs().stream().anyMatch(r -> selection.contains(ordinal(area, r.nid())))) {
                 if (first < 0) {
                     first = i;
                 }
@@ -3420,12 +3452,22 @@ public final class DocumentSurfaceView {
     }
 
     /**
-     * The area each note stands beside, by its annotation's STAMP: the first block its lines are
-     * in, so an annotation that covers lines in several blocks is read once. Kept by area, not as
-     * a set of the notes drawn, since a block is filled again every time the surface builds it or
-     * a layer is switched, and a note drawn once must be drawn again in the same place.
+     * The area each note stands beside, by its annotation's STAMP and the showing: the first block
+     * its lines are in, so an annotation that covers lines in several blocks is read once. A line
+     * that is shown twice, in an abstract and again in the body, has its note beside it in each
+     * place, so a note has a home in every showing of its lines. Kept by area, not as a set of
+     * the notes drawn, since a block is filled again every time the surface builds it or a layer
+     * is switched, and a note drawn once must be drawn again in the same place.
      */
-    private Map<Long, Area> noteHomes;
+    private Map<NoteKey, Area> noteHomes;
+
+    /**
+     * What a note's home is found by.
+     *
+     * @param member the showing the note's lines are read in
+     * @param stamp  the annotation's STAMP
+     */
+    private record NoteKey(DocumentAssembly.Member member, long stamp) { }
     /** The area a note is being written beside, or null. */
     private Area composing;
     /** Whether the Reading view was last stacked with a right margin. */
@@ -3437,14 +3479,14 @@ public final class DocumentSurfaceView {
                 || annotation.kind() == AnnotationKind.REFUTATION && annotation.text() != null && !annotation.text().isBlank());
     }
 
-    private Map<Long, Area> noteHomes() {
+    private Map<NoteKey, Area> noteHomes() {
         if (noteHomes == null) {
-            Map<Long, Area> homes = new HashMap<>();
+            Map<NoteKey, Area> homes = new HashMap<>();
             for (Area area : areas) {
                 for (StoredLine line : area.lines) {
                     for (GitDocumentMaterializer.StoredAnnotation annotation : line.inForce()) {
                         if (spoken(annotation)) {
-                            homes.putIfAbsent(annotation.stamp().nid(), area);
+                            homes.putIfAbsent(new NoteKey(area.member, annotation.stamp().nid()), area);
                         }
                     }
                 }
@@ -3509,7 +3551,7 @@ public final class DocumentSurfaceView {
         Set<Long> drawn = new HashSet<>();
         for (StoredLine line : area.lines) {
             for (GitDocumentMaterializer.StoredAnnotation annotation : line.inForce()) {
-                if (spoken(annotation) && noteHomes().get(annotation.stamp().nid()) == area && drawn.add(annotation.stamp().nid())) {
+                if (spoken(annotation) && noteHomes().get(new NoteKey(area.member, annotation.stamp().nid())) == area && drawn.add(annotation.stamp().nid())) {
                     area.notes.getChildren().add(note(annotation, area));
                 }
             }
@@ -3861,7 +3903,7 @@ public final class DocumentSurfaceView {
                 Optional<LineRun> run = model.get().runAt(rta.getTextPosition(e.getScreenX(), e.getScreenY()));
                 if (run.isPresent()) {
                     clearExact();
-                    selection = selection.extendTo(ordinal(run.get().nid()));
+                    selection = selection.extendTo(ordinal(area, run.get().nid()));
                     render();
                     host.selectionChanged();
                     e.consume();
@@ -3895,7 +3937,7 @@ public final class DocumentSurfaceView {
             hidePopover();
             Optional<LineRun> run = model.get().runAt(rta.getTextPosition(e.getScreenX(), e.getScreenY()));
             if (run.isPresent()) {
-                int o = ordinal(run.get().nid());
+                int o = ordinal(area, run.get().nid());
                 // words selected where the menu is asked for stay selected, for Format; otherwise the menu's verbs
                 // act on lines, which are drawn whole so that what an annotation would record is seen
                 boolean words = wordsSelected() && rta == exactRta && selection != null && selection.contains(o);
@@ -3961,8 +4003,8 @@ public final class DocumentSurfaceView {
             return;
         }
         boolean forward = is.getAnchor().compareTo(is.getCaret()) <= 0;
-        int from = ordinal(first.get().nid());
-        int to = ordinal(last.get().nid());
+        int from = ordinal(area, first.get().nid());
+        int to = ordinal(area, last.get().nid());
         if (from < 0 || to < 0) {
             return;
         }
@@ -4035,9 +4077,9 @@ public final class DocumentSurfaceView {
         }
         applying = true;
         try {
-            applySelection(area.area, area.model);
+            applySelection(area, area.area, area.model);
             for (CellText cell : area.cells) {
-                applySelection(cell.rta, cell.model);
+                applySelection(area, cell.rta, cell.model);
             }
         } finally {
             applying = false;
@@ -4047,9 +4089,10 @@ public final class DocumentSurfaceView {
     /**
      * Draws the selection in one text: the reader's own words in the text they were chosen in and
      * nothing anywhere else; or, the selection being lines, the runs of the text's model the
-     * selection holds, as one stretch.
+     * selection holds, as one stretch. The lines are those of the area's own showing: a line an
+     * abstract and the body both show is drawn selected where the reader selected it.
      */
-    private void applySelection(RichTextArea rta, LineRunModel model) {
+    private void applySelection(Area area, RichTextArea rta, LineRunModel model) {
         if (exactRta != null) {
             if (rta != exactRta || !inWindow(rta)) {
                 rta.clearSelection();
@@ -4065,7 +4108,7 @@ public final class DocumentSurfaceView {
         LineRun last = null;
         if (selection != null) {
             for (LineRun run : model.runs()) {
-                if (selection.contains(ordinal(run.nid()))) {
+                if (selection.contains(ordinal(area, run.nid()))) {
                     if (first == null) {
                         first = run;
                     }
@@ -4102,7 +4145,13 @@ public final class DocumentSurfaceView {
 
     /** The Reading view's editable area of the block a stored line belongs to: the block an edit of the line is saved as. */
     private Optional<Area> blockAreaOf(long lineNid) {
-        return areas.stream().filter(a -> a.editable && a.lines.stream().anyMatch(l -> l.nid() == lineNid)).findFirst();
+        // in the showing the words were selected in, when the line's file is shown more than once; a block that a
+        // tagged region cuts is whole where its file is shown whole, and a mark over its words is saved from there
+        DocumentAssembly.Member member = exactArea == null ? null : exactArea.member;
+        Optional<Area> here = areas.stream().filter(a -> a.editable && (member == null || a.member == member) && a.lines.stream().anyMatch(l -> l.nid() == lineNid))
+                .findFirst();
+        return here.isPresent() || member == null ? here
+                : areas.stream().filter(a -> a.editable && a.lines.stream().anyMatch(l -> l.nid() == lineNid)).findFirst();
     }
 
     /** @return whether a mark can be written over the words selected: they are in prose of the document as it is now */
@@ -4168,10 +4217,10 @@ public final class DocumentSurfaceView {
         jfx.incubator.scene.control.richtext.TextPos to = jfx.incubator.scene.control.richtext.TextPos.ofLeading(paragraph, at + length);
         Optional<LineRun> first = model.runAt(from);
         Optional<LineRun> last = model.runAt(jfx.incubator.scene.control.richtext.TextPos.ofLeading(paragraph, at + length - 1));
-        if (first.isEmpty() || last.isEmpty() || ordinal(first.get().nid()) < 0 || ordinal(last.get().nid()) < 0) {
+        if (first.isEmpty() || last.isEmpty() || ordinal(area, first.get().nid()) < 0 || ordinal(area, last.get().nid()) < 0) {
             return false;
         }
-        selection = new LineSelection(ordinal(first.get().nid()), ordinal(last.get().nid()));
+        selection = new LineSelection(ordinal(area, first.get().nid()), ordinal(area, last.get().nid()));
         exactRta = area.area;
         exactArea = area;
         exactModel = () -> area.model;
@@ -4325,7 +4374,9 @@ public final class DocumentSurfaceView {
             String line = lines.get(a);
             String unmarked = mark.toggle(line, found.from(), found.to()).text();
             lines.set(a, unmarked.length() < line.length() ? unmarked : mark.toggle(line, found.outerFrom(), found.outerTo()).text());
-            again = new Reselect(block.block.nid(), first.nid(), found.words(), found.nth());
+            // the words are selected again where the reader selected them, which a cut block's saved area may not be
+            again = new Reselect(block.block.nid(), first.nid(), found.words(), found.nth(),
+                    assembly == null || exactArea == null ? -1 : assembly.members().indexOf(exactArea.member));
         } else {
             java.util.OptionalInt opens = SourceSpan.start(lines.get(a), inline, from.text(), start);
             java.util.OptionalInt closes = SourceSpan.end(lines.get(b), inline, to.text(), end);
@@ -4376,7 +4427,7 @@ public final class DocumentSurfaceView {
             // order; words a line break now parts are not selected, and their lines are not drawn selected in their place
             int seen = 0;
             for (PageLine laid : pageLines) {
-                if (laid.unitArea.drawn != null || laid.unitArea.block == null || laid.unitArea.block.nid() != again.block()) {
+                if (laid.unitArea.drawn != null || !again.in(laid.unitArea, assembly)) {
                     continue;
                 }
                 for (int p = 0; p < laid.spec.paragraphs().size(); p++) {
@@ -4407,8 +4458,9 @@ public final class DocumentSurfaceView {
         if (view != View.READING) {
             return;
         }
-        Area area = areasByBlock.get(again.block());
-        if (area == null || area.model == null) {
+        Area area = areas.stream().filter(a -> a.model != null && a.area != null && again.in(a, assembly)
+                && a.model.runs().stream().anyMatch(r -> r.nid() == again.line())).findFirst().orElse(null);
+        if (area == null) {
             return;
         }
         for (LineRun run : area.model.runs()) {
@@ -4437,7 +4489,7 @@ public final class DocumentSurfaceView {
         exactAnchor = jfx.incubator.scene.control.richtext.TextPos.ofLeading(paragraph, at);
         exactCaret = jfx.incubator.scene.control.richtext.TextPos.ofLeading(paragraph, at + length);
         Optional<LineRun> run = area.model == null ? Optional.empty() : area.model.runAt(exactAnchor);
-        int ordinal = run.map(r -> ordinal(r.nid())).orElse(-1);
+        int ordinal = run.map(r -> ordinal(area, r.nid())).orElse(-1);
         if (ordinal >= 0) {
             selection = new LineSelection(ordinal, ordinal);
         }
@@ -4456,7 +4508,8 @@ public final class DocumentSurfaceView {
             if (shown.get(i).frontList) {
                 continue;                                         // a list's entry stands on its target's line; the target is what is revealed
             }
-            if (shown.get(i).model.runs().stream().anyMatch(r -> selection.contains(ordinal(r.nid())))) {
+            Area candidate = shown.get(i);
+            if (candidate.model.runs().stream().anyMatch(r -> selection.contains(ordinal(candidate, r.nid())))) {
                 if (view == View.READING) {
                     unfoldToShow(i);                                 // a block scrolled to is seen, folded or not
                 }
@@ -4615,7 +4668,9 @@ public final class DocumentSurfaceView {
             return Optional.empty();
         }
         long nid = assembly.lines().get(selection.min()).nid();
-        return areas.stream().filter(a -> a.editable && a.lines.stream().anyMatch(l -> l.nid() == nid)).findFirst();
+        // the block where the selection is: a block its file shows twice is edited in the place the reader chose
+        DocumentAssembly.Member member = assembly.memberAt(selection.min()).orElse(null);
+        return areas.stream().filter(a -> a.editable && a.member == member && a.lines.stream().anyMatch(l -> l.nid() == nid)).findFirst();
     }
 
     /** Opens the block the selection starts in for editing in place, in the Reading view. */

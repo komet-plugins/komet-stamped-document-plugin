@@ -539,7 +539,7 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
         }
         for (Map.Entry<Long, Integer> e : loaded.committedNumbers().entrySet()) {
             if (e.getValue() == number) {
-                return surface.ordinal(e.getKey());
+                return surface.ordinal(member, e.getKey());              // in that showing of the file, when it is shown more than once
             }
         }
         return -1;
@@ -599,16 +599,15 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
             return false;
         }
         String path = file.toString().replace('\\', '/');
-        DocumentAssembly.Member member = assembly.byPath().get(path);
-        if (member == null) {
-            return false;
+        // a file an abstract and the body both show: the lines are selected in the first showing that reads them
+        for (DocumentAssembly.Member member : assembly.showings(path)) {
+            LineSelection wanted = LineSelection.covering(List.of(new int[] {from, to}), n -> ordinalOf(member, n));
+            if (wanted != null) {
+                surface.select(wanted);
+                return true;
+            }
         }
-        LineSelection wanted = LineSelection.covering(List.of(new int[] {from, to}), n -> ordinalOf(member, n));
-        if (wanted == null) {
-            return false;
-        }
-        surface.select(wanted);
-        return true;
+        return false;
     }
 
     // ── toolbar ───────────────────────────────────────────────────────────────
@@ -1262,9 +1261,10 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
             // slower to read, as Rocks is, made that the usual case (IKE-Network/ike-issues#1313).
             showCenter(DocumentSurfaceView.View.GRAPH);
         }
-        int affirmed = (int) assembly.lines().stream().filter(l -> !l.affirmers().isEmpty()).count();
+        // a line that is shown twice, in an abstract and in the body, is one line: it is counted once
+        int affirmed = (int) assembly.lines().stream().filter(l -> !l.affirmers().isEmpty()).map(StoredLine::nid).distinct().count();
         int references = assembly.references().values().stream().mapToInt(List::size).sum();
-        long edited = assembly.lines().stream().filter(DocumentSurfaceView::uncommitted).count();
+        long edited = assembly.lines().stream().filter(DocumentSurfaceView::uncommitted).map(StoredLine::nid).distinct().count();
         editedLines = edited;
         editedDocuments = (int) members.values().stream().filter(Loaded::pending).count();
         if (messageFor == null || !PublicId.equals(messageFor, shown.anchor())) {
@@ -1277,9 +1277,9 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
         pendingBar.show(pendingEdit, loaded.restorable(), edited, editedDocuments);
         int children = assembly.children().size();
         List<DocumentAssembly.Include> unresolved = assembly.unresolved();
-        int blocks = shown.root() == null ? -1 : assembly.members().stream().mapToInt(m -> m.document().blocks().size()).sum();
+        int blocks = shown.root() == null ? -1 : assembly.byPath().values().stream().mapToInt(m -> m.document().blocks().size()).sum();
         String tail = shown.root() == null ? "no structure; re-materialize to add it"
-                : assembly.members().stream().mapToInt(m -> m.document().blocks().size()).sum() + " blocks, " + references + " references, "
+                : blocks + " blocks, " + references + " references, "
                 + affirmed + " affirmed lines";
         if (shownAsOf != Long.MAX_VALUE && shown.lines().isEmpty()) {
             statusLine.setText("The document has no version as of " + DateTimeUtil.format(shownAsOf) + "; move the view's time later to read it.");
@@ -1290,7 +1290,7 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
         statusLine.setText((shownAsOf == Long.MAX_VALUE ? "" : "As of " + DateTimeUtil.format(shownAsOf)
                 + ", read only: the document as it stood then; move the view's time to the latest to edit it. ")
                 // the bar above the line counts the edited lines, so the line does not count them again
-                + DocumentFooter.line(assembly.lines().size(), blocks, references, affirmed, children, 0, lost));
+                + DocumentFooter.line(assembly.storedLines(), blocks, references, affirmed, children, 0, lost));
         statusDetail = status(shown, tail
                 + (children == 0 ? "" : "; " + children + " included document(s) shown in place")
                 + (lost.isEmpty() ? "" : "; " + lost)
@@ -1306,7 +1306,7 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
     private String status(StoredDocument document, String tail) {
         String name = StampNames.name(view(), PrimitiveData.nid(document.anchor()));
         String commit = document.commit().isEmpty() ? "?" : document.commit().substring(0, Math.min(7, document.commit().length()));
-        int lines = assembly == null ? document.lines().size() : assembly.lines().size();
+        int lines = assembly == null ? document.lines().size() : assembly.storedLines();     // a line shown twice is one line
         return name + " @ " + commit + " — " + lines + " lines, " + document.manifestVersions() + " manifest versions, " + tail;
     }
 
@@ -1325,16 +1325,8 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
         if (assembly == null) {
             return Optional.of(StoredDocumentModel.of(shown, Map.of(), surface.printing()));
         }
-        Map<Long, StoredDocumentModel.Child> includes = new HashMap<>();
-        Map<DocumentAssembly.Member, Integer> offsets = new HashMap<>();
-        for (DocumentAssembly.Include include : assembly.includes()) {   // surface order: an including member precedes its children
-            if (!include.resolved()) {
-                continue;
-            }
-            int offset = offsets.getOrDefault(include.in(), 0) + StoredDocumentModel.Child.levelOffset(include.line().text());
-            offsets.put(include.child(), offset);
-            includes.put(include.line().nid(), new StoredDocumentModel.Child(include.child().document(), offset));
-        }
+        // each include line with what it shows: the whole file, or the tagged regions it names
+        Map<Long, StoredDocumentModel.Child> includes = StoredDocumentModel.children(assembly);
         return Optional.of(StoredDocumentModel.of(shown, includes, surface.printing()));
     }
 
