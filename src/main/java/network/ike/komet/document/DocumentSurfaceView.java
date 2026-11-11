@@ -92,10 +92,13 @@ import java.util.stream.Collectors;
  * admonitions — each a view-only {@link RichTextArea} over a {@link LineRunModel} with one
  * styled segment per source line; the left margin carries the introducing date, the right
  * margin the identicons and marks (marginalia that share the block's row and scroll with it);
- * the header carries the document's title and the section at the top of the viewport. The
+ * the header carries the document's title and the section at the top of the viewport. A date
+ * and a block's STAMPs are drawn where they differ from the block above's, and under the
+ * pointer; the header keeps those of the block at the top of the viewport in sight. The
  * <em>Source view</em> is the ledger, one paragraph per line in areas of
  * {@link #LEDGER_CHUNK} lines with the number, identicon and mark as a side decorator, stacked
- * on the same surface with the margins off. Its lines are not wrapped: the surface's one
+ * on the same surface with the margins off; a line the same STAMP introduced as the line above
+ * carries a bar in the identicon's place. Its lines are not wrapped: the surface's one
  * horizontal scrollbar moves every area's text together, the side decorators standing still.
  *
  * <p>What is shown is a {@link DocumentAssembly}: the host document and, in place of each of
@@ -341,7 +344,14 @@ public final class DocumentSurfaceView {
     private final Map<View, CheckMenuItem> viewItems = new LinkedHashMap<>();
     private final Label headerTitle = new Label();
     private final Label headerSection = new Label();
-    private final VBox header = new VBox(1, headerTitle, headerSection);
+    /** The date and STAMPs of what is at the top of the viewport: a block shows them only where they change, so the header keeps them in sight. */
+    private final Label headerRunDate = new Label();
+    private final HBox headerRunStamps = new HBox(3);
+    private final HBox headerRun = new HBox(6, headerRunDate, headerRunStamps);
+    private final Region headerGap = new Region();
+    private final VBox header = new VBox(1, headerTitle, new HBox(headerSection, headerGap, headerRun));
+    /** What {@link #headerRun} was last drawn for, so a scroll within one run draws nothing. */
+    private List<Object> headerRunShown = List.of();
 
     private View view = View.READING;
     private DocumentAssembly assembly;
@@ -392,6 +402,12 @@ public final class DocumentSurfaceView {
         headerSection.setFont(SMALL);
         headerSection.setStyle("-fx-text-fill: #5f6b7a;");
         headerSection.setId("stampedDocumentHeaderSection");
+        headerRunDate.setFont(SMALL);
+        headerRunDate.setStyle("-fx-text-fill: #5f6b7a;");
+        headerRun.setId("stampedDocumentHeaderRun");
+        headerRun.setAlignment(Pos.CENTER_RIGHT);
+        headerRunStamps.setAlignment(Pos.CENTER_RIGHT);
+        HBox.setHgrow(headerGap, javafx.scene.layout.Priority.ALWAYS);
         header.setPadding(new Insets(4, 12, 4, 12));
         header.setId("stampedDocumentHeader");
         surface.setHeader(header);
@@ -547,6 +563,15 @@ public final class DocumentSurfaceView {
         final Map<Node, boolean[]> hiddenByFold = new java.util.LinkedHashMap<>();
         LineRunModel model;
         HBox marginalia;
+        /** The area before this one in the Reading view, whose date and STAMPs this one's are read against; null for the first. */
+        Area above;
+        /** The STAMPs that introduced the area's lines, oldest first, read once. */
+        List<StampEntity<?>> introducers;
+        /** The STAMPs' identicons in the right margin, while the STAMPs layer is on. */
+        Node icons;
+        /** Whether the date, and the STAMPs, are those of the block above: then they are drawn only under the pointer. */
+        boolean dateRepeats;
+        boolean stampsRepeat;
         /** The right margin's notes: the comments in force on the area's lines, and a note being written. */
         final VBox notes = new VBox(6);
         Label date;
@@ -822,6 +847,9 @@ public final class DocumentSurfaceView {
             // the left margin is the dates'; the right stands while any layer that is on has something to draw in it
             rightMargin = rightMarginInUse();
             surface.setMarginTracks(layers.contains(Layer.DATES) ? 2 : 0, rightMargin ? 2 : 0);
+            for (int i = 0; i < areas.size(); i++) {
+                areas.get(i).above = i == 0 ? null : areas.get(i - 1);
+            }
             surface.setBlocks(areas.stream().map(a -> a.documentBlock).toList());
             applyFolds();
         } else {
@@ -838,14 +866,60 @@ public final class DocumentSurfaceView {
         List<Area> shown = view == View.PAGE_LAYOUT ? areas : shownAreas();
         if (shown.isEmpty()) {
             headerSection.setText(view == View.SOURCE ? "Source" : "");
+            showRunningStamps(List.of());
             return;
         }
-        int top = surface.topBlockIndex();
+        DocumentSurface.Viewpoint at = surface.viewpoint();
+        int top = at == null ? -1 : at.blockIndex();
         if (top < 0 || top >= shown.size()) {
             return;
         }
-        headerSection.setText(view == View.SOURCE ? "Source" : shown.get(top).section);
-        host.showingMember(shown.get(top).member);
+        Area topArea = shown.get(top);
+        headerSection.setText(view == View.SOURCE ? "Source" : topArea.section);
+        if (view == View.READING) {
+            showRunningStamps(introducers(topArea));
+        } else if (view == View.SOURCE && !topArea.lines.isEmpty()) {
+            // the line at the top of the viewport, by how far down its chunk the viewport's top is
+            StoredLine line = topArea.lines.get(Math.clamp((int) (at.fraction() * topArea.lines.size()), 0, topArea.lines.size() - 1));
+            showRunningStamps(committedStamp(line) == 0 ? List.of() : List.of(line.introduced()));
+        } else {
+            showRunningStamps(List.of());
+        }
+        host.showingMember(topArea.member);
+    }
+
+    /** How many STAMPs the header draws before it counts the rest. */
+    private static final int HEADER_STAMPS = 4;
+
+    /** Draws the date and STAMPs of what is at the top of the viewport at the header's right, as a block's margins would. */
+    private void showRunningStamps(List<StampEntity<?>> stamps) {
+        boolean dates = layers.contains(Layer.DATES);
+        boolean icons = layers.contains(Layer.STAMPS);
+        List<Object> showing = new ArrayList<>(List.of(dates, icons));
+        stamps.forEach(stamp -> showing.add(stamp.nid()));
+        if (showing.equals(headerRunShown)) {
+            return;
+        }
+        headerRunShown = showing;
+        headerRunDate.setText(dates ? dateOf(stamps) : "");
+        headerRunStamps.getChildren().clear();
+        if (!icons || stamps.isEmpty()) {
+            return;
+        }
+        headerRunStamps.getChildren().add(new dev.ikm.komet.framework.controls.StampSigil(14));
+        for (StampEntity<?> stamp : stamps.subList(0, Math.min(HEADER_STAMPS, stamps.size()))) {
+            Node icon = identicon(stamp, 14, null);
+            Tooltip.install(icon, new Tooltip(StampNames.name(host.view(), stamp.authorNid()) + " · " + DAY.format(Instant.ofEpochMilli(stamp.time()))
+                    + host.summaries().summary(stamp.nid()).map(summary -> "\n" + summary).orElse("")
+                    + "\nIntroduced what is at the top of the view"));
+            headerRunStamps.getChildren().add(icon);
+        }
+        if (stamps.size() > HEADER_STAMPS) {
+            Label more = new Label("+" + (stamps.size() - HEADER_STAMPS));
+            more.setFont(SMALL);
+            more.setStyle("-fx-text-fill: #5f6b7a;");
+            headerRunStamps.getChildren().add(more);
+        }
     }
 
     /**
@@ -987,8 +1061,12 @@ public final class DocumentSurfaceView {
             number.setStyle("-fx-text-fill: #8a8782;");
             row.getChildren().add(number);
             StoredLine line = held ? chunk.lines.get(paragraph) : null;
-            if (line != null && line.introduced() != null && line.introduced().time() != Long.MAX_VALUE) {
+            long stamp = line == null ? 0 : committedStamp(line);
+            if (stamp != 0 && (paragraph == 0 || committedStamp(chunk.lines.get(paragraph - 1)) != stamp)) {
+                // the identicon stands where the STAMP changes, and at the head of every chunk
                 row.getChildren().add(identicon(line.introduced(), LEDGER_IDENTICON, null));
+            } else if (stamp != 0) {
+                row.getChildren().add(runBar(line.introduced()));
             } else {
                 Label gap = new Label();
                 gap.setMinWidth(LEDGER_IDENTICON);
@@ -1001,6 +1079,38 @@ public final class DocumentSurfaceView {
             row.getChildren().add(mark);
             return row;
         }
+    }
+
+    /** The STAMP that introduced a committed line, or 0 for a line no commit holds yet. */
+    private static long committedStamp(StoredLine line) {
+        return line.introduced() == null || line.introduced().time() == Long.MAX_VALUE ? 0 : line.introduced().nid();
+    }
+
+    /**
+     * What stands in the identicon's place on a line the same STAMP introduced as the line above:
+     * a bar in the STAMP's hue, the row's height, so a run of lines reads as one mark from its
+     * identicon down. A column of the same identicon says nothing after its first.
+     */
+    private static Region runBar(StampEntity<?> stamp) {
+        Color colour = runColour(stamp);
+        Region bar = new Region();
+        bar.setMinWidth(LEDGER_IDENTICON);
+        bar.setPrefWidth(LEDGER_IDENTICON);
+        bar.setMaxWidth(LEDGER_IDENTICON);
+        bar.setMaxHeight(Double.MAX_VALUE);
+        bar.getStyleClass().add("stamped-document-run");
+        double inset = (LEDGER_IDENTICON - RUN_BAR_WIDTH) / 2;
+        bar.setStyle(String.format(java.util.Locale.ROOT, "-fx-background-color: #%02x%02x%02x; -fx-background-insets: 0 %.1f 0 %.1f;",
+                Math.round(colour.getRed() * 255), Math.round(colour.getGreen() * 255), Math.round(colour.getBlue() * 255), inset, inset));
+        return bar;
+    }
+
+    /** How wide the bar down a run of lines is. */
+    private static final double RUN_BAR_WIDTH = 3;
+
+    /** The colour of a STAMP's run bar: its tint's hue, deep enough to read as a line. */
+    static Color runColour(StampEntity<?> stamp) {
+        return Color.hsb(tint(stamp).getHue(), 0.45, 0.72);
     }
 
     /**
@@ -2047,15 +2157,21 @@ public final class DocumentSurfaceView {
         area.date.setFont(SMALL);
         area.date.setStyle("-fx-text-fill: #5f6b7a;");
         area.date.setPadding(new Insets(3, 0, 0, 0));
+        area.date.getStyleClass().add("stamped-document-date");
         area.marginalia = new HBox(3);
         area.marginalia.setAlignment(Pos.TOP_LEFT);
         area.marginalia.getStyleClass().add("stamped-document-marginalia");
         area.notes.getStyleClass().add("stamped-document-notes");
         VBox right = new VBox(4, area.marginalia, area.notes);
         right.setFillWidth(true);
+        Node left = dateBox(area);
+        // a date or a STAMP the block above already shows is drawn while the pointer is on the block or its margins
+        for (Node under : List.of(area.holder, left, right)) {
+            under.hoverProperty().addListener(obs -> showRepeats(area));
+        }
         // the margins' images and the fold mark's binding wait until the surface builds the block near the viewport
         area.documentBlock = DocumentBlock.prose(area.holder, area.area, area.model, spec.lines().stream().map(StoredLine::text).collect(Collectors.joining("\n")))
-                .withMarginalia(dateBox(area), right)
+                .withMarginalia(left, right)
                 .withEstimatedHeight(estimatedHeight(area))
                 .whenRealized(() -> {
                     fillMarginalia(area);
@@ -2327,6 +2443,7 @@ public final class DocumentSurfaceView {
                 area.foldLine = null;
             }
         }
+        readAllAgainstAbove();
     }
 
     /** A heading's fold mark shows while the pointer is on its row, or its section is folded; bound to the row the surface built. */
@@ -3095,22 +3212,16 @@ public final class DocumentSurfaceView {
         HBox marginalia = area.marginalia;
         marginalia.getChildren().clear();
         List<StoredLine> lines = area.lines;
-        Map<Long, StampEntity<?>> distinct = new LinkedHashMap<>();
-        for (StoredLine line : lines) {
-            if (line.introduced() != null) {
-                distinct.putIfAbsent(line.introduced().nid(), line.introduced());
-            }
-        }
-        List<StampEntity<?>> stamps = new ArrayList<>(distinct.values());
-        stamps.removeIf(stamp -> stamp.time() == Long.MAX_VALUE);
-        stamps.sort(Comparator.comparingLong(StampEntity::time));
+        List<StampEntity<?>> stamps = introducers(area);
         boolean dates = layers.contains(Layer.DATES);
-        area.date.setText(dates && !stamps.isEmpty() ? DAY.format(Instant.ofEpochMilli(stamps.getFirst().time())) : "");
-        area.date.setVisible(dates);
+        area.date.setText(dates ? dateOf(stamps) : "");
         area.date.setManaged(dates);
+        area.icons = null;
         if (layers.contains(Layer.STAMPS)) {
             FlowPane icons = new FlowPane(3, 3);
             icons.setPrefWrapLength(120);
+            icons.getStyleClass().add("stamped-document-stamps");
+            area.icons = icons;
             if (!stamps.isEmpty()) {
                 icons.getChildren().add(new dev.ikm.komet.framework.controls.StampSigil(18));   // one leads the cluster
             }
@@ -3152,7 +3263,74 @@ public final class DocumentSurfaceView {
                 marginalia.getChildren().add(mark("◦ " + queued, "#b26a00", queued + " line(s) still to review: introduced, affirmed by no one"));
             }
         }
+        readAgainstAbove(area);
         fillNotes(area);
+    }
+
+    /** The STAMPs that introduced an area's committed lines, oldest first. */
+    private static List<StampEntity<?>> introducers(Area area) {
+        if (area.introducers == null) {
+            Map<Long, StampEntity<?>> distinct = new LinkedHashMap<>();
+            for (StoredLine line : area.lines) {
+                if (line.introduced() != null && line.introduced().time() != Long.MAX_VALUE) {
+                    distinct.putIfAbsent(line.introduced().nid(), line.introduced());
+                }
+            }
+            List<StampEntity<?>> stamps = new ArrayList<>(distinct.values());
+            stamps.sort(Comparator.comparingLong(StampEntity::time));
+            area.introducers = stamps;
+        }
+        return area.introducers;
+    }
+
+    /** The day a block's margin shows: its oldest STAMP's; empty when no commit holds its lines. */
+    private static String dateOf(List<StampEntity<?>> stamps) {
+        return stamps.isEmpty() ? "" : DAY.format(Instant.ofEpochMilli(stamps.getFirst().time()));
+    }
+
+    /**
+     * Whether a block's date and STAMPs are those of the block above it. A margin that repeats
+     * the same date and identicon down the page says nothing after the first: what is worth the
+     * margin is where they change. A block starts afresh, showing both, when it is the first of
+     * the document or of an included file, or when what is above it is folded away; its date and
+     * its STAMPs are judged apart, since two commits of one day change the one and not the other.
+     */
+    private void readAgainstAbove(Area area) {
+        Area above = area.above;
+        boolean afresh = above == null || above.member != area.member || !above.shown.get() || above.anchored.get();
+        List<StampEntity<?>> mine = introducers(area);
+        area.dateRepeats = !afresh && !mine.isEmpty() && dateOf(mine).equals(dateOf(introducers(above)));
+        area.stampsRepeat = !afresh && !mine.isEmpty()
+                && mine.stream().map(StampEntity::nid).collect(Collectors.toSet())
+                        .equals(introducers(above).stream().map(StampEntity::nid).collect(Collectors.toSet()));
+        showRepeats(area);
+    }
+
+    /** Draws a repeated date and repeated STAMPs only under the pointer, fainter than those that mark a change; each keeps its room. */
+    private void showRepeats(Area area) {
+        if (area.date == null || area.marginalia == null || !area.hiddenByFold.isEmpty()) {
+            return;                                                  // a fold line stands in the block's place: its margins come back with it
+        }
+        boolean pointed = area.holder.isHover() || area.date.getParent() != null && area.date.getParent().isHover()
+                || area.marginalia.getParent() != null && area.marginalia.getParent().isHover();
+        area.date.setVisible(layers.contains(Layer.DATES) && (!area.dateRepeats || pointed));
+        area.date.setOpacity(area.dateRepeats ? REPEAT_OPACITY : 1);
+        if (area.icons != null) {
+            area.icons.setVisible(!area.stampsRepeat || pointed);
+            area.icons.setOpacity(area.stampsRepeat ? REPEAT_OPACITY : 1);
+        }
+    }
+
+    /** How faintly a repeated date or STAMP is drawn under the pointer. */
+    private static final double REPEAT_OPACITY = 0.5;
+
+    /** Reads every built block's date and STAMPs against the block above again: a fold changed what is above what. */
+    private void readAllAgainstAbove() {
+        for (Area area : areas) {
+            if (area.marginalia != null && area.documentBlock != null && area.documentBlock.isRealized()) {
+                readAgainstAbove(area);
+            }
+        }
     }
 
     /**
