@@ -534,6 +534,29 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
     }
 
     /**
+     * Selects words in the view shown by what they say, as a drag across them does: for
+     * automation, which has no pointer to drag.
+     *
+     * @param words the words as the view draws them, in one paragraph of one text
+     * @param nth   which occurrence of them in the view, from 0
+     * @return whether they were found and selected
+     */
+    public boolean selectWords(String words, int nth) {
+        return surface != null && surface.selectWords(words, nth);
+    }
+
+    /**
+     * Writes a mark over the words selected, as its key or the selection's bar does, for automation.
+     *
+     * @param mark the mark's name: BOLD, ITALIC, UNDERLINE, STRIKE, MONO, HIGHLIGHT or LINK
+     * @return what the status line says once the mark is asked for
+     */
+    public String markSelection(String mark) {
+        surface.markSelection(InlineMarks.valueOf(mark.strip().toUpperCase(java.util.Locale.ROOT)));
+        return statusLine.getText();
+    }
+
+    /**
      * Selects a range of a member file's committed lines — the host's or a child's shown in
      * place — 1-based inclusive.
      *
@@ -1185,8 +1208,33 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
         }));
     }
 
+    /**
+     * Puts the reader's place back on a stack of pages just laid again. A new stack has no
+     * viewport to scroll until it is laid out, a pulse or two after it is shown, so the place
+     * waits for the viewport.
+     */
+    private static void restorePlace(PageStackView stack, PageStackView.Anchor place) {
+        if (stack.getViewportBounds().getHeight() > 0) {
+            stack.restore(place);
+            return;
+        }
+        stack.viewportBoundsProperty().addListener(new javafx.beans.value.ChangeListener<>() {
+            @Override
+            public void changed(javafx.beans.value.ObservableValue<? extends javafx.geometry.Bounds> observable, javafx.geometry.Bounds was, javafx.geometry.Bounds is) {
+                if (is.getHeight() > 0) {
+                    stack.viewportBoundsProperty().removeListener(this);
+                    Platform.runLater(() -> stack.restore(place));
+                }
+            }
+        });
+    }
+
     private void show(Opened opened) {
         Loaded loaded = opened.host();
+        // the same document read again, after a mark or an edit, keeps the page the reader is on: the pages are laid
+        // again from the top, and the line that stood at the top of the view is put back there
+        Optional<PageStackView.Anchor> place = shown != null && pageStack != null && surface.view() == DocumentSurfaceView.View.PAGE_LAYOUT
+                && PublicId.equals(shown.anchor(), loaded.document().anchor()) ? pageStack.anchor() : Optional.empty();
         shown = loaded.document();
         assembly = opened.assembly();
         members = opened.members();
@@ -1204,6 +1252,7 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
         documentArea.refreshExpandedView();
         if (surface.view() == DocumentSurfaceView.View.PAGE_LAYOUT) {
             buildPages();                                              // the pages follow the document
+            place.ifPresent(at -> restorePlace(pageStack, at));
         } else if (surface.view() == DocumentSurfaceView.View.GRAPH) {
             // As does the graph, with its modes and the centre: a load that ends after the person
             // chose Graph found no document then, so showCenter left the surface in place; a store

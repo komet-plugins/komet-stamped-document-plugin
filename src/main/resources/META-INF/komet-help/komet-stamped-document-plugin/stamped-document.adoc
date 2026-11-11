@@ -33,10 +33,21 @@ Go to page…:: Scrolls the Page layout to a page.
 
 == Reviewing and editing
 
-Select lines by clicking, or by dragging across them, then right-click.
-_Affirm…_, _Refute…_ and _Comment…_ record your judgment of the lines as a commit in the document's repository, signed or unsigned.
-The judgment stays with the lines until the text they judge changes.
+Click in a block to give it the focus. The Reading view marks the block with a bar at its left edge.
+Drag across words to select them, or double-click one word.
 
-To edit, right-click a block in the Reading view and choose _Edit block_.
-Your edit is pending until you choose _Commit…_, which writes the document into its working tree and records the change there as your own commit.
-_Discard edit_ cancels a pending edit.
+A judgment is recorded on whole lines of the source, because a line is what carries a STAMP.
+Right-click and choose _Affirm…_, _Refute…_ or _Comment…_ to record your judgment of the lines your selection touches; with no words selected the menu shows those lines selected.
+Shift-click outside your selection to select every line from where it began to the line you click.
+A judgment is a commit in the document's repository, signed or unsigned, and stays with the lines until the text they judge changes.
+
+To mark words, select them in the Reading view, in Page layout or in the Source view.
+A bar of marks appears where you finished selecting: bold, italic, underline, strike through, monospace, highlight and link.
+Each mark has a key, which its button shows when you hover over it, and the same marks are under _Format_ on the right-click menu.
+Choosing a mark the words already have removes it.
+_Link_ opens the block's source in the Reading view with the address selected, for you to type.
+Marks are written in a paragraph, a list item or an admonition.
+
+To change the words themselves, right-click a block in the Reading view and choose _Edit block_.
+A mark or an edit is pending until you choose _Commit…_, which writes the document into its working tree and records the change there as your own commit.
+_Discard edit_ cancels what is pending.

@@ -49,6 +49,19 @@ class InlineTextTest {
     }
 
     @Test
+    void aLineUnderOrThroughAPhraseAndAColourBehindOneAreRead() {
+        InlineText read = InlineText.of("An [.underline]#underlined# and a [.line-through]#struck# and a #marked# word, and [.other]#plain#.");
+        assertEquals("An underlined and a struck and a marked word, and plain.", read.text());
+        assertEquals(3, read.runs().size(), "a phrase of another role reads as its words: " + read.runs());
+        assertTrue(read.runs().get(0).underline() && !read.runs().get(0).strike() && !read.runs().get(0).highlight());
+        assertEquals("underlined", read.text().substring(read.runs().get(0).from(), read.runs().get(0).to()));
+        assertTrue(read.runs().get(1).strike());
+        assertTrue(read.runs().get(2).highlight());
+        assertTrue(InlineText.of("[.underline]#*bold* too#").runs().getFirst().bold(), "a phrase's spans compound with it");
+        assertTrue(InlineText.of("[.underline]#*bold* too#").runs().stream().allMatch(InlineText.Run::underline));
+    }
+
+    @Test
     void nestedSpansCompound() {
         assertEquals(List.of(run(0, 4, false, true, true)), InlineText.of("*_both_*").runs());
         assertEquals(List.of(run(0, 4, true, true, false)), InlineText.of("*`code`*").runs());

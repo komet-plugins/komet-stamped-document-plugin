@@ -157,6 +157,16 @@ class TypstWriterTest {
     }
 
     @Test
+    void aLineUnderOrThroughAPhraseAndAColourBehindOneAreWritten() {
+        assertEquals("An #underline[underlined]; and a #strike[struck]; and a #highlight(fill: rgb(\"#fff3a3\"))[marked]; word.", body("""
+                An [.underline]#underlined# and a [.line-through]#struck# and a #marked# word.
+                """));
+        assertEquals("#underline[#strong[bold];];#underline[ too];", body("""
+                [.underline]#*bold* too#
+                """), "a phrase's spans are runs of their own, each under the line");
+    }
+
+    @Test
     void inlineSpansAreRealTypst() {
         assertEquals("Use #strong[bold]; and #emph[emphasis];, #raw(\"measurementBasis\");.", body("""
                 Use *bold* and _emphasis_, `measurementBasis`.

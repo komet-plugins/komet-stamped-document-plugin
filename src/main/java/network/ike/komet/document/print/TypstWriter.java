@@ -623,6 +623,16 @@ public final class TypstWriter {
         if (run.bold()) {
             body = "#strong[" + body + "];";
         }
+        // a line under or through a phrase and the colour behind one draw over the text and take no room of their own
+        if (run.underline()) {
+            body = "#underline[" + body + "];";
+        }
+        if (run.strike()) {
+            body = "#strike[" + body + "];";
+        }
+        if (run.highlight()) {
+            body = "#highlight(fill: rgb(\"#fff3a3\"))[" + body + "];";
+        }
         return run.href() == null ? body : "#link(" + string(run.href()) + ")[" + body + "];";
     }
 

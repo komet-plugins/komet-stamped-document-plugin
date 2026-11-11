@@ -63,34 +63,55 @@ public record InlineText(String text, List<Run> runs, List<Note> notes, int[] of
      * @param bold   whether it is strong
      * @param italic whether it is emphasized
      * @param href   the link it is, or {@code null}
+     * @param underline whether it is underlined: a phrase of the role {@code underline}
+     * @param strike    whether it is struck through: a phrase of the role {@code line-through}
+     * @param highlight whether it is highlighted: {@code #marked#}
      */
-    public record Run(int from, int to, boolean mono, boolean bold, boolean italic, String href) {
+    public record Run(int from, int to, boolean mono, boolean bold, boolean italic, String href, boolean underline, boolean strike, boolean highlight) {
+
+        /** A run of the styles every reading had before the lines over, through and behind a phrase were read. */
+        public Run(int from, int to, boolean mono, boolean bold, boolean italic, String href) {
+            this(from, to, mono, bold, italic, href, false, false, false);
+        }
 
         /** @return the same style over another range */
         public Run over(int newFrom, int newTo) {
-            return new Run(newFrom, newTo, mono, bold, italic, href);
+            return new Run(newFrom, newTo, mono, bold, italic, href, underline, strike, highlight);
         }
 
         private static final Run PLAIN = new Run(0, 0, false, false, false, null);
 
         private Run withMono() {
-            return new Run(from, to, true, bold, italic, href);
+            return new Run(from, to, true, bold, italic, href, underline, strike, highlight);
         }
 
         private Run withBold() {
-            return new Run(from, to, mono, true, italic, href);
+            return new Run(from, to, mono, true, italic, href, underline, strike, highlight);
         }
 
         private Run withItalic() {
-            return new Run(from, to, mono, bold, true, href);
+            return new Run(from, to, mono, bold, true, href, underline, strike, highlight);
         }
 
         private Run withHref(String link) {
-            return new Run(from, to, mono, bold, italic, link);
+            return new Run(from, to, mono, bold, italic, link, underline, strike, highlight);
+        }
+
+        private Run withUnderline() {
+            return new Run(from, to, mono, bold, italic, href, true, strike, highlight);
+        }
+
+        private Run withStrike() {
+            return new Run(from, to, mono, bold, italic, href, underline, true, highlight);
+        }
+
+        private Run withHighlight() {
+            return new Run(from, to, mono, bold, italic, href, underline, strike, true);
         }
 
         private boolean sameStyle(Run other) {
-            return mono == other.mono && bold == other.bold && italic == other.italic && Objects.equals(href, other.href);
+            return mono == other.mono && bold == other.bold && italic == other.italic && Objects.equals(href, other.href)
+                    && underline == other.underline && strike == other.strike && highlight == other.highlight;
         }
     }
 
@@ -243,6 +264,12 @@ public record InlineText(String text, List<Run> runs, List<Note> notes, int[] of
                     case STRONG -> walk(span.children(), style.withBold());
                     case EMPHASIS -> walk(span.children(), style.withItalic());
                     case MONOSPACE -> walk(span.children(), style.withMono());
+                    case HIGHLIGHT -> walk(span.children(), style.withHighlight());
+                    case PHRASE -> {
+                        // a phrase is its role: underlined, struck through; any other role reads as its words
+                        String role = span.attributes().getOrDefault("role", "");
+                        walk(span.children(), role.contains("underline") ? style.withUnderline() : role.contains("line-through") ? style.withStrike() : style);
+                    }
                     case CROSS_REFERENCE -> {
                         if (span.children().isEmpty()) {
                             emit(AsciiDocMarkdown.topicOf(span.attributes().getOrDefault("linkend", "")).replace('-', ' '), style);

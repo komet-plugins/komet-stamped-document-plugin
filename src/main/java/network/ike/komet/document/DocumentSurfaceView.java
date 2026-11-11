@@ -347,6 +347,37 @@ public final class DocumentSurfaceView {
     private double[] hoverAt;
     private RichTextArea hoverArea;
 
+    /**
+     * The reader's own selection: the words chosen in one text, which that text's control keeps
+     * as they were chosen. While there is one, {@link #selection} is the lines it touches, which
+     * is what an annotation records, and no other text draws a selection; without one the
+     * selection is lines, drawn whole wherever they stand (topic {@code dev-document-edit-menu},
+     * revised 2026-11-10: a block takes the focus and its words are chosen freely).
+     */
+    private RichTextArea exactRta;
+    /** The area the exact selection's text belongs to: a block, a ledger chunk, a page line. */
+    private Area exactArea;
+    /** The model of the exact selection's text as it stands, since redrawing replaces it. */
+    private java.util.function.Supplier<LineRunModel> exactModel;
+    private jfx.incubator.scene.control.richtext.TextPos exactAnchor;
+    private jfx.incubator.scene.control.richtext.TextPos exactCaret;
+    /** The Reading view's block that holds the focus: the one last clicked in, marked by a bar at its left edge. */
+    private Area focused;
+    /** The marks offered at a selection of words: shown where the selecting gesture ended, gone at the next press. */
+    private final Popup selectionBar = new Popup();
+    /** The words to select again once a mark is saved and the document is read again, so a second mark needs no second selection. */
+    private Reselect reselect;
+
+    /**
+     * Words to select after the document is read again.
+     *
+     * @param block the block they are in
+     * @param line  the stored line they are on
+     * @param words the words as drawn
+     * @param nth   which occurrence of them in the line's drawn text, from 0
+     */
+    private record Reselect(long block, long line, String words, int nth) { }
+
     public DocumentSurfaceView(Host host, DocumentSurface surface) {
         this.host = host;
         this.surface = surface;
@@ -359,8 +390,12 @@ public final class DocumentSurfaceView {
         header.setPadding(new Insets(4, 12, 4, 12));
         header.setId("stampedDocumentHeader");
         surface.setHeader(header);
+        selectionBar.setAutoHide(true);
+        selectionBar.setConsumeAutoHidingEvents(false);              // the press that hides it is still the surface's
+        selectionBar.setAutoFix(true);
         surface.scrollPositionProperty().addListener((obs, was, is) -> {
             hidePopover();
+            selectionBar.hide();
             // Content-height areas settle their heights a pulse or two after a scroll that follows a
             // model change; the section at the top is read once they have.
             javafx.application.Platform.runLater(() -> javafx.application.Platform.runLater(this::updateRunningHead));
@@ -386,6 +421,7 @@ public final class DocumentSurfaceView {
         }
         view = wanted;
         hidePopover();
+        clearExact();                                             // the words were one view's text; the lines they touch carry over
         stack();
     }
 
@@ -422,6 +458,8 @@ public final class DocumentSurfaceView {
 
     /** Sets the selection (by ordinals) and shows it in the current view. */
     void select(LineSelection wanted) {
+        clearExact();
+        reselect = null;
         selection = wanted;
         render();
         reveal();
@@ -430,9 +468,26 @@ public final class DocumentSurfaceView {
 
     /** Clears the selection. */
     void clearSelection() {
+        clearExact();
+        reselect = null;
         selection = null;
         render();
         host.selectionChanged();
+    }
+
+    /** Forgets the reader's own selection of words: the selection is lines again, drawn whole. */
+    private void clearExact() {
+        selectionBar.hide();
+        exactRta = null;
+        exactArea = null;
+        exactModel = null;
+        exactAnchor = null;
+        exactCaret = null;
+    }
+
+    /** @return whether the reader has words selected, rather than lines */
+    boolean wordsSelected() {
+        return exactRta != null && exactAnchor != null && exactCaret != null && !exactAnchor.equals(exactCaret);
     }
 
     /**
@@ -546,6 +601,11 @@ public final class DocumentSurfaceView {
         List<LineRunModel.Spec> cellSpecs = List.of();
         /** A table row: whether it is its table's first, which draws the table's top edge on a page. */
         boolean tableFirst;
+        /** Whether the area's text is its lines' prose read, the markup gone; false for text drawn as written. */
+        boolean inline;
+        /** A page line: the paragraph of its unit's text it is a line of, and where in that paragraph's drawn text it begins. */
+        int sliceParagraph;
+        int sliceFrom;
 
         Area(DocumentAssembly.Member member, StoredBlock block, List<StoredLine> lines, LineRunModel.Spec spec, boolean editable, String section) {
             this(member, block, lines, spec, editable, section, false);
@@ -637,6 +697,9 @@ public final class DocumentSurfaceView {
          * layout is the greedy estimate, which the pages place by the writer's rule instead.
          */
         network.ike.komet.document.print.LayoutOracle.Line tail;
+        /** The paragraph of the unit's text the line is a line of, and where in that paragraph's drawn text it begins; 0 for a whole unit. */
+        int paragraph;
+        int from;
         /** A figure's height on its page at the scale it is shown, known once a page asked for its lines. */
         double drawnHeight;
         /** The line's area, once its page was shown. */
@@ -684,6 +747,8 @@ public final class DocumentSurfaceView {
         boolean sameDocument = foldedDocument != null && foldedDocument.equals(shown.host().document().anchor());
         List<String> foldKeys = sameDocument ? folding.keys(this::foldKey) : host.rememberedFolds();
         foldedDocument = shown.host().document().anchor();
+        // the same document read again, after a mark or an edit, stands where the reader had it
+        DocumentSurface.Viewpoint place = sameDocument && (view == View.READING || view == View.SOURCE) ? surface.viewpoint() : null;
         areas.clear();
         pages.clear();
         pageLines.clear();
@@ -691,6 +756,11 @@ public final class DocumentSurfaceView {
         areaByNode.clear();
         areasByBlock.clear();
         badges.clear();
+        clearExact();
+        focused = null;
+        if (!sameDocument) {
+            reselect = null;
+        }
         if (selection != null && (selection.max() >= shown.lines().size())) {
             selection = null;
         }
@@ -711,6 +781,10 @@ public final class DocumentSurfaceView {
         folding.clear();
         folding.restore(foldKeys, key -> areaIndexOf(key), this::levelAt, areas.size());
         stack();
+        if (place != null && place.blockIndex() >= 0 && place.blockIndex() < surface.blockCount()) {
+            surface.restoreViewpoint(new DocumentSurface.Viewpoint(place.blockIndex(), place.fraction(), null));
+        }
+        selectAgain();
     }
 
     /** Renders one member's blocks, or its lines as a ledger when the store holds no structure for it. */
@@ -1856,6 +1930,7 @@ public final class DocumentSurfaceView {
         LineRunModel.Spec spec = inlined == null ? read : print ? inlined.spec() : inlined.spec().withInlines(text -> conceptChips(text, false));
         // a unit of the Page layout is bare: the oracles place it by its text and style, and its lines are built from it
         Area area = new Area(member, block, lines, spec, editable && !past, section, print);
+        area.inline = inlined != null;
         target.add(area);
         if (print) {
             area.modelOrdinal = modelOrdinal;
@@ -2388,6 +2463,9 @@ public final class DocumentSurfaceView {
         if (editing != null) {
             cancelEdit(editing);
         }
+        if (exactArea != null && exactArea.unit >= 0) {
+            clearExact();                                         // the words were on a line that is laid again
+        }
         // the pages the front lists' entries print: wherever this layout put their targets
         entryPages = network.ike.komet.document.print.FrontLists.pages(layout, entryTargets());
         for (int u = 0; u < units.size() && u < this.units.size(); u++) {
@@ -2408,11 +2486,15 @@ public final class DocumentSurfaceView {
                         && unitArea.spec.paragraphs().size() == 1
                         && (unit.kind() == network.ike.komet.document.print.LayoutOracle.Kind.TABLE_ROW   // a header has a line on each page it repeats on
                         || unit.kind() == network.ike.komet.document.print.LayoutOracle.Kind.OTHER && own.size() == 1);
+                int sliceParagraph = 0;
+                int sliceFrom = 0;
                 if (whole) {
                     spec = unitArea.spec;
                 } else {
                     int[] pa = unit.paragraphAt(line.from());
                     int paragraphStart = line.from() - pa[1];
+                    sliceParagraph = pa[0];
+                    sliceFrom = pa[1];
                     boolean justified = pa[0] < unitArea.spec.paragraphs().size()
                             && unitArea.spec.paragraphs().get(pa[0]).style().getTextAlignment() == javafx.scene.text.TextAlignment.JUSTIFY;
                     boolean last = k + 1 >= own.size() || unit.paragraphAt(own.get(k + 1).from())[0] != pa[0];
@@ -2428,12 +2510,15 @@ public final class DocumentSurfaceView {
                 PageLine laid = new PageLine(unitArea, spec, u, k, line, whole, unitArea.listing);
                 laid.lastOfUnit = k == own.size() - 1;
                 laid.tail = laid.lastOfUnit ? tail : null;
+                laid.paragraph = sliceParagraph;
+                laid.from = sliceFrom;
                 checkLine(laid, line, unit);
                 pageLines.add(laid);
             }
         }
         if (view == View.PAGE_LAYOUT) {
             render();
+            selectAgain();                                        // the words a mark was written over, on the lines as laid now
         }
     }
 
@@ -2448,6 +2533,9 @@ public final class DocumentSurfaceView {
         area.modelOrdinal = unitArea.modelOrdinal;
         area.unit = laid.unit;
         area.lineOfUnit = laid.lineOfUnit;
+        area.inline = unitArea.inline;
+        area.sliceParagraph = laid.paragraph;
+        area.sliceFrom = laid.from;
         area.page = laid.page;
         area.x = laid.x;
         area.baseline = laid.baseline;
@@ -3429,7 +3517,7 @@ public final class DocumentSurfaceView {
         });
         rta.addEventHandler(MouseEvent.MOUSE_EXITED, e -> hidePopover());
         rta.addEventHandler(MouseEvent.MOUSE_PRESSED, e -> hidePopover());
-        rta.selectionProperty().addListener((obs, was, is) -> snap(area, model.get(), is));
+        rta.selectionProperty().addListener((obs, was, is) -> snap(area, rta, model, is));
         rta.addEventFilter(MouseEvent.MOUSE_PRESSED, e -> {
             if (area == editing) {
                 return;
@@ -3438,15 +3526,33 @@ public final class DocumentSurfaceView {
                 e.consume();                                    // the context menu handles it; the caret stays
                 return;
             }
-            if (e.isShiftDown() && e.getButton() == MouseButton.PRIMARY && selection != null) {
+            // a shift-click in the text the words are in reaches for more words, which is the control's own to do;
+            // anywhere else it reaches for lines, from where the selection began to the line clicked
+            if (e.isShiftDown() && e.getButton() == MouseButton.PRIMARY && selection != null && rta != exactRta) {
                 Optional<LineRun> run = model.get().runAt(rta.getTextPosition(e.getScreenX(), e.getScreenY()));
                 if (run.isPresent()) {
+                    clearExact();
                     selection = selection.extendTo(ordinal(run.get().nid()));
                     render();
                     host.selectionChanged();
                     e.consume();
                 }
             }
+        });
+        // the marks are offered where a selection of words ends, and their keys act on it with no editor opened
+        rta.addEventHandler(MouseEvent.MOUSE_RELEASED, e -> {
+            if (area != editing && e.getButton() == MouseButton.PRIMARY && rta == exactRta && canMark()) {
+                showSelectionBar(rta, e.getScreenX(), e.getScreenY());
+            }
+        });
+        rta.addEventFilter(javafx.scene.input.KeyEvent.KEY_PRESSED, e -> {
+            if (area == editing) {
+                return;                                         // a block in edit has its own keys
+            }
+            InlineMarks.forKey(e).ifPresent(mark -> {
+                markSelection(mark);
+                e.consume();
+            });
         });
         rta.setOnContextMenuRequested(e -> {
             if (area == editing) {
@@ -3461,17 +3567,24 @@ public final class DocumentSurfaceView {
             Optional<LineRun> run = model.get().runAt(rta.getTextPosition(e.getScreenX(), e.getScreenY()));
             if (run.isPresent()) {
                 int o = ordinal(run.get().nid());
-                if (selection == null || !selection.contains(o)) {
-                    selection = new LineSelection(o, o);
+                // words selected where the menu is asked for stay selected, for Format; otherwise the menu's verbs
+                // act on lines, which are drawn whole so that what an annotation would record is seen
+                boolean words = wordsSelected() && rta == exactRta && selection != null && selection.contains(o);
+                if (!words) {
+                    clearExact();
+                    if (selection == null || !selection.contains(o)) {
+                        selection = new LineSelection(o, o);
+                    }
                     render();
                     host.selectionChanged();
                 }
             }
+            selectionBar.hide();
             boolean structural = editableBlockOfSelection().isEmpty() || editing != null;
             editItem.setDisable(structural);
             deleteItem.setDisable(structural);
             insertMenu.setDisable(structural);
-            formatMenu.setDisable(editing == null || editing.structuredEditor != null);
+            formatMenu.setDisable(editing != null ? editing.structuredEditor != null : !canMark());
             refreshInsertMenu();
             refreshFoldItem();
             signItem.setSelected(host.signsAnnotations());
@@ -3502,24 +3615,73 @@ public final class DocumentSurfaceView {
 
     // ── selection ─────────────────────────────────────────────────────────────
 
-    /** Snaps a gesture's selection in one area to whole lines and makes it the document's. */
-    private void snap(Area area, LineRunModel model, SelectionSegment is) {
+    /**
+     * Takes a gesture's selection in one text as the reader's own: the control keeps the words as
+     * they were chosen, the block takes the focus, and the document's selection is the lines the
+     * words touch, which is what an annotation records. A click alone selects no words: its line
+     * is the selection, and nothing is drawn but the focus.
+     */
+    private void snap(Area area, RichTextArea rta, java.util.function.Supplier<LineRunModel> source, SelectionSegment is) {
+        LineRunModel model = source.get();
         if (applying || area == editing || is == null || model == null) {
             return;
         }
-        Optional<LineRun> anchor = model.runAt(is.getAnchor());
-        Optional<LineRun> caret = model.runAt(is.getCaret());
-        if (anchor.isEmpty() || caret.isEmpty()) {
+        Optional<LineRun> first = model.runAt(is.getMin());
+        Optional<LineRun> last = lastRun(model, is);
+        if (first.isEmpty() || last.isEmpty()) {
             return;
         }
-        LineSelection wanted = new LineSelection(ordinal(anchor.get().nid()), ordinal(caret.get().nid()));
-        if (wanted.anchor() < 0 || wanted.caret() < 0) {
+        boolean forward = is.getAnchor().compareTo(is.getCaret()) <= 0;
+        int from = ordinal(first.get().nid());
+        int to = ordinal(last.get().nid());
+        if (from < 0 || to < 0) {
             return;
         }
-        selection = wanted;
+        selection = forward ? new LineSelection(from, to) : new LineSelection(to, from);
+        reselect = null;                                          // the reader has selected something else
+        exactRta = rta;
+        exactArea = area;
+        exactModel = source;
+        exactAnchor = is.getAnchor();
+        exactCaret = is.getCaret();
+        if (is.isCollapsed()) {
+            selectionBar.hide();
+        }
+        focus(area);
         render();
         host.selectionChanged();
     }
+
+    /** The run the last selected character is on: a selection that ends where a line begins does not touch that line. */
+    private static Optional<LineRun> lastRun(LineRunModel model, SelectionSegment is) {
+        jfx.incubator.scene.control.richtext.TextPos max = is.getMax();
+        if (is.isCollapsed()) {
+            return model.runAt(max);
+        }
+        if (max.offset() > 0) {
+            return model.runAt(jfx.incubator.scene.control.richtext.TextPos.ofLeading(max.index(), max.offset() - 1));
+        }
+        List<LineRun> before = model.runs(max.index() - 1);
+        return before.isEmpty() ? model.runAt(max) : Optional.of(before.getLast());
+    }
+
+    /** Gives a Reading view block the focus: a bar at its left edge, where the block last clicked in is seen without a selection. */
+    private void focus(Area area) {
+        Area block = view == View.READING && area != null && area.holder != null && area.unit < 0 && area.numbers == null ? area : null;
+        if (block == focused) {
+            return;
+        }
+        if (focused != null && focused.holder != null) {
+            focused.holder.setStyle("");
+        }
+        focused = block;
+        if (block != null) {
+            block.holder.setStyle(FOCUS_BAR);
+        }
+    }
+
+    /** The focus bar: two points of colour down a block's left edge, painted behind it so the block's layout does not move. */
+    private static final String FOCUS_BAR = "-fx-background-color: linear-gradient(from 0px 0px to 3px 0px, #3b82f6 0%, #3b82f6 66%, transparent 67%);";
 
     /** Draws the selection in every area of the current view: whole runs, nothing elsewhere. */
     private void render() {
@@ -3553,8 +3715,23 @@ public final class DocumentSurfaceView {
         }
     }
 
-    /** Draws the selection in one text: the runs of its model the selection holds, as one stretch. */
+    /**
+     * Draws the selection in one text: the reader's own words in the text they were chosen in and
+     * nothing anywhere else; or, the selection being lines, the runs of the text's model the
+     * selection holds, as one stretch.
+     */
     private void applySelection(RichTextArea rta, LineRunModel model) {
+        if (exactRta != null) {
+            if (rta != exactRta || !inWindow(rta)) {
+                rta.clearSelection();
+                return;
+            }
+            SelectionSegment now = rta.getSelection();
+            if (now == null || !now.getAnchor().equals(exactAnchor) || !now.getCaret().equals(exactCaret)) {
+                rta.select(exactAnchor, exactCaret);
+            }
+            return;
+        }
         LineRun first = null;
         LineRun last = null;
         if (selection != null) {
@@ -3582,6 +3759,362 @@ public final class DocumentSurfaceView {
      */
     private static boolean inWindow(RichTextArea area) {
         return area.getScene() != null && area.getScene().getWindow() != null;
+    }
+
+    // ── marks on a selection of words ─────────────────────────────────────────
+
+    /** A block whose text is prose a mark can be written in: a paragraph, a list item, an admonition. */
+    private static boolean marksIn(StoredBlock block) {
+        return block != null && switch (block.kind()) {
+            case PARAGRAPH, ADMONITION, LIST_ITEM, BIBLIOGRAPHY_ENTRY -> true;
+            default -> false;
+        };
+    }
+
+    /** The Reading view's editable area of the block a stored line belongs to: the block an edit of the line is saved as. */
+    private Optional<Area> blockAreaOf(long lineNid) {
+        return areas.stream().filter(a -> a.editable && a.lines.stream().anyMatch(l -> l.nid() == lineNid)).findFirst();
+    }
+
+    /** @return whether a mark can be written over the words selected: they are in prose of the document as it is now */
+    boolean canMark() {
+        if (editing != null || past || !wordsSelected() || exactModel == null || exactModel.get() == null) {
+            return false;
+        }
+        jfx.incubator.scene.control.richtext.TextPos min = exactAnchor.compareTo(exactCaret) <= 0 ? exactAnchor : exactCaret;
+        return exactModel.get().runAt(min).flatMap(run -> blockAreaOf(run.nid())).filter(area -> marksIn(area.block)).isPresent();
+    }
+
+    /**
+     * Selects words by what they say, as a drag across them does, in the view shown: for
+     * automation and tests, which have no pointer to drag.
+     *
+     * @param words the words, as one of the view's texts draws them in one paragraph
+     * @param nth   which occurrence of them in the view, from 0, in reading order
+     * @return whether they were found and selected
+     */
+    public boolean selectWords(String words, int nth) {
+        if (words == null || words.isEmpty() || editing != null) {
+            return false;
+        }
+        int seen = 0;
+        if (view == View.PAGE_LAYOUT) {
+            // every laid line is looked through, and the line's area built if its page was not shown yet
+            for (PageLine laid : pageLines) {
+                if (laid.unitArea.drawn != null) {
+                    continue;
+                }
+                for (int p = 0; p < laid.spec.paragraphs().size(); p++) {
+                    String text = LineRunModel.Spec.text(laid.spec.paragraphs().get(p));
+                    for (int at = text.indexOf(words); at >= 0; at = text.indexOf(words, at + 1)) {
+                        if (seen++ == nth) {
+                            return selectWordsAt(laid.area == null ? buildLine(laid) : laid.area, p, at, words.length());
+                        }
+                    }
+                }
+            }
+            return false;
+        }
+        for (Area area : shownAreas()) {
+            LineRunModel model = area.model;
+            if (model == null || area.area == null) {
+                continue;
+            }
+            for (int p = 0; p < model.size(); p++) {
+                String text = model.getPlainText(p);
+                for (int at = text.indexOf(words); at >= 0; at = text.indexOf(words, at + 1)) {
+                    if (seen++ == nth) {
+                        return selectWordsAt(area, p, at, words.length());
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    /** Makes a stretch of one of an area's paragraphs the reader's own selection, and brings it into view. */
+    private boolean selectWordsAt(Area area, int paragraph, int at, int length) {
+        LineRunModel model = area.model;
+        jfx.incubator.scene.control.richtext.TextPos from = jfx.incubator.scene.control.richtext.TextPos.ofLeading(paragraph, at);
+        jfx.incubator.scene.control.richtext.TextPos to = jfx.incubator.scene.control.richtext.TextPos.ofLeading(paragraph, at + length);
+        Optional<LineRun> first = model.runAt(from);
+        Optional<LineRun> last = model.runAt(jfx.incubator.scene.control.richtext.TextPos.ofLeading(paragraph, at + length - 1));
+        if (first.isEmpty() || last.isEmpty() || ordinal(first.get().nid()) < 0 || ordinal(last.get().nid()) < 0) {
+            return false;
+        }
+        selection = new LineSelection(ordinal(first.get().nid()), ordinal(last.get().nid()));
+        exactRta = area.area;
+        exactArea = area;
+        exactModel = () -> area.model;
+        exactAnchor = from;
+        exactCaret = to;
+        focus(area);
+        render();
+        reveal();                                                 // automation has no eyes on the page: the words are brought into view
+        host.selectionChanged();
+        return true;
+    }
+
+    /** @return the words the reader has selected, as drawn, or empty when the selection is lines */
+    public String selectedWords() {
+        if (!wordsSelected() || exactModel == null || exactModel.get() == null) {
+            return "";
+        }
+        boolean forward = exactAnchor.compareTo(exactCaret) <= 0;
+        jfx.incubator.scene.control.richtext.TextPos min = forward ? exactAnchor : exactCaret;
+        jfx.incubator.scene.control.richtext.TextPos max = forward ? exactCaret : exactAnchor;
+        LineRunModel model = exactModel.get();
+        if (min.index() != max.index() || min.index() >= model.size()) {
+            return "";
+        }
+        String text = model.getPlainText(min.index());
+        return text.substring(Math.min(min.offset(), text.length()), Math.min(max.offset(), text.length()));
+    }
+
+    /** Offers the marks where a selection of words ended: a bar of them just above the pointer, gone at the next press. */
+    private void showSelectionBar(RichTextArea rta, double screenX, double screenY) {
+        if (rta.getScene() == null || rta.getScene().getWindow() == null) {
+            return;
+        }
+        HBox bar = new HBox(3);
+        bar.getChildren().addAll(formatBar("stampedDocumentSelectionMark", this::markSelection));
+        bar.setId("stampedDocumentSelectionBar");
+        bar.setPadding(new Insets(4));
+        bar.setStyle("-fx-background-color: white; -fx-background-radius: 6; -fx-border-color: #c9ced6; -fx-border-radius: 6;"
+                + " -fx-effect: dropshadow(gaussian, rgba(0,0,0,0.18), 8, 0, 0, 2);");
+        selectionBar.getContent().setAll(bar);
+        selectionBar.show(rta.getScene().getWindow(), screenX - 96, screenY - 48);
+    }
+
+    /** A line's drawn text, and where a text's run of the line begins in it. */
+    private record Share(String text, int base) { }
+
+    /**
+     * The whole drawn text of a run's line. In the Reading view and the ledger a run is its line's
+     * whole share; a page line holds only the part of the share that fell on it, so the share is
+     * read from the line's unit, with where the page line's part begins in it.
+     */
+    private Share share(Area area, LineRunModel model, LineRun run) {
+        String own = model.getPlainText(run.paragraph()).substring(run.start(), Math.min(run.end(), model.getPlainText(run.paragraph()).length()));
+        if (area.unit < 0 || area.whole || area.unit >= units.size() || area.sliceParagraph >= units.get(area.unit).spec.paragraphs().size()) {
+            return new Share(own, 0);
+        }
+        LineRunModel.Paragraph paragraph = units.get(area.unit).spec.paragraphs().get(area.sliceParagraph);
+        int at = 0;
+        for (int i = 0; i < paragraph.lines().size(); i++) {
+            if (i > 0) {
+                at += paragraph.separator().length();
+            }
+            String text = paragraph.lines().get(i).text();
+            if (paragraph.lines().get(i).line().nid() == run.nid()) {
+                return new Share(text, Math.max(at, area.sliceFrom) - at);
+            }
+            at += text.length();
+        }
+        return new Share(own, 0);
+    }
+
+    private static final String NOT_WORDS = "That selection cannot be marked as it stands: it holds something other than words, or half of a marked phrase."
+            + " Select whole words, or use Edit block to change the source.";
+
+    /**
+     * Writes a mark over the words selected, with no editor opened: the words are found in their
+     * lines' source ({@link SourceSpan}), the mark is toggled there, and the block is saved as an
+     * uncommitted edit, as an edit in place is. The selection may run over lines of one block,
+     * since a paragraph's lines are one text. A link needs its address typed, so in the Reading
+     * view it opens the block's source at the link with the address selected.
+     *
+     * @param mark the mark
+     */
+    void markSelection(InlineMarks mark) {
+        selectionBar.hide();
+        if (editing != null) {
+            host.status("Finish the edit in progress first: Save or Cancel it.");
+            return;
+        }
+        if (past) {
+            host.status("The document is read as of a past time, which is not edited: move the view's time to the latest to mark it.");
+            return;
+        }
+        if (!wordsSelected() || exactModel == null || exactModel.get() == null) {
+            host.status("Select the words to mark: drag across them, or double-click one.");
+            return;
+        }
+        LineRunModel model = exactModel.get();
+        boolean forward = exactAnchor.compareTo(exactCaret) <= 0;
+        jfx.incubator.scene.control.richtext.TextPos min = forward ? exactAnchor : exactCaret;
+        jfx.incubator.scene.control.richtext.TextPos max = forward ? exactCaret : exactAnchor;
+        Optional<LineRun> firstRun = model.runAt(min);
+        Optional<LineRun> lastRun = max.offset() > 0 ? model.runAt(jfx.incubator.scene.control.richtext.TextPos.ofLeading(max.index(), max.offset() - 1))
+                : model.runs(max.index() - 1).isEmpty() ? model.runAt(max) : Optional.of(model.runs(max.index() - 1).getLast());
+        Optional<Area> home = firstRun.flatMap(run -> blockAreaOf(run.nid()));
+        if (firstRun.isEmpty() || lastRun.isEmpty() || home.isEmpty() || !marksIn(home.get().block)) {
+            host.status("A mark is written in a paragraph, a list item or an admonition.");
+            return;
+        }
+        LineRun first = firstRun.get();
+        LineRun last = lastRun.get();
+        Area block = home.get();
+        List<String> lines = new ArrayList<>(block.lines.stream().map(StoredLine::text).toList());
+        int a = -1;
+        int b = -1;
+        for (int i = 0; i < block.lines.size(); i++) {
+            if (block.lines.get(i).nid() == first.nid()) {
+                a = i;
+            }
+            if (block.lines.get(i).nid() == last.nid()) {
+                b = i;
+            }
+        }
+        if (a < 0 || b < a) {
+            host.status("A mark stays within one block: the selection runs into another.");
+            return;
+        }
+        Share from = share(exactArea, model, first);
+        Share to = share(exactArea, model, last);
+        int start = from.base() + Math.max(0, min.offset() - first.start());
+        int end = to.base() + (last.paragraph() == max.index() ? Math.max(0, max.offset() - last.start()) : last.end() - last.start());
+        boolean inline = exactArea.inline;
+        Reselect again = null;
+        if (a == b) {
+            Optional<SourceSpan.Located> at = SourceSpan.locate(lines.get(a), inline, from.text(), start, end);
+            if (at.isEmpty()) {
+                host.status(NOT_WORDS);
+                return;
+            }
+            SourceSpan.Located found = at.get();
+            if (mark == InlineMarks.BOLD && found.bold() || mark == InlineMarks.ITALIC && found.italic() || mark == InlineMarks.MONO && found.mono()) {
+                host.status("Those words are part of a longer phrase that is already " + mark.label().toLowerCase(java.util.Locale.ROOT)
+                        + ": select the whole phrase to change it.");
+                return;
+            }
+            if (mark == InlineMarks.LINK) {
+                linkInSource(block, a, found);
+                return;
+            }
+            // the words' own mark of this kind goes; any other mark is written outside the marks already around the words
+            String line = lines.get(a);
+            String unmarked = mark.toggle(line, found.from(), found.to()).text();
+            lines.set(a, unmarked.length() < line.length() ? unmarked : mark.toggle(line, found.outerFrom(), found.outerTo()).text());
+            again = new Reselect(block.block.nid(), first.nid(), found.words(), found.nth());
+        } else {
+            java.util.OptionalInt opens = SourceSpan.start(lines.get(a), inline, from.text(), start);
+            java.util.OptionalInt closes = SourceSpan.end(lines.get(b), inline, to.text(), end);
+            Optional<String[]> both = opens.isPresent() && closes.isPresent()
+                    ? mark.across(lines.get(a), opens.getAsInt(), lines.get(b), closes.getAsInt()) : Optional.empty();
+            if (both.isEmpty()) {
+                host.status(mark == InlineMarks.LINK && opens.isPresent() && closes.isPresent()
+                        ? "A link's words stand on one line of the source, and these run over two: select fewer words, or use Edit block." : NOT_WORDS);
+                return;
+            }
+            lines.set(a, both.get()[0]);
+            lines.set(b, both.get()[1]);
+        }
+        reselect = again;
+        host.saveEdit(block.block, String.join("\n", lines));
+    }
+
+    /**
+     * A link over selected words: the block's source opens at the link, its address selected, so
+     * that typing gives it; a link saved with no address would be a broken one. From a page the
+     * source is the Reading view's to open, so the reader is told where.
+     */
+    private void linkInSource(Area block, int line, SourceSpan.Located found) {
+        if (view != View.READING || !inWindow(block.area)) {
+            host.status("A link needs its address typed: in the Reading view, select the words and choose Link.");
+            return;
+        }
+        startEdit(block);
+        RichTextArea rta = block.area;
+        rta.select(jfx.incubator.scene.control.richtext.TextPos.ofLeading(line, found.from()),
+                jfx.incubator.scene.control.richtext.TextPos.ofLeading(line, found.to()));
+        applyMark(rta, InlineMarks.LINK);
+        host.status("Type the link's address over the selection, then Save.");
+    }
+
+    /**
+     * Selects again, once a mark is saved and the document read again, the words it was written
+     * over: the same words at the same place in their line's drawn text, which a mark does not
+     * change. So a second mark, bold then italic, needs no second selection.
+     */
+    private void selectAgain() {
+        Reselect again = reselect;
+        if (again == null) {
+            return;
+        }
+        if (view == View.PAGE_LAYOUT) {
+            // on a page the words are looked for among the laid lines of their own source line, counted through in
+            // order; words a line break now parts are not selected, and their lines are not drawn selected in their place
+            int seen = 0;
+            for (PageLine laid : pageLines) {
+                if (laid.unitArea.drawn != null || laid.unitArea.block == null || laid.unitArea.block.nid() != again.block()) {
+                    continue;
+                }
+                for (int p = 0; p < laid.spec.paragraphs().size(); p++) {
+                    LineRunModel.Paragraph paragraph = laid.spec.paragraphs().get(p);
+                    int start = 0;
+                    for (int i = 0; i < paragraph.lines().size(); i++) {
+                        if (i > 0) {
+                            start += paragraph.separator().length();
+                        }
+                        String share = paragraph.lines().get(i).text();
+                        if (paragraph.lines().get(i).line().nid() == again.line()) {
+                            for (int at = share.indexOf(again.words()); at >= 0; at = share.indexOf(again.words(), at + 1)) {
+                                if (seen++ == again.nth()) {
+                                    selectWordsHere(laid.area == null ? buildLine(laid) : laid.area, p, start + at, again.words().length());
+                                    return;
+                                }
+                            }
+                        }
+                        start += share.length();
+                    }
+                }
+            }
+            selection = null;
+            render();
+            host.selectionChanged();
+            return;
+        }
+        if (view != View.READING) {
+            return;
+        }
+        Area area = areasByBlock.get(again.block());
+        if (area == null || area.model == null) {
+            return;
+        }
+        for (LineRun run : area.model.runs()) {
+            if (run.nid() != again.line()) {
+                continue;
+            }
+            String text = area.model.getPlainText(run.paragraph());
+            String share = text.substring(run.start(), Math.min(run.end(), text.length()));
+            int at = -1;
+            for (int n = 0; n <= again.nth(); n++) {
+                at = share.indexOf(again.words(), at + 1);
+                if (at < 0) {
+                    return;
+                }
+            }
+            selectWordsHere(area, run.paragraph(), run.start() + at, again.words().length());
+            return;
+        }
+    }
+
+    /** Makes a stretch of one of an area's paragraphs the reader's own selection, where it stands. */
+    private void selectWordsHere(Area area, int paragraph, int at, int length) {
+        exactRta = area.area;
+        exactArea = area;
+        exactModel = () -> area.model;
+        exactAnchor = jfx.incubator.scene.control.richtext.TextPos.ofLeading(paragraph, at);
+        exactCaret = jfx.incubator.scene.control.richtext.TextPos.ofLeading(paragraph, at + length);
+        Optional<LineRun> run = area.model == null ? Optional.empty() : area.model.runAt(exactAnchor);
+        int ordinal = run.map(r -> ordinal(r.nid())).orElse(-1);
+        if (ordinal >= 0) {
+            selection = new LineSelection(ordinal, ordinal);
+        }
+        focus(area);
+        render();
+        host.selectionChanged();
     }
 
     /** Scrolls the first selected block into view. */
@@ -3675,6 +4208,8 @@ public final class DocumentSurfaceView {
             if (editing != null && editing.structuredEditor == null) {
                 applyMark(editing.area, mark);
                 editing.area.requestFocus();
+            } else if (editing == null) {
+                markSelection(mark);
             }
         });
         return item;
@@ -3872,8 +4407,16 @@ public final class DocumentSurfaceView {
         rta.requestFocus();
     }
 
-    /** The format bar: a button for each inline mark, its key in its tooltip, so the keys are learned where they are used. */
+    /** The format bar of a block in edit: each button marks the editor's selection. */
     private List<Button> formatBar(RichTextArea rta) {
+        return formatBar("stampedDocumentMark", mark -> {
+            applyMark(rta, mark);
+            rta.requestFocus();
+        });
+    }
+
+    /** A format bar: a button for each inline mark, its key in its tooltip, so the keys are learned where they are used. */
+    private static List<Button> formatBar(String idPrefix, java.util.function.Consumer<InlineMarks> act) {
         List<Button> bar = new ArrayList<>();
         for (InlineMarks mark : InlineMarks.values()) {
             Button button = new Button(switch (mark) {
@@ -3885,7 +4428,7 @@ public final class DocumentSurfaceView {
                 case HIGHLIGHT -> "#";
                 case LINK -> "Link";
             });
-            button.setId("stampedDocumentMark" + DocumentInserts.camel(mark.name().toLowerCase(java.util.Locale.ROOT)));
+            button.setId(idPrefix + DocumentInserts.camel(mark.name().toLowerCase(java.util.Locale.ROOT)));
             button.setFont(Font.font("System", mark == InlineMarks.BOLD ? javafx.scene.text.FontWeight.BOLD : javafx.scene.text.FontWeight.NORMAL,
                     mark == InlineMarks.ITALIC ? javafx.scene.text.FontPosture.ITALIC : javafx.scene.text.FontPosture.REGULAR, 12));
             if (mark == InlineMarks.UNDERLINE) {
@@ -3895,10 +4438,7 @@ public final class DocumentSurfaceView {
             button.setMinWidth(26);
             button.setPadding(new Insets(2, 6, 2, 6));
             button.setTooltip(new Tooltip(mark.label() + "  " + mark.keyText()));
-            button.setOnAction(e -> {
-                applyMark(rta, mark);
-                rta.requestFocus();
-            });
+            button.setOnAction(e -> act.accept(mark));
             bar.add(button);
         }
         return bar;

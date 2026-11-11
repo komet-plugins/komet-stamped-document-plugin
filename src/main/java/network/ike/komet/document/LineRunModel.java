@@ -64,6 +64,8 @@ public final class LineRunModel extends StyledTextModelViewOnlyBase {
      * bold; and the pages' mono face is loaded only once a page is laid out.
      */
     public static final StyleAttribute<Boolean> SCREEN = StyleAttribute.character("network.ike.komet.document.screen", Boolean.class);
+    /** The colour a highlighted phrase stands on, as a marker pen leaves it. */
+    static final Color MARKED = Color.web("#fff3a3");
     /** The screen's mono face, as the Reading view's listings have it, and its size beside the body's. */
     static final String SCREEN_MONO = "Menlo";
     static final double SCREEN_MONO_SCALE = 12.0 / 14.0;
@@ -186,6 +188,12 @@ public final class LineRunModel extends StyledTextModelViewOnlyBase {
                 if (screen && !run.mono()) {
                     b.setFontFamily(SCREEN_ITALIC);
                 }
+            }
+            if (run.underline()) {
+                b.setUnderline(true);
+            }
+            if (run.strike()) {
+                b.setStrikeThrough(true);
             }
             return b.build();
         }
@@ -633,6 +641,12 @@ public final class LineRunModel extends StyledTextModelViewOnlyBase {
                 text.append(drawn);
                 own.add(run);
                 runs.add(run);
+            }
+            for (InlineText.Run run : p.runs()) {
+                // a highlighted phrase stands on its colour, which is the paragraph's to draw behind the text
+                if (run.highlight() && run.from() < text.length()) {
+                    builder.addHighlight(run.from(), Math.min(run.to(), text.length()) - run.from(), MARKED);
+                }
             }
             if (Boolean.TRUE.equals(p.style().get(JUSTIFY_FILL))) {
                 // A line of a justified paragraph: a filler wider than any page makes JavaFX wrap after

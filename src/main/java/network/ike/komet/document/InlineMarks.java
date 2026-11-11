@@ -138,6 +138,34 @@ public enum InlineMarks {
     }
 
     /**
+     * Toggles this mark on a selection that begins on one line of a paragraph and ends on a
+     * later one: the opening mark goes before its first character and the closing mark after
+     * its last, which AsciiDoc reads as one marked phrase, a paragraph's lines being one text.
+     * Marked that way already, the two marks go. A link is one line's, so it gives nothing.
+     *
+     * @param first the line the selection begins on
+     * @param from  where it begins, an offset in that line
+     * @param last  the line it ends on
+     * @param to    where it ends, an offset in that line
+     * @return the two lines after the edit, or empty for a mark that cannot run over lines
+     */
+    public java.util.Optional<String[]> across(String first, int from, String last, int to) {
+        if (this == LINK) {
+            return java.util.Optional.empty();
+        }
+        int a = Math.clamp(from, 0, first.length());
+        int b = Math.clamp(to, 0, last.length());
+        if (a >= open.length() && first.startsWith(open, a - open.length()) && last.startsWith(close, b)) {
+            return java.util.Optional.of(new String[] {
+                    first.substring(0, a - open.length()) + first.substring(a),
+                    last.substring(0, b) + last.substring(b + close.length())});
+        }
+        return java.util.Optional.of(new String[] {
+                first.substring(0, a) + open + first.substring(a),
+                last.substring(0, b) + close + last.substring(b)});
+    }
+
+    /**
      * A link: the selected text becomes the link's text, with the address placeholder selected
      * so that typing replaces it; a selection that is itself an address becomes the link, with
      * the caret in its empty text.
