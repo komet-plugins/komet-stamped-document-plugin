@@ -49,5 +49,22 @@ _Link_ opens the block's source in the Reading view with the address selected, f
 Marks are written in a paragraph, a list item or an admonition.
 
 To change the words themselves, right-click a block in the Reading view and choose _Edit block_.
-A mark or an edit is pending until you choose _Commit…_, which writes the document into its working tree and records the change there as your own commit.
-_Discard edit_ cancels what is pending.
+A mark or an edit is saved at once, and is pending until you commit it.
+
+== Committing your edits
+
+While an edit is pending, a bar shows at the bottom of the card, above the status line.
+It says how many lines are edited, for example _3 lines edited_.
+When nothing is pending the bar is not there.
+
+Message:: A line that says what the edit is for, such as _Mark the dose bold_. You can leave it empty. The commit then names the document and lists what changed.
+Sign:: Signs the commit with your key, so that it can be shown to be yours. The card remembers your choice, and your annotations follow it.
+Commit:: Writes the document with your edits into its folder and records them there as your own git commit. Pressing Enter in the message does the same. Nothing is pushed.
+Discard…:: Asks whether to discard the edited lines, and says how many there are. If you agree, the document reads as it was last committed.
+Restore as pending:: Shows after you discard an edit, or after a commit leaves part of an edit out. It brings that edit back as a pending edit.
+
+When the edits are in more than one document, as with a document and one it includes, each _Commit_ records one document.
+The bar stays until every document is committed.
+
+If the document's file was also changed outside Komet, _Commit_ first asks about that file in a dialog, because you choose which changed file the commit holds.
+_Commit…_ in the Repository panel opens the same dialog.

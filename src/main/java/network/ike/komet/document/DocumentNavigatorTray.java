@@ -322,7 +322,7 @@ final class DocumentNavigatorTray implements KlSidebarTray {
     private void changeBranch(Path root, String name, Supplier<GitOperations.Run> change, boolean changesFiles) {
         List<StampedDocumentCard> cards = StampedDocumentCard.onRepository(root);
         if (changesFiles && cards.stream().anyMatch(StampedDocumentCard::pendingEdit)) {
-            status.setText("An edit is pending on a card: Commit… or Discard edit before switching branches.");
+            status.setText("An edit is pending on a card: Commit or Discard… there before switching branches.");
             readBranches();
             return;
         }

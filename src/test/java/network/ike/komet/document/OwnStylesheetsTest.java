@@ -78,7 +78,11 @@ class OwnStylesheetsTest {
             assertTrue(surface.contains(styleClass), "document-surface.css has no rule for " + styleClass);
         }
         String card = Files.readString(RESOURCES.resolve("network/ike/komet/document/stamped-document.css"), StandardCharsets.UTF_8);
-        assertTrue(card.contains(".stamped-toolbar-button"), "stamped-document.css has no rule for .stamped-toolbar-button");
+        String bar = Files.readString(SOURCES.resolve("network/ike/komet/document/PendingEditBar.java"), StandardCharsets.UTF_8);
+        for (String styleClass : List.of("stamped-pending-bar", "stamped-pending-summary", "stamped-pending-commit", "stamped-pending-quiet")) {
+            assertTrue(bar.contains('"' + styleClass + '"'), "the pending-edit bar no longer names " + styleClass);
+            assertTrue(card.contains("." + styleClass), "stamped-document.css has no rule for ." + styleClass);
+        }
         String sources = Files.readString(SOURCES.resolve("network/ike/komet/document/StampedDocumentCard.java"), StandardCharsets.UTF_8);
         assertFalse(sources.contains("claude-card-toolbar-button"), "the card names a style class only the assistant's sheet has");
     }

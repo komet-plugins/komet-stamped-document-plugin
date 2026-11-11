@@ -119,9 +119,11 @@ import java.util.stream.Collectors;
  * {@link GitDocumentMaterializer} wrote into the knowledge base, never the file; the repository
  * is consulted only for commit subjects and for the annotation trailers a person signs.
  *
- * <p>The toolbar is contextual: the document chooser, the view switch, the layer menu and an
- * overflow menu are always there; Commit… and Discard edit appear with an "edited" badge while
- * an edit is pending, and Restore as pending while a cancelled edit can be restored. The acts
+ * <p>The toolbar holds what acts on the document as a whole: the document chooser, the view
+ * switch, the layer menu and an overflow menu. An edit made in Komet is settled at the bottom of
+ * the card, in a {@link PendingEditBar} above the status line that is there only while an edit
+ * is pending or one can be restored: the count of edited lines, the commit's message, Commit,
+ * and Discard… at its far end. The acts
  * on a selection — Affirm, Refute, Comment, Edit block, Show history — are the context menu of
  * the selection, in {@link DocumentSurfaceView}. The assistant's {@code StampTools} default to
  * the selection and hand their proposals to {@link #proposeAnnotation}.
@@ -135,7 +137,7 @@ import java.util.stream.Collectors;
  * when the include names a library another repository holds) show those children in place, each
  * still its own document ({@link DocumentAssembly}). A selection is located to the one member it
  * lies in, so an annotation's trailers name the child's file; the footer follows the member
- * under the viewport; an edit in place inside a child edits that child's block, and Commit…
+ * under the viewport; an edit in place inside a child edits that child's block, and Commit
  * commits the member whose edit is pending.
  *
  * <p>The card builds no body of its own: it hosts the plugin's {@link DocumentSurfaceArea} as the
@@ -303,17 +305,40 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
     private final Label pageIndicator = new Label();
     private final MenuButton layerMenu = new MenuButton("Layer");
     private final MenuButton overflow = new MenuButton("More");
-    private final Label editedBadge = new Label("edited");
-    private final Button commit = new Button("Commit…");
-    private final Button discard = new Button("Discard edit");
-    private final Button restore = new Button("Restore as pending");
+    /** Where a pending edit is settled: above the status line, and there only while one is pending or restorable. */
+    private final PendingEditBar pendingBar = new PendingEditBar(new PendingEditBar.Host() {
+        @Override
+        public void commitPending(String message, boolean sign) {
+            commitFromBar(message, sign);
+        }
+
+        @Override
+        public void discardPending() {
+            StampedDocumentCard.this.discardPending();
+        }
+
+        @Override
+        public void restorePending() {
+            StampedDocumentCard.this.restorePending();
+        }
+
+        @Override
+        public void setSignsCommits(boolean sign) {
+            setSignsAnnotations(sign);
+        }
+    });
+    /** The lines edited and not committed, and the documents they are in, as the bar counts them. */
+    private long editedLines;
+    private int editedDocuments;
+    /** The document the bar's message was typed for; another document starts with none. */
+    private PublicId messageFor;
     private final Map<DocumentSurfaceView.Layer, CheckMenuItem> layerItems = new HashMap<>();
     private final Label footerIdentity = new Label();
     /** All the footer's line leaves out, for its tooltip. */
     private String statusDetail = "";
     /** The full SHA a click on the footer's identity copies, empty when the document names none. */
     private String footerSha = "";
-    private HBox footer;
+    private VBox footer;
     private RepositoryPanel repositoryPanel;
     private boolean pendingEdit;
     private DocumentSurfaceArea documentArea;
@@ -681,26 +706,8 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
                 item("Show history", "stampedDocumentHistory", "The STAMPs of the selected lines, or of the whole document, in order", this::showHistory),
                 new SeparatorMenuItem(),
                 item("Go to page…", "stampedDocumentGoToPage", "Scroll the Page layout to a page by its number", this::goToPage));
-        editedBadge.setId("stampedDocumentEditedBadge");
-        editedBadge.setStyle("-fx-text-fill: #FFE082; -fx-font-weight: bold;");
-        editedBadge.setTooltip(new Tooltip("An edit made in Komet is pending: Commit… records it in git, Discard edit cancels it"));
-        commit.setId("stampedDocumentCommit");
-        commit.setTooltip(new Tooltip("Write the document with your edit into its working tree and record it there as your own git commit"));
-        commit.getStyleClass().add("stamped-toolbar-button");
-        commit.setOnAction(e -> commit());
-        discard.setId("stampedDocumentDiscard");
-        discard.setTooltip(new Tooltip("Cancel the edit made in Komet, so the document reads as committed again"));
-        discard.getStyleClass().add("stamped-toolbar-button");
-        discard.setOnAction(e -> discardPending());
-        restore.setId("stampedDocumentRestore");
-        restore.setTooltip(new Tooltip("Bring back the lines of a cancelled edit that the commit did not carry, as a pending edit over the document as now committed"));
-        restore.getStyleClass().add("stamped-toolbar-button");
-        restore.setOnAction(e -> restorePending());
-        HBox pendingGroup = new HBox(4, editedBadge, commit, discard, restore);
-        pendingGroup.setId("stampedDocumentPendingGroup");
-        pendingGroup.setAlignment(javafx.geometry.Pos.CENTER_LEFT);
-        showPending(false, false);
-        toolBar.getChildren().addAll(coordinateButton(), documents, views, modes, layerMenu, overflow, pendingGroup);
+        // Nothing here settles a pending edit: that is the bar's, at the bottom of the card.
+        toolBar.getChildren().addAll(coordinateButton(), documents, views, modes, layerMenu, overflow);
         // Names beside the icons while the card is wide enough for them; icons alone when it is not.
         fxObject().widthProperty().addListener((obs, was, is) -> labelToolbar());
         modes.visibleProperty().addListener((obs, was, is) -> labelToolbar());
@@ -743,16 +750,6 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
         item.setId(id);
         item.setOnAction(e -> action.run());
         return item;
-    }
-
-    /** Shows the contextual group: the badge, Commit… and Discard edit while an edit is pending; Restore while one is restorable. */
-    private void showPending(boolean pending, boolean restorable) {
-        for (Node n : List.of(editedBadge, commit, discard)) {
-            n.setVisible(pending);
-            n.setManaged(pending);
-        }
-        restore.setVisible(restorable);
-        restore.setManaged(restorable);
     }
 
     @Override
@@ -820,10 +817,13 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
         pageIndicator.setMinWidth(javafx.scene.layout.Region.USE_PREF_SIZE);
         pageIndicator.setVisible(false);
         pageIndicator.setManaged(false);
-        HBox footer = new HBox(12, statusLine, settling, pageIndicator, footerIdentity);
-        footer.setId("stampedDocumentFooter");
-        footer.setAlignment(javafx.geometry.Pos.CENTER_LEFT);
-        footer.setPadding(new Insets(4, 12, 4, 12));
+        HBox status = new HBox(12, statusLine, settling, pageIndicator, footerIdentity);
+        status.setId("stampedDocumentFooter");
+        status.setAlignment(javafx.geometry.Pos.CENTER_LEFT);
+        status.setPadding(new Insets(4, 12, 4, 12));
+        // The bar that settles a pending edit stands on the status line and goes where it goes.
+        VBox footer = new VBox(pendingBar, status);
+        footer.setId("stampedDocumentFooterArea");
         this.footer = footer;
         documentArea.surface().setFooter(footer);
         repositoryPanel = new RepositoryPanel(this);
@@ -1042,7 +1042,7 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
      * @param committedLines   the committed text, line by line: what the file at HEAD must equal for a trailer to anchor
      * @param path             the recorded path, or {@code null} when the store holds no git source
      * @param pending          whether an edit of it is pending in Komet
-     * @param restorable       whether a cancelled edit of it can be restored
+     * @param restorable       whether an edit of it that was discarded, or left out of a commit, can be restored
      * @param summaries        the commit subjects of its STAMPs
      */
     private record Loaded(StoredDocument document, Map<Long, Integer> committedNumbers, List<String> committedLines, String path,
@@ -1259,10 +1259,19 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
             // slower to read, as Rocks is, made that the usual case (IKE-Network/ike-issues#1313).
             showCenter(DocumentSurfaceView.View.GRAPH);
         }
-        showPending(pendingEdit, loaded.restorable());
         int affirmed = (int) assembly.lines().stream().filter(l -> !l.affirmers().isEmpty()).count();
         int references = assembly.references().values().stream().mapToInt(List::size).sum();
         long edited = assembly.lines().stream().filter(DocumentSurfaceView::uncommitted).count();
+        editedLines = edited;
+        editedDocuments = (int) members.values().stream().filter(Loaded::pending).count();
+        if (messageFor == null || !PublicId.equals(messageFor, shown.anchor())) {
+            pendingBar.clearMessage();                                 // a message is for the document it was typed under
+            messageFor = shown.anchor();
+        }
+        if (pendingEdit) {
+            pendingBar.showSigned(signsAnnotations());
+        }
+        pendingBar.show(pendingEdit, loaded.restorable(), edited, editedDocuments);
         int children = assembly.children().size();
         List<DocumentAssembly.Include> unresolved = assembly.unresolved();
         int blocks = shown.root() == null ? -1 : assembly.members().stream().mapToInt(m -> m.document().blocks().size()).sum();
@@ -1277,11 +1286,12 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
                 + unresolved.stream().map(DocumentAssembly.Include::target).limit(3).collect(Collectors.joining(", ")) + (unresolved.size() > 3 ? ", …" : "");
         statusLine.setText((shownAsOf == Long.MAX_VALUE ? "" : "As of " + DateTimeUtil.format(shownAsOf)
                 + ", read only: the document as it stood then; move the view's time to the latest to edit it. ")
-                + DocumentFooter.line(assembly.lines().size(), blocks, references, affirmed, children, edited, lost));
+                // the bar above the line counts the edited lines, so the line does not count them again
+                + DocumentFooter.line(assembly.lines().size(), blocks, references, affirmed, children, 0, lost));
         statusDetail = status(shown, tail
                 + (children == 0 ? "" : "; " + children + " included document(s) shown in place")
                 + (lost.isEmpty() ? "" : "; " + lost)
-                + (edited == 0 ? "" : "; " + edited + " line(s) edited in Komet, uncommitted: Commit… to record them in git")
+                + (edited == 0 ? "" : "; " + edited + " line(s) edited in Komet, uncommitted: Commit, below, records them in git")
                 + (repoRoot == null || shownPath == null || !Files.isRegularFile(repoRoot.resolve(shownPath))
                 ? "; no working tree holds the file: Open file… to annotate" : ""));
         Tooltip detail = new Tooltip(statusDetail);
@@ -2282,8 +2292,9 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
     private Boolean signAnnotations;
 
     /**
-     * Whether an annotation's commit is signed: a standing choice, remembered with the card, and
-     * at first what the person's git is set to do ({@code commit.gpgsign}).
+     * Whether an annotation's commit is signed, and the commit of an edit: a standing choice,
+     * remembered with the card, and at first what the person's git is set to do
+     * ({@code commit.gpgsign}).
      */
     @Override
     public boolean signsAnnotations() {
@@ -2291,6 +2302,8 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
             String remembered = preferences().get(PREF_SIGN_ANNOTATIONS, "");
             if (!remembered.isEmpty()) {
                 signAnnotations = Boolean.parseBoolean(remembered);
+            } else if (repoRoot == null) {
+                return false;                                      // git's own setting is read once a working tree is known
             } else {
                 signAnnotations = gitSignsByDefault();
             }
@@ -2311,7 +2324,8 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
         signAnnotations = sign;
         preferences().put(PREF_SIGN_ANNOTATIONS, Boolean.toString(sign));
         syncPreferences();
-        statusLine.setText(sign ? "Annotations are recorded as signed commits." : "Annotations are recorded as unsigned commits.");
+        pendingBar.showSigned(sign);
+        statusLine.setText(sign ? "Your commits and annotations are signed." : "Your commits and annotations are not signed.");
     }
 
     /** What git itself would do: {@code commit.gpgsign} in the working tree's configuration, false when unset or unreadable. */
@@ -2746,15 +2760,40 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
     }
 
     /**
-     * Commits what the shown document's files hold that HEAD does not: changes made outside Komet
-     * first, one file at a time, then the edit pending in Komet. Reads the files again, since
-     * nothing tells the card when one changes.
+     * The Repository panel's Commit…: commits a file of the shown document that changed outside
+     * Komet, in a dialog that names the file. An edit pending in Komet is committed from the bar
+     * at the bottom of the card, so with one pending and no file changed outside, this puts the
+     * caret in the bar's message.
      */
     @Override
     public void commit() {
+        commitOutsideChangesOr(() -> {
+            if (pendingEdit) {
+                pendingBar.focusMessage();
+                statusLine.setText("Your edit is committed from the bar above: type a message, or leave it empty, and choose Commit.");
+            } else {
+                commitPending("", signsAnnotations());             // says what is missing
+            }
+        });
+    }
+
+    /** The bar's Commit: the pending edit, with the message typed there, after any change made to the files outside Komet. */
+    private void commitFromBar(String message, boolean sign) {
+        commitOutsideChangesOr(() -> commitPending(message, sign));
+    }
+
+    /**
+     * Commits what the shown document's files hold that HEAD does not: changes made outside Komet
+     * first, one file at a time, which needs a dialog because the person chooses the file; then
+     * the edit pending in Komet. Reads the files again, since nothing tells the card when one
+     * changes.
+     *
+     * @param pending what to do when no file changed outside Komet
+     */
+    private void commitOutsideChangesOr(Runnable pending) {
         Path root = repoRoot;
         if (root == null || shown == null) {
-            commitPending();                                       // says what is missing, or asks for the working tree
+            pending.run();                                         // says what is missing, or asks for the working tree
             return;
         }
         List<Loaded> read = members.values().stream().filter(l -> l.path() != null).toList();
@@ -2768,7 +2807,7 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
             if (!changes.isEmpty()) {
                 commitWorkingFile(root, changes);
             } else if (pendingEdit) {
-                commitPending();
+                pending.run();
             } else {
                 statusLine.setText("Nothing to commit: the document's files match HEAD.");
             }
@@ -2792,7 +2831,7 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
                 continue;
             }
             List<String> working = Files.readAllLines(root.resolve(loaded.path()));
-            // A commit that failed leaves the edit in the file: that is the edit, and Commit… retries it.
+            // A commit that failed leaves the edit in the file: that is the edit, and Commit retries it.
             boolean holdsTheEdit = loaded.pending() && GitDocumentExporter.export(loaded.document().anchor(), true)
                     .filter(pending -> pending.lines().equals(working)).isPresent();
             if (!holdsTheEdit) {
@@ -2815,7 +2854,7 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
     /** Asks for the message and the signing, commits one changed file as it stands, and reads the commit into the store. */
     private void commitWorkingFile(Path root, List<WorkingChange> changes) {
         TextArea message = new TextArea(changes.getFirst().draft());
-        message.setId("stampedDocumentCommitMessage");
+        message.setId("stampedDocumentCommitFileMessage");         // the bar's one-line message is stampedDocumentCommitMessage
         message.setWrapText(true);
         message.setPrefRowCount(6);
         ComboBox<String> files = new ComboBox<>();
@@ -2896,7 +2935,7 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
         List<String> notes = new ArrayList<>();
         notes.add("Switching changes the files in the working tree, and the document follows. Uncommitted changes that would be overwritten refuse the switch.");
         if (pendingEdit) {
-            notes.add("An edit is pending in Komet, so only a new branch is open: it starts here and changes no file. Commit… or Discard edit before switching.");
+            notes.add("An edit is pending in Komet, so only a new branch is open: it starts here and changes no file. Commit or Discard…, at the bottom of the card, before switching.");
         }
         GitOperations.syncedFolder(root).ifPresent(synced -> notes.add("This repository is in the synced folder " + synced
                 + ": the files a switch changes reach your other machines, whose git stays on its own branch. A working set's members switch together with ws:switch-publish."));
@@ -2939,7 +2978,7 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
     /** Refuses while an edit is pending, since a switch would change the file under it; else switches, and the document follows. */
     private void switchTo(Path root, String branch, java.util.function.Supplier<GitOperations.Run> operation) {
         if (pendingEdit) {
-            statusLine.setText("An edit is pending: Commit… or Discard edit before switching branches.");
+            statusLine.setText("An edit is pending: Commit or Discard…, above, before switching branches.");
             return;
         }
         operate("switch " + branch, operation, run -> {
@@ -3062,7 +3101,7 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
     @Override
     public void newRepository() {
         if (pendingEdit) {
-            statusLine.setText("An edit is pending: Commit… or Discard edit before changing the working tree.");
+            statusLine.setText("An edit is pending: Commit or Discard…, above, before changing the working tree.");
             return;
         }
         Path library = DocumentLibrary.root();
@@ -3340,8 +3379,8 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
         confirm.setTitle("Delete Block");
         confirm.getDialogPane().setId("stampedDocumentDeleteBlockDialog");
         confirm.setHeaderText("Delete this " + block.get().kind().name().toLowerCase() + " of " + block.get().members().size()
-                + " line" + (block.get().members().size() == 1 ? "" : "s") + "?\nIt leaves the document as your pending edit: Commit… records "
-                + "the removal in git, Discard edit brings it back.");
+                + " line" + (block.get().members().size() == 1 ? "" : "s") + "?\nIt leaves the document as your pending edit: Commit records "
+                + "the removal in git, Discard… brings it back.");
         confirm.initOwner(window());
         Optional<ButtonType> choice = confirm.showAndWait();
         if (choice.isEmpty() || choice.get() != ButtonType.OK) {
@@ -3573,11 +3612,15 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
     }
 
     /**
-     * Records the pending edit in git as the person's own commit: writes the document with the
-     * edit into the working tree, asks for the message (a draft is offered) and the signing
-     * choice, commits that one file, re-reads the commit into the store and settles the edit.
+     * Records the pending edit in git as the person's own commit, with no dialog: writes the
+     * document with the edit into the working tree, commits that one file with the message,
+     * re-reads the commit into the store and settles the edit. The bar at the bottom of the card
+     * calls this with the message typed there; public for automation.
+     *
+     * @param typed the commit's message, in a line; blank to take the draft written from what the edit changed
+     * @param sign  whether to sign the commit
      */
-    public void commitPending() {
+    public void commitPending(String typed, boolean sign) {
         if (shown == null) {
             statusLine.setText("Choose a document first.");
             return;
@@ -3599,49 +3642,49 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
         boolean outside = uncheck(() -> !GitOperations.changedFiles(root, List.of(pending.path())).isEmpty()
                 && !Files.readAllLines(root.resolve(pending.path())).equals(pending.lines()));
         if (outside) {
-            statusLine.setText(pending.path() + " has changes made outside Komet, which writing your edit would overwrite. Commit… records them first.");
+            statusLine.setText(pending.path() + " has changes made outside Komet, which writing your edit would overwrite. Commit records them first.");
             return;
         }
-        TextArea message = new TextArea(DocumentCommit.draftMessage(pending.path(), committed.lines(), pending.lines()));
-        message.setId("stampedDocumentCommitMessage");
-        message.setWrapText(true);
-        message.setPrefRowCount(6);
-        Optional<CommitChoice> choice = askCommit("Commit Document Edit", "stampedDocumentCommitDialog",
-                "Write " + pending.path() + " with your edit into " + root + " and commit it?", List.of(), message,
-                "The message is a draft: rewrite it as you like. The commit holds this one file and is yours,"
-                        + " made through your own git. Signing (-S) gives it non-repudiation. Komet then re-reads the commit"
-                        + " and settles your edit, reporting anything the commit did not carry.");
-        if (choice.isEmpty()) {
-            return;
-        }
-        boolean sign = choice.get().sign();
-        String text = choice.get().message();
+        String text = PendingEditBar.messageOr(typed, DocumentCommit.draftMessage(pending.path(), committed.lines(), pending.lines()));
         statusLine.setText("Writing and committing " + pending.path() + " …");
+        pendingBar.setDisable(true);                               // one commit at a time: Enter twice is one commit
         CompletableFuture.supplyAsync(() -> {
             try {
                 Path file = GitDocumentExporter.writeTo(pending, root);
                 DocumentCommit.Result result = DocumentCommit.write(root, pending.path(), text, sign);
                 if (!result.ok()) {
-                    return "Not committed: " + result.output()
-                            + " The file in the working tree holds your edit; the edit is still pending in Komet.";
+                    return new Committed(false, "Not committed: " + result.output()
+                            + " The file in the working tree holds your edit; the edit is still pending in Komet.");
                 }
                 GitDocumentMaterializer.materialize(root, file, true);
                 DocumentCommits.committed(new DocumentCommits.Committed(root, pending.path(), result.sha()));
-                return "Committed " + result.sha().substring(0, 7) + " (" + (sign ? "signed" : "unsigned") + "); "
-                        + describe(DocumentEditor.settle(anchor));
+                return new Committed(true, "Committed " + result.sha().substring(0, 7) + " (" + (sign ? "signed" : "unsigned") + "); "
+                        + describe(DocumentEditor.settle(anchor)));
             } catch (IOException e) {
                 throw new UncheckedIOException(e);
             }
-        }).whenComplete((report, failure) -> Platform.runLater(() -> {
+        }).whenComplete((committedNow, failure) -> Platform.runLater(() -> {
+            pendingBar.setDisable(false);
             if (failure != null) {
                 Throwable cause = failure.getCause() != null ? failure.getCause() : failure;
                 statusLine.setText("Commit failed: " + cause.getMessage());
                 LOG.warn("Committing {} failed", anchor, cause);
                 return;
             }
-            open(hostAnchor, report, null);
+            if (committedNow.ok()) {
+                pendingBar.clearMessage();                         // the message went with its commit; one not made keeps it
+            }
+            open(hostAnchor, committedNow.report(), null);
         }));
     }
+
+    /**
+     * What committing the pending edit came to.
+     *
+     * @param ok     whether git made the commit
+     * @param report what to say of it
+     */
+    private record Committed(boolean ok, String report) { }
 
     /**
      * What the person chose in a commit dialog.
@@ -3716,7 +3759,7 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
     }
 
     /**
-     * Brings cancelled edits back as pending, over the document as now committed. An edit whose
+     * Brings discarded edits back as pending, over the document as now committed. An edit whose
      * block still exists is restored straight away; an edit whose block a commit gave a new
      * identity waits for the person: the one block it could be is highlighted for confirmation, or,
      * when several or none could be, the person picks one. Cancelling leaves the edit restorable.
@@ -3738,7 +3781,7 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
                         return;
                     }
                     if (found.restored() == 0 && found.waiting().isEmpty()) {
-                        open(anchor, "Nothing to restore: no cancelled edit of this document differs from what is committed.", null);
+                        open(anchor, "Nothing to restore: no discarded edit of this document differs from what is committed.", null);
                         return;
                     }
                     open(anchor, restoredReport(found.restored()), () -> resolve(anchor, found.waiting(), 0, found.restored()));
@@ -3747,7 +3790,7 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
 
     private static String restoredReport(int restored) {
         return restored == 0 ? "" : "Restored the edit of " + restored + " block(s) as pending over the latest commit; check the"
-                + " edited lines against what the commit changed, then Commit… or Discard edit.";
+                + " edited lines against what the commit changed, then choose Commit or Discard… in the bar above.";
     }
 
     /** Asks the person where each waiting edit goes, one at a time, and restores it there. */
@@ -3844,7 +3887,10 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
         return chosen;
     }
 
-    /** Cancels the pending edit, after the person confirms. */
+    /**
+     * Discards the pending edit, after the person confirms a question that says how many edited
+     * lines will be lost. A discarded edit is kept, so Restore as pending brings it back.
+     */
     private void discardPending() {
         if (shown == null) {
             return;
@@ -3855,19 +3901,33 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
             statusLine.setText("No edit of this document is pending in Komet.");
             return;
         }
-        Alert confirm = new Alert(Alert.AlertType.CONFIRMATION, "Cancel the edit made in Komet? The document will read as committed again.",
-                ButtonType.YES, ButtonType.NO);
-        confirm.setTitle("Discard Edit");
+        long lines = editedLines;
+        ButtonType discardEdits = new ButtonType("Discard", javafx.scene.control.ButtonBar.ButtonData.OK_DONE);
+        ButtonType keepEdits = new ButtonType("Keep Edits", javafx.scene.control.ButtonBar.ButtonData.CANCEL_CLOSE);
+        Alert confirm = new Alert(Alert.AlertType.CONFIRMATION, PendingEditBar.discardConsequence(pending.size()), discardEdits, keepEdits);
+        confirm.setTitle("Discard Edits");
+        confirm.setHeaderText(PendingEditBar.discardQuestion(lines, pending.size()));
+        confirm.getDialogPane().setMinHeight(javafx.scene.layout.Region.USE_PREF_SIZE);   // the words wrap; none is cut off
+        confirm.getDialogPane().setId("stampedDocumentDiscardDialog");
+        // Enter keeps the edits: what cannot be seen again once lost is never the default.
+        ((Button) confirm.getDialogPane().lookupButton(discardEdits)).setDefaultButton(false);
+        ((Button) confirm.getDialogPane().lookupButton(keepEdits)).setDefaultButton(true);
         confirm.initOwner(window());
-        if (confirm.showAndWait().filter(b -> b == ButtonType.YES).isEmpty()) {
+        if (confirm.showAndWait().filter(b -> b == discardEdits).isEmpty()) {
             return;
         }
+        pendingBar.setDisable(true);
         CompletableFuture.supplyAsync(() -> {
             for (PublicId edited : pending) {
                 DocumentEditor.cancel(edited);
             }
             return true;
-        }).whenComplete((done, failure) -> Platform.runLater(() -> open(anchor)));
+        }).whenComplete((done, failure) -> Platform.runLater(() -> {
+            pendingBar.setDisable(false);
+            pendingBar.clearMessage();
+            open(anchor, failure != null ? "Could not discard the edit: " + (failure.getCause() != null ? failure.getCause() : failure).getMessage()
+                    : PendingEditBar.discarded(lines), null);
+        }));
     }
 
     private Window window() {

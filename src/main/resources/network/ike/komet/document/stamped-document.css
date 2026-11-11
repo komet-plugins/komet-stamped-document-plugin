@@ -178,15 +178,75 @@
     -fx-background-color: transparent;
 }
 
-/* Commit, Discard edit and Restore, beside the pending-edit badge: translucent white on the card's navy bar. */
-.stamped-toolbar-button {
-    -fx-background-color: rgba(255, 255, 255, 0.20);
+/*
+ * The bar at the bottom of the card while an edit is not committed: a pale band in the amber of
+ * the margin's "edited" mark, so the two read as one thing. Commit is the one filled button, in
+ * the card's navy; Restore and Discard are quiet, text alone until the pointer is over them.
+ */
+.stamped-pending-bar {
+    -fx-background-color: #fff6dc;
+    -fx-border-color: #ecd596 transparent transparent transparent;
+    -fx-border-width: 1 0 0 0;
+    -fx-padding: 5 12 5 12;
+}
+
+.stamped-pending-summary {
+    -fx-text-fill: #8a5200;
+    -fx-font-weight: bold;
+}
+
+/* Nothing is pending, and an earlier edit can be restored: the footer's own ground, and no bold. */
+.stamped-pending-bar.restore-only {
+    -fx-background-color: #faf9f7;
+    -fx-border-color: #e4e1dc transparent transparent transparent;
+}
+
+.stamped-pending-bar.restore-only > .stamped-pending-summary {
+    -fx-text-fill: #5f6b7a;
+    -fx-font-weight: normal;
+}
+
+.stamped-pending-bar > .text-field {
+    -fx-background-color: #d9c48c, white;
+    -fx-background-insets: 0, 1;
+    -fx-background-radius: 4, 3;
+    -fx-padding: 3 6;
+}
+
+.stamped-pending-bar > .text-field:focused {
+    -fx-background-color: #34465f, white;
+}
+
+.stamped-pending-bar > .check-box {
+    -fx-text-fill: #5f4a1a;
+}
+
+.stamped-pending-commit {
+    -fx-background-color: #34465f;
     -fx-text-fill: white;
     -fx-background-radius: 4;
     -fx-font-weight: bold;
+    -fx-padding: 3 12;
+}
+
+.stamped-pending-commit:hover {
+    -fx-background-color: #46597a;
+}
+
+.stamped-pending-quiet {
+    -fx-background-color: transparent;
+    -fx-text-fill: #5f4a1a;
+    -fx-background-radius: 4;
     -fx-padding: 3 8;
 }
 
-.stamped-toolbar-button:hover {
-    -fx-background-color: rgba(255, 255, 255, 0.32);
+.stamped-pending-quiet:hover {
+    -fx-background-color: rgba(138, 82, 0, 0.14);
+}
+
+.stamped-pending-commit:focused,
+.stamped-pending-quiet:focused {
+    -fx-border-color: #34465f;
+    -fx-border-radius: 4;
+    -fx-border-insets: -1;
 }
