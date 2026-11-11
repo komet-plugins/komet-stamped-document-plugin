@@ -99,9 +99,20 @@ class ModelUnitsTest {
         assertEquals("1 One", units.get(2).text(), "the entry's text alone: its page is drawn after a leader by the renderer");
         assertEquals(0, units.get(2).indent(), 0.001);
         assertEquals(12, units.get(3).indent(), 0.001, "an em of indent a depth");
-        assertTrue(!units.get(2).keepWithNext() && !units.get(2).bold());
-        assertEquals(9, UnitSpacing.gap(units.get(1), units.get(2)), 0.001, "the heading's weak spacing stands over the first entry");
-        assertEquals(0.65 * 12, UnitSpacing.gap(units.get(2), units.get(3)), 0.001, "entries a leading apart");
+        assertTrue(!units.get(2).keepWithNext());
+        assertTrue(units.get(2).bold() && !units.get(3).bold(), "the outermost entries of a list that has levels are its chief ones, set bold");
+        assertEquals(12 * TypstWriter.ENTRY_GROUP, UnitSpacing.gap(units.get(1), units.get(2)), 0.001,
+                "a chief entry keeps its own space above, larger than the heading's below");
+        assertEquals(0.65 * 12, UnitSpacing.gap(units.get(2), units.get(3)), 0.001, "an entry under it stands a leading from it");
+        assertEquals(12 * TypstWriter.ENTRY_GROUP, UnitSpacing.gap(units.get(3), units.get(2)), 0.001, "and a chief entry after it keeps the group's space");
+
+        List<Unit> flat = ModelUnits.of(new DocumentModel("Title", List.of(
+                new DocumentModel.FrontList(DocumentModel.FrontList.Kind.FIGURES, List.of(
+                        new DocumentModel.Entry("Figure 1. A tree", 0, "a", 2), new DocumentModel.Entry("Figure 2. A tornado", 0, "b", 3))),
+                new Heading(1, "1 One", "a"))), 12);
+        assertTrue(!flat.get(2).bold() && !flat.get(3).bold(), "a list of one level has no chief entries");
+        assertEquals(9, UnitSpacing.gap(flat.get(1), flat.get(2)), 0.001, "the heading's weak spacing stands over its first entry");
+        assertEquals(0.65 * 12, UnitSpacing.gap(flat.get(2), flat.get(3)), 0.001, "its entries a leading apart");
         assertEquals(16.2, UnitSpacing.gap(units.get(3), units.get(4)), 0.001, "a heading after the last entry keeps its own space");
     }
 

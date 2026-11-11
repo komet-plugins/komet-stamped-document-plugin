@@ -242,6 +242,9 @@ public final class TypstWriter {
     /** How far a depth none of whose entries opens with a mark sets the depth under it in, in ems. */
     public static final double ENTRY_STEP = 1;
 
+    /** The space above a chief entry, an outermost one of a list that has levels ({@link FrontLists#levelled}), in ems. */
+    public static final double ENTRY_GROUP = 1.1;
+
     /** The page number every entry's column has room for: a wider number widens its own entry's column. */
     public static final String ENTRY_NUMBER_ROOM = "000";
 
@@ -257,10 +260,17 @@ public final class TypstWriter {
      *
      * <p>The entry's mark, its section or caption number ({@link FrontLists#mark}), stands in a
      * column of its own before the text: as wide as the widest mark of the entry's depth in its
-     * list ({@link FrontLists#patterns}) and {@link #ENTRY_MARK_GAP}, so the texts of a depth
-     * begin at one edge, an entry with no mark among them, and every line of a text returns to
-     * it. A depth begins where the text of the depth above does; a depth with no marks at all has
-     * no column, and sets the depth under it {@link #ENTRY_STEP} in.
+     * list ({@link FrontLists#patterns}) and {@link #ENTRY_MARK_GAP}, the mark ending that gap
+     * before the text whatever its length. So the texts of a depth begin at one edge, an entry
+     * with no mark among them, and every line of a text returns to it. A depth begins where the
+     * text of the depth above does; a depth with no marks at all has no column, and sets the
+     * depth under it {@link #ENTRY_STEP} in.
+     *
+     * <p>In a list that has levels the outermost entries are its chief ones: bold, mark, text
+     * and page number, with {@link #ENTRY_GROUP} above each, so an entry and those under it read
+     * as a group and a turned-over line of a chief entry is not taken for the entry under it. A
+     * list of one level has none. The page numbers of a list with chief entries have room for
+     * {@link #ENTRY_NUMBER_ROOM} in bold, so the leaders of all its entries end at one edge.
      *
      * <p>The text is set ragged and never hyphenated in a measure {@link #ENTRY_GAP} and
      * {@link #ENTRY_LEAD} short of the page number's gutter, so every entry of a depth turns
@@ -269,6 +279,10 @@ public final class TypstWriter {
      * leader takes the rest of the last line and runs on over the room the text kept clear; its
      * dots stand {@link #ENTRY_DOT_GAP} apart from the leader's right edge leftward, so the dots
      * of one entry stand over those of the next.
+     *
+     * <p>In the printed document the whole entry, mark, text, leader and page number, is a link
+     * to what it names, so a reader of the PDF goes there by clicking any part of it; a measured
+     * source names no target, and a target the document does not hold is no link.
      *
      * <p>The printed document asks the page counter at the target's label, so Typst's own number
      * stands there; a measured source ({@link Labels#WORDS}) holds the room of the number the
@@ -284,19 +298,24 @@ public final class TypstWriter {
             }
             #let ike-page-room(number) = context box(width: measure(number).width)
             #let ike-leader = box(width: 1fr, move(dx: GAP, box(width: 100% + LEAD, align(right, repeat(justify: false, gap: DOT_GAP)[.]))))
-            #let ike-entry(marks, depth, mark, dots, body, page) = context {
-              let columns = marks.map(m => if m == "" { 0pt } else { measure(m).width + MARK_GAP.to-absolute() })
+            #let ike-entry(marks, depth, mark, dots, target, body, page) = context {
+              let weight(d) = if marks.len() > 1 and d == 0 { "bold" } else { "regular" }
+              let chief = marks.len() > 1 and depth == 0
+              let columns = marks.enumerate().map(((d, m)) => if m == "" { 0pt } else { measure(text(weight: weight(d), m)).width + MARK_GAP.to-absolute() })
               let edge = columns.slice(0, depth).map(c => if c > 0pt { c } else { STEP.to-absolute() }).sum(default: 0pt)
-              block(width: 100%, breakable: false, above: 0.65em, below: 0.65em, inset: (left: edge),
-                grid(columns: (columns.at(depth), 1fr, calc.max(measure[ROOM].width, measure(page).width)),
-                  column-gutter: (0pt, GUTTER), align: (left + top, left + top, bottom + right),
-                  if mark == none [] else [#mark],
-                  box(width: 100% - GAP - LEAD, par(justify: false,
-                    text(hyphenate: false)[#body#if dots { ike-leader } else { box(width: 1fr) }])),
-                  page))
+              set text(weight: weight(depth))
+              let row = grid(columns: (columns.at(depth), 1fr, calc.max(measure(text(weight: weight(0))[ROOM]).width, measure(text(weight: weight(depth), page)).width)),
+                column-gutter: (0pt, GUTTER), align: (left + top, left + top, bottom + right),
+                if mark == none { [] } else { box(width: columns.at(depth) - MARK_GAP.to-absolute(), align(right, mark)) },
+                box(width: 100% - GAP - LEAD, par(justify: false,
+                  text(hyphenate: false)[#body#if dots { text(weight: "regular", ike-leader) } else { box(width: 1fr) }])),
+                page)
+              block(width: 100%, breakable: false, above: if chief { GROUP } else { 0.65em }, below: 0.65em, inset: (left: edge),
+                if target != none and query(target).len() > 0 { link(target, row) } else { row })
             }
             """.replace("MARK_GAP", ems(ENTRY_MARK_GAP)).replace("DOT_GAP", ems(ENTRY_DOT_GAP)).replace("GAP", ems(ENTRY_GAP))
-            .replace("LEAD", ems(ENTRY_LEAD)).replace("GUTTER", ems(ENTRY_GUTTER)).replace("STEP", ems(ENTRY_STEP)).replace("ROOM", ENTRY_NUMBER_ROOM);
+            .replace("LEAD", ems(ENTRY_LEAD)).replace("GUTTER", ems(ENTRY_GUTTER)).replace("STEP", ems(ENTRY_STEP))
+            .replace("GROUP", ems(ENTRY_GROUP)).replace("ROOM", ENTRY_NUMBER_ROOM);
 
     /** A length in ems as Typst reads it. */
     private static String ems(double value) {
@@ -381,6 +400,34 @@ public final class TypstWriter {
             + "  query(selector(heading.where(level: 1)).or(<" + OPENER_LABEL + ">)).any(it => it.location().page() == at)\n"
             + "}\n";
 
+    /** The least room between the running head's title and what stands to its right, in ems. */
+    public static final double HEAD_GAP = 1.5;
+
+    /** The fewest words of a title the running head shows cut short: a title that cannot keep so many is left out. */
+    public static final int HEAD_WORDS = 3;
+
+    /**
+     * The running head's title, short enough to stand on one line beside what is to its right:
+     * the title whole where it fits the room, else as many of its words from the first as fit
+     * with an ellipsis after them, {@link #HEAD_WORDS} at least, else nothing. A long title set
+     * in the room a long section left it once broke over two lines, and over four, hyphenated
+     * and justified (the regulatory book, 2026-11-10); the section a page is in says more about
+     * the page than the end of the book's title, and a word or two of a title says nothing. The
+     * pages cut the title the same way ({@link RunningHeads#fit}).
+     */
+    static final String HEAD_HELPER = """
+            #let ike-fit(title, room) = {
+              let words = title.split(" ")
+              let n = words.len()
+              let shown = title
+              while n > WORDS and measure(shown).width > room {
+                n -= 1
+                shown = words.slice(0, n).join(" ") + "…"
+              }
+              if measure(shown).width > room { "" } else { shown }
+            }
+            """.replace("WORDS", Integer.toString(HEAD_WORDS));
+
     /** The label at the top of the body's first page, in a document with front matter: where {@link #folioHelper} counts from. */
     public static final String BODY_LABEL = "ike-body";
 
@@ -445,6 +492,7 @@ public final class TypstWriter {
             String text = mark.isEmpty() ? entry.text() : entry.text().substring(mark.length() + 1);
             out.append(indent).append("#ike-entry(ike-marks, ").append(Math.max(0, entry.depth())).append(", ")
                     .append(mark.isEmpty() ? "none" : '"' + mark + '"').append(", ").append(!CHUNK_WORDS.get())
+                    .append(", ").append(CHUNK_WORDS.get() ? "none" : "<" + TARGET_LABEL + entry.target() + ">")
                     .append(")[").append(markup(tied(InlineText.of(text, NOTES.get())))).append("][").append(page).append("]\n");
         }
         out.append('\n');
@@ -482,6 +530,9 @@ public final class TypstWriter {
         if (setup.runningHead() || headerFolio) {
             sb.append(OPENING_HELPER);
         }
+        if (setup.runningHead()) {
+            sb.append(HEAD_HELPER);
+        }
         sb.append("#set page(\n");
         sb.append("  paper: ").append(string(setup.paper())).append(",\n");
         if (setup.landscape()) {
@@ -497,10 +548,16 @@ public final class TypstWriter {
             sb.append("    let section = query(selector(heading).before(here())).filter(h => h.level <= ").append(RUNNING_HEAD_DEPTH).append(")\n");
             sb.append("    let current = if section.len() > 0 { section.last().body } else { [] }\n");
             if (setup.runningHead()) {
+                // one line, ragged: the title gives way to the section and the folio, never the other way about
+                sb.append("    set par(justify: false)\n");
+                String gap = ems(HEAD_GAP) + ".to-absolute()";
                 if (headerFolio) {
-                    sb.append("    grid(columns: (1fr, auto), align: (left, right), [").append("#text(").append(t).append(")").append(" #h(1em) #current], ").append(folio).append(")\n");
+                    sb.append("    layout(size => grid(columns: (1fr, auto), align: (left, right), [#ike-fit(").append(t)
+                            .append(", size.width - measure(current).width - measure(").append(folio).append(").width - 1em.to-absolute() - ").append(gap)
+                            .append(") #h(1em) #current], ").append(folio).append("))\n");
                 } else {
-                    sb.append("    grid(columns: (1fr, auto), align: (left, right), text(").append(t).append("), current)\n");
+                    sb.append("    layout(size => grid(columns: (1fr, auto), align: (left, right), ike-fit(").append(t)
+                            .append(", size.width - measure(current).width - ").append(gap).append("), current))\n");
                 }
             } else {
                 sb.append("    align(right, ").append(folio).append(")\n");
@@ -539,7 +596,7 @@ public final class TypstWriter {
         sb.append("#show raw: set text(font: ").append(fonts(setup.monoFonts())).append(", size: ").append(RAW_RULE_EM).append("em)\n");
         sb.append("""
                 #show raw.where(block: true): it => block(width: 100%, fill: luma(247), inset: 8pt, radius: 3pt, it)
-                #set table(stroke: 0.5pt + luma(150), inset: 5pt, align: left + horizon)
+                #set table(stroke: 0.5pt + luma(150), inset: 5pt, align: left + top)
                 #show table.cell: set par(justify: false)
                 #show table.cell: set text(hyphenate: false)
                 #show table.cell.where(y: 0): set text(weight: "bold")
@@ -728,12 +785,12 @@ public final class TypstWriter {
         if (header > 0) {
             out.append(indent).append("    table.header(repeat: true,\n");
             for (int r = 0; r < header; r++) {
-                row(t.rows().get(r), columns, false, out, indent + "      ");
+                row(t.rows().get(r), columns, false, true, out, indent + "      ");
             }
             out.append(indent).append("    ),\n");
         }
         for (int r = header; r < t.rows().size(); r++) {
-            row(t.rows().get(r), columns, overPage(t, r, columns), out, indent + "    ");
+            row(t.rows().get(r), columns, overPage(t, r, columns), false, out, indent + "    ");
         }
         out.append(indent).append("  ),\n");
         if (!t.title().isEmpty()) {
@@ -770,11 +827,21 @@ public final class TypstWriter {
         return false;
     }
 
-    private static void row(List<String> cells, int columns, boolean breakable, StringBuilder out, String indent) {
+    /** The alignment of a header row's cells: column heads stand on their last lines, over the column they head. */
+    static final String HEAD_CELL = "table.cell(align: left + bottom)[";
+
+    /**
+     * A row's cells. A body row's cells begin at the row's top, so a reader's eye runs along
+     * the first lines of a row, the preamble's {@code align: left + top}; a header row's cells
+     * stand on their last lines ({@link #HEAD_CELL}), a short head beside a head of two lines
+     * sitting just above the rule under them. That is the usual rule of the style guides
+     * (Chicago: column heads align on the bottom line, the cells of a row on their first).
+     */
+    private static void row(List<String> cells, int columns, boolean breakable, boolean header, StringBuilder out, String indent) {
         out.append(indent);
         for (int c = 0; c < columns; c++) {
             String cell = c < cells.size() ? cells.get(c) : "";
-            out.append(breakable ? "table.cell(breakable: true)[" : "[").append(markup(cell)).append("], ");
+            out.append(header ? HEAD_CELL : breakable ? "table.cell(breakable: true)[" : "[").append(markup(cell)).append("], ");
         }
         out.append('\n');
     }

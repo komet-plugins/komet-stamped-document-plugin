@@ -79,7 +79,7 @@ class PageTableRowTest {
         double[] out = onFx(() -> {
             Region first = text(20);
             Region second = text(60);
-            PageTableRow row = new PageTableRow(List.of(first, second), List.of(1, 3), true);
+            PageTableRow row = new PageTableRow(List.of(first, second), List.of(1, 3), true, false);
             new Scene(new Group(row), 500, 300);
             row.resizeRelocate(0, 100, 400, 10);
             row.applyCss();
@@ -88,20 +88,39 @@ class PageTableRowTest {
             Node secondCell = second.getParent();
             return new double[] {
                     firstCell.getLayoutBounds().getWidth(), secondCell.getLayoutBounds().getWidth(),
-                    row.getHeight(), row.getTranslateY(), firstCell.getLayoutBounds().getHeight()};
+                    row.getHeight(), row.getTranslateY(), firstCell.getLayoutBounds().getHeight(),
+                    first.getBoundsInParent().getMinY(), second.getBoundsInParent().getMinY()};
         });
         assertEquals(100, out[0], 1, "the first column takes a quarter of the row");
         assertEquals(300, out[1], 1, "the second takes three quarters");
         assertEquals(61, out[2], 0.5, "the row is as tall as its tallest cell and its hairline strokes: " + Arrays.toString(out));
-        assertEquals(-20.5, out[3], 0.5, "a shorter first cell is centered, so the row lifts by half the difference to keep its first line");
+        assertEquals(0, out[3], 0.01, "a body row's cells begin at its top: the row stands where the page put it, however short its first cell");
         assertEquals(61, out[4], 0.5, "every cell stands the row's height");
+        assertEquals(out[6], out[5], 1, "the short cell's text begins where the tall cell's does, at the row's top: " + Arrays.toString(out));
+    }
+
+    @Test
+    void aHeaderRowsCellsStandOnTheirLastLines() throws Exception {
+        double[] out = onFx(() -> {
+            Region first = text(20);
+            Region second = text(60);
+            PageTableRow row = new PageTableRow(List.of(first, second), List.of(1, 3), true, true);
+            new Scene(new Group(row), 500, 300);
+            row.resizeRelocate(0, 100, 400, 10);
+            row.applyCss();
+            row.layout();
+            return new double[] {row.getHeight(), row.getTranslateY(), first.getBoundsInParent().getMaxY(), second.getBoundsInParent().getMaxY()};
+        });
+        assertEquals(61, out[0], 0.5, Arrays.toString(out));
+        assertEquals(out[3], out[2], 1, "a short head ends where a head of more lines ends, at the row's foot: " + Arrays.toString(out));
+        assertEquals(-40, out[1], 0.5, "its first line stands that much lower than the row's top, so the row lifts by the difference to keep its baseline");
     }
 
     @Test
     void anEmptyCellStillTakesItsColumn() throws Exception {
         double[] out = onFx(() -> {
             Region only = text(30);
-            PageTableRow row = new PageTableRow(Arrays.asList(null, only), List.of(1, 1), false);
+            PageTableRow row = new PageTableRow(Arrays.asList(null, only), List.of(1, 1), false, false);
             new Scene(new Group(row), 500, 300);
             row.resizeRelocate(0, 0, 200, 10);
             row.applyCss();

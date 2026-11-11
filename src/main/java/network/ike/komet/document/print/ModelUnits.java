@@ -200,8 +200,10 @@ public final class ModelUnits {
                 int at = out.size();
                 Kind last = add(out, notes, block, Kind.HEADING, f.title(), base * 1.5, true, 0, previous, base);
                 out.set(at, out.get(at).withOpensChapter(true));
+                // the outermost entries of a list that has levels are its chief ones: bold, with their own space above
+                boolean levelled = FrontLists.levelled(f.entries().stream().map(DocumentModel.Entry::depth).toList());
                 for (DocumentModel.Entry entry : f.entries()) {
-                    last = add(out, notes, block, Kind.ENTRY, entry.text(), base, false, base * entry.depth(), last, base);
+                    last = add(out, notes, block, Kind.ENTRY, entry.text(), base, levelled && entry.depth() <= 0, base * Math.max(0, entry.depth()), last, base);
                 }
                 return last;
             }
@@ -214,7 +216,7 @@ public final class ModelUnits {
 
     private static Kind add(List<Unit> out, InlineText.Numbering notes, int block, Kind kind, String text, double size, boolean bold, double indent, Kind previous, double base,
                             boolean caption) {
-        double[] spacing = UnitSpacing.of(kind, previous, size, base, caption);
+        double[] spacing = kind == Kind.ENTRY ? UnitSpacing.ofEntry(bold, previous, base) : UnitSpacing.of(kind, previous, size, base, caption);
         InlineText inline = kind == Kind.VERBATIM ? InlineText.literal(text) : InlineText.of(text, notes);
         out.add(new Unit(out.size(), block, kind, inline.text(), size, bold, indent, spacing[0], spacing[1], kind == Kind.HEADING)
                 .withInline(inline.runs(), inline.marks(0), 0));

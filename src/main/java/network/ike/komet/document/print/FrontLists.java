@@ -130,15 +130,39 @@ public final class FrontLists {
     /**
      * Where an entry stands in its list, as the writer's entry block sets it.
      *
-     * @param left   the left edge of the entry's mark, from the measure's left edge, in points
-     * @param column the width of the column its mark stands in, 0 where no entry of its depth opens with a mark
+     * @param left   the left edge of the column the entry's mark stands in, from the measure's left edge, in points
+     * @param column the width of that column, 0 where no entry of its depth opens with a mark
+     * @param room   the width the list's page numbers always have room for: {@link TypstWriter#ENTRY_NUMBER_ROOM}
+     *               in the weight of the list's heaviest entries, so the leaders of all its entries end at one edge
      */
-    public record Place(double left, double column) {
+    public record Place(double left, double column, double room) {
 
         /** @return the left edge of the entry's text, on every line of it, from the measure's left edge */
         public double text() {
             return left + column;
         }
+
+        /**
+         * @param width the width of the entry's mark, in points
+         * @param size  the entry's font size
+         * @return the left edge of the mark, which ends {@link TypstWriter#ENTRY_MARK_GAP} before the entry's text
+         */
+        public double mark(double width, double size) {
+            return left + Math.max(0, column - size * TypstWriter.ENTRY_MARK_GAP - width);
+        }
+    }
+
+    /**
+     * Whether a list has levels: an entry deeper than the outermost. The outermost entries of
+     * such a list are its chief ones, set bold with {@link TypstWriter#ENTRY_GROUP} above each,
+     * so an entry and the ones under it read as a group; a list of one level, such as the
+     * figures, has none.
+     *
+     * @param depths the entries' depths
+     * @return whether any entry is deeper than 0
+     */
+    public static boolean levelled(java.util.Collection<Integer> depths) {
+        return depths.stream().anyMatch(d -> d > 0);
     }
 
     /**
@@ -155,9 +179,9 @@ public final class FrontLists {
 
     /**
      * Where every entry of every front list stands. The marks of a depth stand in a column as
-     * wide as the depth's widest ({@link #patterns}) and {@link TypstWriter#ENTRY_MARK_GAP}, so
-     * the texts of a depth begin at one edge, and an entry that opens with no mark begins there
-     * too. A depth begins where the text of the depth above it does: its marks stand under the
+     * wide as the depth's widest ({@link #patterns}) and {@link TypstWriter#ENTRY_MARK_GAP}, each
+     * ending that gap before its text, so the texts of a depth begin at one edge, and an entry
+     * that opens with no mark begins there too. A depth begins where the text of the depth above it does: its marks stand under the
      * words they are parts of. A depth none of whose entries opens with a mark has no column,
      * and the depth under it stands {@link TypstWriter#ENTRY_STEP} in.
      *
@@ -174,18 +198,22 @@ public final class FrontLists {
         }
         Map<Integer, Place> out = new LinkedHashMap<>();
         for (List<Unit> list : lists.values()) {
-            List<String> patterns = patterns(list.stream().map(Unit::text).toList(), list.stream().map(FrontLists::depth).toList());
+            List<Integer> depths = list.stream().map(FrontLists::depth).toList();
+            List<String> patterns = patterns(list.stream().map(Unit::text).toList(), depths);
+            boolean levelled = levelled(depths);
             double[] column = new double[patterns.size()];
             double[] left = new double[patterns.size()];
             Unit first = list.getFirst();
             for (int d = 0; d < column.length; d++) {
+                // measured in the font of the depth's own entries: the chief ones of a levelled list are bold
+                Unit of = list.get(depths.indexOf(d) < 0 ? 0 : depths.indexOf(d));
                 column[d] = patterns.get(d).isEmpty() ? 0
-                        : width.width(patterns.get(d), first, false, false, false) + first.fontSize() * TypstWriter.ENTRY_MARK_GAP;
+                        : width.width(patterns.get(d), of, false, levelled && d == 0, false) + first.fontSize() * TypstWriter.ENTRY_MARK_GAP;
                 left[d] = d == 0 ? 0 : left[d - 1] + (column[d - 1] > 0 ? column[d - 1] : first.fontSize() * TypstWriter.ENTRY_STEP);
             }
-            for (Unit entry : list) {
-                int d = depth(entry);
-                out.put(entry.index(), new Place(left[d], column[d]));
+            double room = width.width(TypstWriter.ENTRY_NUMBER_ROOM, list.get(Math.max(0, depths.indexOf(0))), false, levelled, false);
+            for (int i = 0; i < list.size(); i++) {
+                out.put(list.get(i).index(), new Place(left[depths.get(i)], column[depths.get(i)], room));
             }
         }
         return out;
@@ -202,19 +230,6 @@ public final class FrontLists {
      */
     public static double reserve(double size, double column) {
         return column + size * (TypstWriter.ENTRY_GUTTER + TypstWriter.ENTRY_LEAD + TypstWriter.ENTRY_GAP);
-    }
-
-    /**
-     * As {@link #reserve(double, double)}, for a page number no wider than
-     * {@link TypstWriter#ENTRY_NUMBER_ROOM}: what a layout oracle keeps clear before it knows
-     * the number, which holds for a document of up to 999 pages.
-     *
-     * @param entry the entry's unit
-     * @param width the measure of text as drawn
-     * @return the room in points
-     */
-    public static double reserve(Unit entry, LayoutOracle.Measure width) {
-        return reserve(entry.fontSize(), column(width.width(TypstWriter.ENTRY_NUMBER_ROOM, entry, false, false, false), 0));
     }
 
     /**

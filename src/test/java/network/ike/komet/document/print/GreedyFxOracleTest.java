@@ -105,14 +105,16 @@ class GreedyFxOracleTest {
         Unit plain = new Unit(2, 0, Kind.ENTRY, "Thanks", 12, false, 12, 7.8, 0, false);
         List<Unit> units = List.of(outer, entry, plain);
         FrontLists.Place place = FrontLists.places(units, oracle::width).get(1);
-        assertEquals(oracle.width("0", outer) + 12 * TypstWriter.ENTRY_MARK_GAP, place.left(), 1e-9, "under the outer depth's text");
+        assertEquals(oracle.width("0", outer, false, true, false) + 12 * TypstWriter.ENTRY_MARK_GAP, place.left(), 1e-9, "under the outer depth's text, whose marks are bold");
         assertEquals(oracle.width("0.0", entry) + 12 * TypstWriter.ENTRY_MARK_GAP, place.column(), 1e-9);
-        double edge = 72 + 468 - FrontLists.reserve(entry, oracle::width);
+        double edge = 72 + 468 - FrontLists.reserve(12, place.room());
+        assertEquals(oracle.width("000", outer, false, true, false), place.room(), 1e-9, "room for a bold page number, a chief entry's");
 
         var layout = oracle.layout(units, geometry);
         var lines = layout.ofUnit(1);
 
-        assertEquals(new LayoutOracle.Line(1, 0, 72 + place.left(), lines.getFirst().baseline(), 0, 3, false), lines.getFirst(), "the mark is a line of its own, in its column");
+        assertEquals(new LayoutOracle.Line(1, 0, 72 + place.mark(oracle.width("4.1", entry), 12), lines.getFirst().baseline(), 0, 3, false), lines.getFirst(),
+                "the mark is a line of its own, in its column, ending a gap before the text");
         assertTrue(lines.size() >= 4, lines.toString());
         assertEquals(4, lines.get(1).from(), "the text begins after the mark and its space");
         assertEquals(lines.getFirst().baseline(), lines.get(1).baseline(), "on the mark's baseline");
@@ -138,7 +140,8 @@ class GreedyFxOracleTest {
     void anEntrysShortLastWordTurnsOverWithTheWordBeforeIt() {
         LayoutOracle.Geometry geometry = new LayoutOracle.Geometry(612, 792, 72, 72, 468, 648);
         Unit probe = new Unit(0, 0, Kind.ENTRY, "1 x", 12, false, 0, 13.2, 0, false);
-        double room = 468 - FrontLists.places(List.of(probe), oracle::width).get(0).text() - FrontLists.reserve(probe, oracle::width);
+        FrontLists.Place place = FrontLists.places(List.of(probe), oracle::width).get(0);
+        double room = 468 - place.text() - FrontLists.reserve(12, place.room());
         // An entry whose words but the last fill its text's measure: untied, "it" alone would turn over.
         StringBuilder words = new StringBuilder("Asking");
         while (oracle.width(words + " again and", probe) <= room) {
@@ -256,7 +259,7 @@ class GreedyFxOracleTest {
     }
 
     @Test
-    void aRowCentersItsShorterCells() {
+    void aBodyRowsCellsBeginAtItsTopAndAHeaderRowsStandOnTheirLastLines() {
         String wide = "many words of a cell that runs to a second line in half the measure, ".repeat(2).strip();
         Unit row = new Unit(0, 0, Kind.TABLE_ROW, "one  \u2502  " + wide, 12, false, 0, 0, 0, false);
         int lines = oracle.breaks(new Unit(0, 0, Kind.PARAGRAPH, wide, 12, false, 0, 0, 0, false), LETTER.contentWidth() / 2 - 10, false).size();
@@ -266,8 +269,13 @@ class GreedyFxOracleTest {
         var layout = oracle.layout(List.of(row), LETTER);
 
         double top = LETTER.contentTop() + UnitSpacing.CELL_INSET + 12 * LayoutOracle.CAP_HEIGHT;
-        assertEquals(top + (lines - 1) * pitch / 2, layout.ofUnit(0).getFirst().baseline(), 1e-6);
+        assertEquals(top, layout.ofUnit(0).getFirst().baseline(), 1e-6, "a short first cell begins at the row's top, beside the tall one's first line");
         assertEquals((lines - 1) * pitch + 12 * LayoutOracle.CAP_HEIGHT + 2 * UnitSpacing.CELL_INSET, oracle.rowHeight(row, LETTER), 1e-6);
+
+        Unit head = new Unit(0, 0, Kind.TABLE_ROW, "one  \u2502  " + wide, 12, true, 0, 0, 0, false);
+        int headLines = oracle.breaks(new Unit(0, 0, Kind.PARAGRAPH, wide, 12, true, 0, 0, 0, false), LETTER.contentWidth() / 2 - 10, false).size();
+        assertEquals(top + (headLines - 1) * pitch, oracle.layout(List.of(head), LETTER).ofUnit(0).getFirst().baseline(), 1e-6,
+                "a short head stands on the row's last line, where the head of more lines ends");
     }
 
     @Test

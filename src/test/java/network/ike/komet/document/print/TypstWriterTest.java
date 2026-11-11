@@ -69,7 +69,8 @@ class TypstWriterTest {
         assertTrue(typst.contains("\"Libertinus Serif\""), "serif body for the manuscript theme");
         assertTrue(typst.contains("size: 12pt"));
         assertTrue(typst.contains("header: context if not ike-opening() {"), "a running head, but on a page that opens something");
-        assertTrue(typst.contains("text(\"The Fixture Title\"), current)"), "title left, section right");
+        assertTrue(typst.contains("ike-fit(\"The Fixture Title\", size.width - measure(current).width - 1.5em.to-absolute()), current))"),
+                "title left, cut to the room the section leaves it; section right");
         assertTrue(typst.contains("footer: context align(right, text(size: 0.8em, fill: luma(70), counter(page).display(\"1\")))"));
         // "The" tied to the word it leads, the last two words tied, so the title never ends on a lone word
         assertTrue(typst.contains("#ike-title(\"The\u00A0Fixture\u00A0Title\")[The\u00A0Fixture\u00A0Title]"), typst);
@@ -392,7 +393,7 @@ class TypstWriterTest {
                   table(
                     columns: (2fr, 3fr),
                     table.header(repeat: true,
-                      [Element], [Topic], \n\
+                      table.cell(align: left + bottom)[Element], table.cell(align: left + bottom)[Topic], \n\
                     ),
                     [Gender (female)], [Female], \n\
                     [58 years], [Age], \n\
@@ -595,30 +596,40 @@ class TypstWriterTest {
 
         assertFalse(typst.contains("#outline"), "the lists are the model's entries, not Typst's outline");
         assertTrue(typst.contains(TypstWriter.ENTRY_HELPERS), "the entry and page helpers come with the lists");
-        assertTrue(typst.contains("= Contents\n\n#let ike-marks = (\"0\", \"0.0\", )\n#ike-entry(ike-marks, 0, \"1\", true)[Intro][#ike-page(<ike-b1>)]\n"
-                + "#ike-entry(ike-marks, 1, \"1.1\", true)[Deeper][#ike-page(<ike-b2>)]\n\n"), typst);
-        assertTrue(typst.contains("= Tables\n\n#let ike-marks = (\"Table 0.\", )\n#ike-entry(ike-marks, 0, \"Table 1.\", true)[Costs][#ike-page(<ike-b3>)]\n\n"), typst);
+        assertTrue(typst.contains("= Contents\n\n#let ike-marks = (\"0\", \"0.0\", )\n#ike-entry(ike-marks, 0, \"1\", true, <ike-b1>)[Intro][#ike-page(<ike-b1>)]\n"
+                + "#ike-entry(ike-marks, 1, \"1.1\", true, <ike-b2>)[Deeper][#ike-page(<ike-b2>)]\n\n"), typst);
+        assertTrue(typst.contains("= Tables\n\n#let ike-marks = (\"Table 0.\", )\n#ike-entry(ike-marks, 0, \"Table 1.\", true, <ike-b3>)[Costs][#ike-page(<ike-b3>)]\n\n"), typst);
         assertTrue(typst.contains("= 1 Intro <ike-b1>\n\n"), "a heading an entry names carries its label");
         assertTrue(typst.contains(TypstWriter.PAGE_BREAK + "= Contents\n"), "each list opens a page: the title page stands alone");
         assertTrue(typst.contains(TypstWriter.PAGE_BREAK + "= Tables\n"), typst);
         assertTrue(typst.contains(TypstWriter.PAGE_BREAK + TypstWriter.BODY_START + "= 1 Intro <ike-b1>\n"), "and so does the body after the last list");
         assertEquals(3, typst.split(java.util.regex.Pattern.quote(TypstWriter.PAGE_BREAK), -1).length - 1, "no other page break");
-        assertTrue(TypstWriter.ENTRY_HELPERS.contains("grid(columns: (columns.at(depth), 1fr, calc.max(measure[000].width, measure(page).width)),"),
-                "the mark and the page number have columns of their own: the number cannot wrap away from its entry");
-        assertTrue(TypstWriter.ENTRY_HELPERS.contains("let columns = marks.map(m => if m == \"\" { 0pt } else { measure(m).width + 0.75em.to-absolute() })"),
+        String helpers = TypstWriter.ENTRY_HELPERS;
+        assertTrue(helpers.contains("grid(columns: (columns.at(depth), 1fr, calc.max(measure(text(weight: weight(0))[000]).width, measure(text(weight: weight(depth), page)).width)),"),
+                "the mark and the page number have columns of their own: the number cannot wrap away from its entry, and has room for the list's heaviest digits");
+        assertTrue(helpers.contains("let weight(d) = if marks.len() > 1 and d == 0 { \"bold\" } else { \"regular\" }"),
+                "the outermost entries of a list that has levels are bold");
+        assertTrue(helpers.contains("set text(weight: weight(depth))"), "mark, text and page number alike");
+        assertTrue(helpers.contains("above: if chief { 1.1em } else { 0.65em }, below: 0.65em"), "a chief entry keeps its own space above");
+        assertTrue(helpers.contains("let columns = marks.enumerate().map(((d, m)) => if m == \"\" { 0pt } else { measure(text(weight: weight(d), m)).width + 0.75em.to-absolute() })"),
                 "a depth's column of marks is as wide as its widest mark and a gap; a depth with no mark has none");
-        assertTrue(TypstWriter.ENTRY_HELPERS.contains("let edge = columns.slice(0, depth).map(c => if c > 0pt { c } else { 1em.to-absolute() }).sum(default: 0pt)"),
+        assertTrue(helpers.contains("let edge = columns.slice(0, depth).map(c => if c > 0pt { c } else { 1em.to-absolute() }).sum(default: 0pt)"),
                 "a depth begins where the text of the depth above does, or a step in under a depth with no marks");
-        assertTrue(TypstWriter.ENTRY_HELPERS.contains("align: (left + top, left + top, bottom + right)"), "the number stands on the text's last line, against the right edge");
-        assertTrue(TypstWriter.ENTRY_HELPERS.contains("if mark == none [] else [#mark],"), "an entry with no mark leaves its column empty: its text begins where the others' do");
-        assertTrue(TypstWriter.ENTRY_HELPERS.contains("box(width: 100% - 0.4em - 2em, par(justify: false,"),
-                "an entry's lines are ragged, in a measure that keeps the gap and the least leader clear");
-        assertTrue(TypstWriter.ENTRY_HELPERS.contains("text(hyphenate: false)"), "an entry is never hyphenated");
-        assertTrue(TypstWriter.ENTRY_HELPERS.contains("move(dx: 0.4em, box(width: 100% + 2em, align(right, repeat(justify: false, gap: 0.15em)[.])))"),
+        assertTrue(helpers.contains("align: (left + top, left + top, bottom + right)"), "the number stands on the text's last line, against the right edge");
+        assertTrue(helpers.contains("if mark == none { [] } else { box(width: columns.at(depth) - 0.75em.to-absolute(), align(right, mark)) },"),
+                "a mark ends a gap before its text; an entry with no mark leaves its column empty, and its text begins where the others' do");
+        assertTrue(helpers.contains("box(width: 100% - 0.4em - 2em, par(justify: false,"),
+                "an entry's lines are ragged, in a measure that keeps the gap and the least leader clear, every line at the text's left edge");
+        assertFalse(helpers.contains("hanging-indent"), "no line of an entry's text hangs");
+        assertTrue(helpers.contains("if target != none and query(target).len() > 0 { link(target, row) } else { row })"),
+                "the whole entry is a link to what it names, where the document holds it");
+        assertTrue(helpers.contains("text(hyphenate: false)"), "an entry is never hyphenated");
+        assertTrue(helpers.contains("move(dx: 0.4em, box(width: 100% + 2em, align(right, repeat(justify: false, gap: 0.15em)[.])))"),
                 "the leader runs on over the room the text kept clear, its dots a fixed step apart from its right edge");
-        assertFalse(TypstWriter.ENTRY_HELPERS.matches("(?s).*\\b(MARK_GAP|DOT_GAP|GAP|LEAD|GUTTER|STEP|ROOM)\\b.*"), "every length is written out");
-        assertEquals(List.of(0.4, 2.0, 0.4, 0.15, 0.75, 1.0), List.of(TypstWriter.ENTRY_GAP, TypstWriter.ENTRY_LEAD, TypstWriter.ENTRY_GUTTER,
-                TypstWriter.ENTRY_DOT_GAP, TypstWriter.ENTRY_MARK_GAP, TypstWriter.ENTRY_STEP), "the pages keep the same lengths");
+        assertTrue(helpers.contains("text(weight: \"regular\", ike-leader)"), "the dots are never bold");
+        assertFalse(helpers.matches("(?s).*\\b(MARK_GAP|DOT_GAP|GAP|LEAD|GUTTER|STEP|GROUP|ROOM)\\b.*"), "every length is written out");
+        assertEquals(List.of(0.4, 2.0, 0.4, 0.15, 0.75, 1.0, 1.1), List.of(TypstWriter.ENTRY_GAP, TypstWriter.ENTRY_LEAD, TypstWriter.ENTRY_GUTTER,
+                TypstWriter.ENTRY_DOT_GAP, TypstWriter.ENTRY_MARK_GAP, TypstWriter.ENTRY_STEP, TypstWriter.ENTRY_GROUP), "the pages keep the same lengths");
         assertTrue(typst.contains("== 1.1 Deeper <ike-b2>\n\n"), typst);
         assertTrue(typst.contains("=== Unlisted\n\n"), "a heading no entry names carries none");
         assertTrue(typst.contains("  kind: table,\n) <ike-b3>\n\n"), "a table an entry names carries its label");
@@ -705,9 +716,9 @@ class TypstWriterTest {
 
         String typst = TypstWriter.write(model, TypstWriter.PageSetup.DEFAULT);
 
-        assertTrue(typst.contains("#ike-entry(ike-marks, 0, \"1\", true)[The Test the FDA Did Not #strong[Ask];\u00a0For][#ike-page(<ike-b1>)]\n"),
+        assertTrue(typst.contains("#ike-entry(ike-marks, 0, \"1\", true, <ike-b1>)[The Test the FDA Did Not #strong[Ask];\u00a0For][#ike-page(<ike-b1>)]\n"),
                 "a no-break space before the short last word, after a span as after plain text: " + typst);
-        assertTrue(typst.contains("#ike-entry(ike-marks, 0, \"2\", true)[What Happens to Patients][#ike-page(<ike-b2>)]\n"), "a longer last word is left alone");
+        assertTrue(typst.contains("#ike-entry(ike-marks, 0, \"2\", true, <ike-b2>)[What Happens to Patients][#ike-page(<ike-b2>)]\n"), "a longer last word is left alone");
         assertTrue(typst.contains("= 1 The Test the FDA Did Not #strong[Ask]; For <ike-b1>\n"), "the heading itself is not tied");
     }
 
@@ -716,15 +727,15 @@ class TypstWriterTest {
         DocumentModel numbered = listed().withEntryPages(Map.of("b1", 2, "b2", 3, "b3", 4));
         String words = TypstWriter.write(numbered, TypstWriter.PageSetup.DEFAULT, TypstWriter.Labels.WORDS);
 
-        assertTrue(words.contains("#ike-entry(ike-marks, 0, \"1\", false)[Intro][#ike-page-room([2])]\n#ike-entry(ike-marks, 1, \"1.1\", false)[Deeper][#ike-page-room([3])]\n"), words);
-        assertTrue(words.contains("#ike-entry(ike-marks, 0, \"Table 1.\", false)[Costs][#ike-page-room([4])]\n"), words);
+        assertTrue(words.contains("#ike-entry(ike-marks, 0, \"1\", false, none)[Intro][#ike-page-room([2])]\n#ike-entry(ike-marks, 1, \"1.1\", false, none)[Deeper][#ike-page-room([3])]\n"), words);
+        assertTrue(words.contains("#ike-entry(ike-marks, 0, \"Table 1.\", false, none)[Costs][#ike-page-room([4])]\n"), words);
         assertFalse(TypstWriter.write(numbered, TypstWriter.PageSetup.DEFAULT).contains("ike-page-room(["), "the printed form asks the page counter");
         assertTrue(words.contains(TypstWriter.PAGE_BREAK + "#metadata(1) <ike-block>\n= Contents"), "the measured form breaks the pages where the printed one does, before the block's label");
         assertTrue(words.contains(TypstWriter.PAGE_BREAK + TypstWriter.BODY_START + "#metadata(3) <ike-block>\n"), "and opens the body where the printed one does");
         assertFalse(words.contains("#ike-page(<"), "a measured source holds the room of the number the last pass found, and no digits the oracle could read");
         assertTrue(words.contains("= 1 Intro <ike-b1>"), "the targets keep their labels, so the printed form reads the same document");
         String blocks = TypstWriter.write(numbered, TypstWriter.PageSetup.DEFAULT, TypstWriter.Labels.BLOCKS);
-        assertTrue(blocks.contains("\"1\", true)[Intro][#ike-page(<ike-b1>)]"), "the block-labelled form is the printed one, with its leader and Typst's own page");
+        assertTrue(blocks.contains("\"1\", true, <ike-b1>)[Intro][#ike-page(<ike-b1>)]"), "the block-labelled form is the printed one, with its leader and Typst's own page");
         assertEquals(List.of(2, 3, 4), numbered.entries().stream().map(DocumentModel.Entry::page).toList());
         assertEquals(List.of(0, 0, 0), listed().entries().stream().map(DocumentModel.Entry::page).toList(), "unknown until a pass finds them");
     }

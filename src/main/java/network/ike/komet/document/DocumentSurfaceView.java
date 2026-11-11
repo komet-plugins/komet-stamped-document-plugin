@@ -620,6 +620,8 @@ public final class DocumentSurfaceView {
         String entryTarget = "";
         /** In the Page layout: how far a front list's entry is indented, in ems of the body. */
         int entryDepth;
+        /** In the Page layout: whether a front list's entry is of a list that has levels, whose page numbers have room for bold digits. */
+        boolean entryLevelled;
         /** A page line of a front list's entry, its unit's last: the leader and page drawn after its text. */
         Region entryTail;
         /** The width of the column {@link #entryTail} draws the entry's page number in, 0 until a page asked for the line. */
@@ -1542,18 +1544,24 @@ public final class DocumentSurfaceView {
             title.splittable = false;
             title.frontList = true;
             title.chapter = true;
+            // the outermost entries of a list that has levels are its chief ones, set bold as the Typst writer's entry block sets them
+            boolean levelled = network.ike.komet.document.print.FrontLists.levelled(
+                    list.entries().stream().map(network.ike.komet.document.print.DocumentModel.Entry::depth).toList());
             for (network.ike.komet.document.print.DocumentModel.Entry entry : list.entries()) {
+                boolean chief = levelled && entry.depth() <= 0;
                 Object[] target = targets.get(entry.target());
                 DocumentAssembly.Member member = target == null ? host : (DocumentAssembly.Member) target[0];
                 StoredBlock block = target == null ? document.root() : member.document().blocks().get((Long) target[1]);
                 List<StoredLine> carrier = block == null ? hostTitle : titleLine(member.document(), block, hostTitle);
                 Area area = addArea(member, block == null ? document.root() : block, carrier,
-                        paragraphs(carrier, " ", st.ragged(), t -> entry.text()), 0, false, list.title(), true);
+                        paragraphs(carrier, " ", chief ? StyleAttributeMap.builder().merge(st.ragged()).setBold(true).build() : st.ragged(), t -> entry.text()),
+                        0, false, list.title(), true);
                 area.heading = false;                             // it names a section; it is not one
                 area.splittable = false;
                 area.frontList = true;
                 area.entryTarget = entry.target();
                 area.entryDepth = Math.max(0, entry.depth());
+                area.entryLevelled = levelled;
             }
         }
     }
@@ -2699,7 +2707,9 @@ public final class DocumentSurfaceView {
             boolean bold = style.isBold();
             double indent = kind == network.ike.komet.document.print.LayoutOracle.Kind.LIST_ITEM ? base
                     : kind == network.ike.komet.document.print.LayoutOracle.Kind.ENTRY ? base * area.entryDepth : 0;
-            double[] spacing = network.ike.komet.document.print.UnitSpacing.of(kind, previous, size, base,
+            double[] spacing = kind == network.ike.komet.document.print.LayoutOracle.Kind.ENTRY
+                    ? network.ike.komet.document.print.UnitSpacing.ofEntry(bold, previous, base)   // the one bold kind of entry is a chief one
+                    : network.ike.komet.document.print.UnitSpacing.of(kind, previous, size, base,
                     kind == network.ike.komet.document.print.LayoutOracle.Kind.OTHER && blockKind == Block.Kind.TABLE);
             double above = spacing[0];
             double below = spacing[1];
@@ -2822,6 +2832,7 @@ public final class DocumentSurfaceView {
                 area.frontList = true;
                 area.entryTarget = unitArea.entryTarget;
                 area.entryDepth = unitArea.entryDepth;
+                area.entryLevelled = unitArea.entryLevelled;
                 entryGesture(area.area, unitArea.entryTarget);
             }
         }
@@ -2961,7 +2972,9 @@ public final class DocumentSurfaceView {
             texts.add(cell.rta);
         }
         area.cells = List.copyOf(cells);
-        area.drawing = new network.ike.komet.document.print.PageTableRow(texts, area.columns, area.tableFirst);
+        // a header row is the bold one: its cells stand on their last lines, a body row's begin at its top
+        boolean header = !unitArea.spec.paragraphs().isEmpty() && unitArea.spec.paragraphs().getFirst().style().isBold();
+        area.drawing = new network.ike.komet.document.print.PageTableRow(texts, area.columns, area.tableFirst, header);
         areaByNode.put(area.drawing, area);
     }
 
@@ -3015,8 +3028,8 @@ public final class DocumentSurfaceView {
             if (entry) {
                 if (area.entryColumn == 0) {
                     area.entryColumn = network.ike.komet.document.print.FrontLists.column(
-                            textWidth(style, network.ike.komet.document.print.TypstWriter.ENTRY_NUMBER_ROOM),
-                            textWidth(style, Integer.toString(entryPages.getOrDefault(area.entryTarget, 0))));
+                            textWidth(style, network.ike.komet.document.print.TypstWriter.ENTRY_NUMBER_ROOM, area.entryLevelled),
+                            textWidth(style, Integer.toString(entryPages.getOrDefault(area.entryTarget, 0)), style.isBold()));
                 }
                 available -= network.ike.komet.document.print.FrontLists.reserve(size, area.entryColumn);
             }
@@ -3070,7 +3083,7 @@ public final class DocumentSurfaceView {
         double size = style.getFontSize() == null ? st.base() : style.getFontSize();
         String family = style.getFontFamily() == null ? network.ike.komet.document.print.DocumentFonts.SERIF : style.getFontFamily();
         javafx.scene.text.Text number = new javafx.scene.text.Text(page);
-        number.setFont(Font.font(family, size));
+        number.setFont(Font.font(family, style.isBold() ? javafx.scene.text.FontWeight.BOLD : javafx.scene.text.FontWeight.NORMAL, size));   // a chief entry's is bold
         number.setTextOrigin(javafx.geometry.VPos.BASELINE);
         javafx.scene.shape.Line leader = new javafx.scene.shape.Line();
         leader.setStrokeLineCap(javafx.scene.shape.StrokeLineCap.ROUND);
@@ -3079,7 +3092,7 @@ public final class DocumentSurfaceView {
         leader.setStroke(Color.BLACK);
         double gutter = size * network.ike.komet.document.print.TypstWriter.ENTRY_GUTTER;
         // a dot and the room after it, as Typst's repeat sets them: the full stop's width and the gap
-        double step = textWidth(style, ".") + size * network.ike.komet.document.print.TypstWriter.ENTRY_DOT_GAP;
+        double step = textWidth(style, ".", false) + size * network.ike.komet.document.print.TypstWriter.ENTRY_DOT_GAP;   // the dots are never bold
         javafx.scene.layout.Pane tail = new javafx.scene.layout.Pane(leader, number) {
             @Override
             protected void layoutChildren() {
@@ -3105,11 +3118,11 @@ public final class DocumentSurfaceView {
     }
 
     /** @return the width of a text set in a style's font, as the page draws it */
-    private double textWidth(StyleAttributeMap style, String text) {
+    private double textWidth(StyleAttributeMap style, String text, boolean bold) {
         double size = style.getFontSize() == null ? st.base() : style.getFontSize();
         String family = style.getFontFamily() == null ? network.ike.komet.document.print.DocumentFonts.SERIF : style.getFontFamily();
         javafx.scene.text.Text measured = new javafx.scene.text.Text(text);
-        measured.setFont(Font.font(family, size));
+        measured.setFont(Font.font(family, bold ? javafx.scene.text.FontWeight.BOLD : javafx.scene.text.FontWeight.NORMAL, size));
         return measured.getLayoutBounds().getWidth();
     }
 

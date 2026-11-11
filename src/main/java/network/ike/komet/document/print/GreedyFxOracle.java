@@ -168,7 +168,7 @@ public final class GreedyFxOracle implements LayoutOracle {
             int mark = entry ? FrontLists.mark(unit.text()).length() : 0;
             double hang = unit.kind() == Kind.LIST_ITEM ? unit.fontSize() * 0.9 : 0;
             boolean title = unit.kind() == Kind.TITLE || unit.kind() == Kind.BYLINE;
-            List<int[]> rows = entry ? entryBreaks(unit, mark == 0 ? 0 : mark + 1, geometry.contentWidth() - place.text() - FrontLists.reserve(unit, this::width))
+            List<int[]> rows = entry ? entryBreaks(unit, mark == 0 ? 0 : mark + 1, geometry.contentWidth() - place.text() - FrontLists.reserve(unit.fontSize(), place.room()))
                     : unit.kind() == Kind.TITLE ? titleBreaks(unit, geometry.contentWidth() * measure)
                     : breaks(unit, (geometry.contentWidth() - unit.indent()) * measure);
             double first = baseline < 0 ? geometry.contentTop() + cap + UnitSpacing.gap(null, unit) : baseline + UnitSpacing.gap(previous, unit) + cap;
@@ -214,7 +214,8 @@ public final class GreedyFxOracle implements LayoutOracle {
                 for (int k = 0; k < fit; k++) {
                     int[] range = rows.get(row + k);
                     if (entry && row + k == 0 && mark > 0) {
-                        lines.add(new Line(i, page, geometry.contentLeft() + place.left(), y, 0, mark, false));   // the mark, in its column
+                        // the mark, in its column, ending a gap before the text
+                        lines.add(new Line(i, page, geometry.contentLeft() + place.mark(width(unit.text().substring(0, mark), unit), unit.fontSize()), y, 0, mark, false));
                     }
                     double x = title ? centered(unit, range, geometry)
                             : entry ? geometry.contentLeft() + place.text()
@@ -290,8 +291,10 @@ public final class GreedyFxOracle implements LayoutOracle {
     }
 
     /**
-     * Sets a row: its line stands on its first cell's first baseline, a cell being centered in
-     * its row as the writer sets tables.
+     * Sets a row: its line stands on its first cell's first baseline. As the writer sets tables,
+     * a body row's cells begin at the row's top, so that baseline is the row's first; a header
+     * row's cells, the bold ones a table opens with, stand on their last lines, so a first cell
+     * shorter than the tallest begins that many lines down.
      *
      * @param first the row's first baseline, in its tallest cell
      * @return that cell's last baseline
@@ -299,7 +302,8 @@ public final class GreedyFxOracle implements LayoutOracle {
     private double setRow(Unit row, int page, double first, Geometry geometry, List<Line> lines) {
         int[] cells = rowLines(row, geometry);
         double pitch = UnitSpacing.pitch(row);
-        lines.add(new Line(row.index(), page, geometry.contentLeft() + TypstOracle.TABLE_INSET, first + (cells[0] - cells[1]) * pitch / 2, 0, row.text().length(), false));
+        double baseline = row.bold() ? first + (cells[0] - cells[1]) * pitch : first;
+        lines.add(new Line(row.index(), page, geometry.contentLeft() + TypstOracle.TABLE_INSET, baseline, 0, row.text().length(), false));
         return first + (cells[0] - 1) * pitch;
     }
 

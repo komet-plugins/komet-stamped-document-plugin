@@ -385,11 +385,33 @@ public final class PageStackView extends ScrollPane {
             double bottom = m.top() * 0.7;
             double height = size * 1.4;
             if (head) {
-                String section = content.section(page);
-                String text = runningHead + (section.isBlank() || section.equals(runningHead) ? "" : "    " + section);
-                Label label = furniture(text, size, Pos.CENTER_LEFT, left, bottom - height, headFolio ? width * 0.8 : width, height);
-                label.getStyleClass().add("stamped-page-running-head");
-                sheet.getChildren().add(label);
+                // The title at the left, cut to the room the section and the folio leave it, as the Typst writer's
+                // header sets it: with the folio in the head the section follows the title, else it stands at the right.
+                String section = content.section(page).isBlank() || content.section(page).equals(runningHead) ? "" : content.section(page);
+                double gap = size * network.ike.komet.document.print.TypstWriter.HEAD_GAP;
+                java.util.function.ToDoubleFunction<String> measure = text -> furnitureWidth(text, size);
+                double taken = measure.applyAsDouble(section) + (headFolio ? measure.applyAsDouble(folio) + size : 0);
+                String title = network.ike.komet.document.print.RunningHeads.fit(runningHead, width - taken - gap, measure);
+                if (headFolio) {
+                    String text = title.isEmpty() ? section : section.isEmpty() ? title : title + "    " + section;
+                    Label label = furniture(text, size, Pos.CENTER_LEFT, left, bottom - height, width, height);
+                    label.getStyleClass().add("stamped-page-running-head");
+                    sheet.getChildren().add(label);
+                } else if (title.isEmpty()) {
+                    // a title with no room is left out: the section alone is the head, at the right where it always stands
+                    Label label = furniture(section, size, Pos.CENTER_RIGHT, left, bottom - height, width, height);
+                    label.getStyleClass().add("stamped-page-running-head");
+                    sheet.getChildren().add(label);
+                } else {
+                    Label label = furniture(title, size, Pos.CENTER_LEFT, left, bottom - height, width, height);
+                    label.getStyleClass().add("stamped-page-running-head");
+                    sheet.getChildren().add(label);
+                    if (!section.isEmpty()) {
+                        Label right = furniture(section, size, Pos.CENTER_RIGHT, left, bottom - height, width, height);
+                        right.getStyleClass().add("stamped-page-running-section");
+                        sheet.getChildren().add(right);
+                    }
+                }
                 Line rule = new Line(left, bottom + 1, left + width, bottom + 1);
                 rule.setStroke(javafx.scene.paint.Color.rgb(170, 170, 170));
                 rule.setStrokeWidth(0.4);
@@ -409,6 +431,13 @@ public final class PageStackView extends ScrollPane {
             label.getStyleClass().add("stamped-page-folio");
             sheet.getChildren().add(label);
         }
+    }
+
+    /** @return the width of a text as the furniture draws it */
+    private static double furnitureWidth(String text, double size) {
+        javafx.scene.text.Text measured = new javafx.scene.text.Text(text);
+        measured.setFont(javafx.scene.text.Font.font(network.ike.komet.document.print.DocumentFonts.SERIF, size));
+        return measured.getLayoutBounds().getWidth();
     }
 
     private static Label furniture(String text, double size, Pos alignment, double x, double y, double width, double height) {

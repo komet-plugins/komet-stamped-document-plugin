@@ -31,7 +31,8 @@ import network.ike.komet.document.print.LayoutOracle.Unit;
  *   <li>the title's {@code block(below: 1.2em)} is 1.2em of the body; a block title keeps 1em above
  *       and 0.5em below; a table's caption a leading (0.65em) below, over the first row's inset;</li>
  *   <li>a raw block adds its 8pt inset above and below its lines, which are the same 1.364em apart as any;</li>
- *   <li>a front list's entries stand a leading (0.65em) apart, as the writer's entry block keeps it.</li>
+ *   <li>a front list's entries stand a leading (0.65em) apart, as the writer's entry block keeps it; a chief
+ *       entry keeps {@link TypstWriter#ENTRY_GROUP} above it ({@link #ofEntry}).</li>
  * </ul>
  *
  * One place for the rule, so the surface's units and the model's agree.
@@ -74,6 +75,21 @@ public final class UnitSpacing {
         return new double[] {above, below};
     }
 
+    /**
+     * The spacing of a front list's entry. A chief entry, an outermost one of a list that has
+     * levels ({@link FrontLists#levelled}), keeps {@link TypstWriter#ENTRY_GROUP} above it
+     * whatever stands before it; any other stands a leading from the entry before.
+     *
+     * @param chief    whether the entry is a chief one
+     * @param previous the kind of the unit before it, or {@code null} for the first
+     * @param base     the body size
+     * @return {@code {above, below}} in points
+     */
+    public static double[] ofEntry(boolean chief, Kind previous, double base) {
+        double[] spacing = of(Kind.ENTRY, previous, base, base, false);
+        return chief ? new double[] {base * TypstWriter.ENTRY_GROUP, spacing[1]} : spacing;
+    }
+
     /** As {@link #of(Kind, Kind, double, double, boolean)} for a unit that is no caption. */
     public static double[] of(Kind kind, Kind previous, double size, double base) {
         return of(kind, previous, size, base, false);
@@ -98,7 +114,9 @@ public final class UnitSpacing {
             return unit.spaceAbove();                             // within the title's block: its own gap, not the block's below
         }
         boolean previousWeak = previous.spaceBelow() > 0;
-        boolean unitWeak = unit.kind() == Kind.HEADING || unit.kind() == Kind.OTHER;
+        // a chief entry of a front list, the one bold kind of entry, keeps its own space above under a heading too:
+        // Typst takes the larger of the heading's below and the entry block's above
+        boolean unitWeak = unit.kind() == Kind.HEADING || unit.kind() == Kind.OTHER || unit.kind() == Kind.ENTRY && unit.bold();
         double gap;
         if (previousWeak && unitWeak) {
             gap = Math.max(previous.spaceBelow(), unit.spaceAbove());

@@ -45,6 +45,28 @@ public record RunningHeads(Set<Integer> openers) {
     }
 
     /**
+     * The running head's title, short enough to stand on one line beside what is to its right,
+     * as the Typst writer's {@code ike-fit} cuts it: the title whole where it fits the room,
+     * else as many of its words from the first as fit with an ellipsis after them,
+     * {@link TypstWriter#HEAD_WORDS} at least, else nothing.
+     *
+     * @param title the document's title
+     * @param room  the room the title may take, in points
+     * @param width the width of a text as the head draws it
+     * @return the title as the head shows it, empty where even its first words have no room
+     */
+    public static String fit(String title, double room, java.util.function.ToDoubleFunction<String> width) {
+        String[] words = title.split(" ");
+        int n = words.length;
+        String shown = title;
+        while (n > TypstWriter.HEAD_WORDS && width.applyAsDouble(shown) > room) {
+            n--;
+            shown = String.join(" ", java.util.Arrays.copyOf(words, n)) + "…";
+        }
+        return width.applyAsDouble(shown) > room ? "" : shown;
+    }
+
+    /**
      * The pages that open a chapter in a layout.
      *
      * @param units the units laid out

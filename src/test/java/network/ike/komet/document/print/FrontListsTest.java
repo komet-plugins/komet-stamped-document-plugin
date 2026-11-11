@@ -106,27 +106,43 @@ class FrontListsTest {
         double outer = 2 * 6 + 12 * TypstWriter.ENTRY_MARK_GAP;       // "00" and the gap
         double inner = 3 * 6 + 12 * TypstWriter.ENTRY_MARK_GAP;       // "0.0" and the gap
         assertEquals(java.util.Set.of(1, 2, 3, 4, 5, 6, 7), places.keySet(), "the entries, and no other unit");
-        assertEquals(new FrontLists.Place(0, outer), places.get(3), "a mark stands at the left edge, in a column as wide as the depth's widest");
+        assertEquals(new FrontLists.Place(0, outer, 18), places.get(3), "a column as wide as the depth's widest mark and a gap, and room for three digits of page number");
+        assertEquals(6, places.get(3).mark(6, 12), 1e-9, "a mark ends a gap before its text: a one-digit mark stands a digit in from the column's left edge");
+        assertEquals(0, places.get(5).mark(12, 12), 1e-9, "the widest mark fills its column");
         assertEquals(places.get(3), places.get(5));
         assertEquals(places.get(3), places.get(1), "an entry with no mark begins where the others' texts do");
         assertEquals(outer, places.get(3).text(), 1e-9);
-        assertEquals(new FrontLists.Place(outer, inner), places.get(4), "a depth begins where the text of the depth above does");
+        assertEquals(new FrontLists.Place(outer, inner, 18), places.get(4), "a depth begins where the text of the depth above does");
         assertEquals(places.get(4), places.get(2));
-        assertEquals(new FrontLists.Place(0, 0), places.get(6), "a list with no marks has no column");
-        assertEquals(new FrontLists.Place(12 * TypstWriter.ENTRY_STEP, 0), places.get(7), "and sets its second depth a step in");
+        assertEquals(new FrontLists.Place(0, 0, 18), places.get(6), "a list with no marks has no column");
+        assertEquals(new FrontLists.Place(12 * TypstWriter.ENTRY_STEP, 0, 18), places.get(7), "and sets its second depth a step in");
         assertEquals(1, FrontLists.depth(units.get(4)));
         assertEquals(0, FrontLists.depth(units.get(3)));
     }
 
     @Test
-    void everyLineOfAnEntryKeepsTheNumbersColumnTheLeastLeaderAndTheGapsClear() {
-        LayoutOracle.Measure six = (text, unit, mono, bold, italic) -> text.length() * 6.0;
-        LayoutOracle.Unit entry = new LayoutOracle.Unit(0, 0, LayoutOracle.Kind.ENTRY, "4.1 How likely", 10, false, 0, 0, 0, false);
+    void aListWithLevelsMeasuresItsChiefEntriesMarksAndItsPageNumbersInBold() {
+        LayoutOracle.Measure weighed = (text, unit, mono, bold, italic) -> text.length() * (bold || unit.bold() ? 7.0 : 6.0);
+        List<LayoutOracle.Unit> levelled = List.of(
+                new LayoutOracle.Unit(0, 1, LayoutOracle.Kind.ENTRY, "4 Clearing", 12, true, 0, 0, 0, false),
+                new LayoutOracle.Unit(1, 1, LayoutOracle.Kind.ENTRY, "4.1 How likely", 12, false, 12, 0, 0, false));
+        List<LayoutOracle.Unit> flat = List.of(
+                new LayoutOracle.Unit(0, 1, LayoutOracle.Kind.ENTRY, "Figure 3. A tree", 12, false, 0, 0, 0, false),
+                new LayoutOracle.Unit(1, 1, LayoutOracle.Kind.ENTRY, "Figure 4. A tornado", 12, false, 0, 0, 0, false));
 
+        assertTrue(FrontLists.levelled(List.of(0, 1, 0)));
+        assertFalse(FrontLists.levelled(List.of(0, 0)), "a list of one level has no chief entries");
+        Map<Integer, FrontLists.Place> places = FrontLists.places(levelled, weighed);
+        assertEquals(new FrontLists.Place(0, 7 + 9, 21), places.get(0), "the chief entries' marks are bold, and the page numbers have room for bold digits");
+        assertEquals(new FrontLists.Place(7 + 9, 3 * 6 + 9, 21), places.get(1), "an entry under them is regular, and keeps the same room for its number");
+        assertEquals(new FrontLists.Place(0, 9 * 6 + 9, 18), FrontLists.places(flat, weighed).get(0), "a list of one level is regular throughout");
+    }
+
+    @Test
+    void everyLineOfAnEntryKeepsTheNumbersColumnTheLeastLeaderAndTheGapsClear() {
         assertEquals(18, FrontLists.column(18, 12), "room for three digits, whatever the number");
         assertEquals(24, FrontLists.column(18, 24), "a wider number widens its own entry's column");
         assertEquals(18 + 10 * (0.4 + 2 + 0.4), FrontLists.reserve(10, 18), 1e-9, "the column, its gutter, the least leader and the gap");
-        assertEquals(FrontLists.reserve(10, 18), FrontLists.reserve(entry, six), 1e-9, "an oracle keeps room for three digits");
     }
 
     @Test

@@ -755,12 +755,14 @@ public final class TypstOracle implements LayoutOracle {
             double[] b = baselines.get(e.getKey());
             // The title's lines are centered, each on its own width: no left edge is shared, so none is voted.
             if (entry) {
-                // The mark is a line of its own in its column, on the baseline of the text's first line beside it; a
-                // mark's end label gives that baseline but not where the mark ended, being the last in its cell.
+                // The mark is a line of its own in its column, ending a gap before the text, on the baseline of the
+                // text's first line beside it; a mark's end label gives that baseline but not where the mark ended,
+                // being the last in its cell.
                 int mark = FrontLists.mark(unit.text()).length();
                 int from = r[0];
                 if (from < mark) {
-                    out.add(new Line(unit.index(), (int) b[0], geometry.contentLeft() + place.left(), b[1], from, mark, false));
+                    double wide = measure(width, unit, unit.text().substring(0, mark), 0);
+                    out.add(new Line(unit.index(), (int) b[0], geometry.contentLeft() + place.mark(wide, unit.fontSize()), b[1], from, mark, false));
                     from = mark + 1;
                 }
                 if (from < r[1]) {

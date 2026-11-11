@@ -504,10 +504,12 @@ class PageListsIT {
             assertEquals(estimate.ofUnit(entry.index()).stream().map(l -> List.of(l.from(), l.to())).toList(),
                     own.stream().map(l -> List.of(l.from(), l.to())).toList(), "the estimate breaks the entry where Typst does: " + entry.text());
             assertEquals(List.of(0, mark), List.of(own.getFirst().from(), own.getFirst().to()), "the mark is a line of its own");
-            assertEquals(geometry.contentLeft() + place.left(), own.getFirst().x(), 0.01, "in the column of its depth's marks");
+            assertEquals(geometry.contentLeft() + place.mark(measure.width(entry.text().substring(0, mark), entry, false, false, false), entry.fontSize()),
+                    own.getFirst().x(), 0.01, "in the column of its depth's marks, ending a gap before the text");
+            assertEquals(FrontLists.depth(entry) == 0, entry.bold(), "the outermost entries of a list that has levels are bold: " + entry.text());
             assertEquals(mark + 1, own.get(1).from(), "the text begins after the mark and its space");
             assertEquals(own.getFirst().baseline(), own.get(1).baseline(), 0.01, "on the mark's baseline");
-            double edge = right - FrontLists.reserve(entry, measure);
+            double edge = right - FrontLists.reserve(entry.fontSize(), place.room());
             for (int k = 1; k < own.size(); k++) {
                 LayoutOracle.Line line = own.get(k);
                 assertFalse(line.hyphenated(), "an entry is never hyphenated");
@@ -521,7 +523,16 @@ class PageListsIT {
         }
 
         LayoutOracle.Unit asked = entries.get(3);
-        assertEquals("Ask For", layout.ofUnit(asked.index()).getLast().text(asked), "a short last word turns over with the word before it, never alone");
+        assertTrue(layout.ofUnit(asked.index()).getLast().text(asked).endsWith("Ask For"), "a short last word turns over with the word before it, never alone");
+        // a chief entry keeps its own space above it; an entry under one stands a leading from it
+        double pitch = entries.getFirst().fontSize() * LayoutOracle.PITCH;
+        double cap = entries.getFirst().fontSize() * LayoutOracle.CAP_HEIGHT;
+        double group = layout.ofUnit(entries.get(1).index()).getFirst().baseline() - layout.ofUnit(entries.get(0).index()).getLast().baseline();
+        double under = layout.ofUnit(entries.get(2).index()).getFirst().baseline() - layout.ofUnit(entries.get(1).index()).getLast().baseline();
+        assertEquals(cap + entries.getFirst().fontSize() * TypstWriter.ENTRY_GROUP, group, 0.1, "the group's space above a chief entry");
+        assertEquals(pitch, under, 0.1, "a leading above the entry under it");
+        assertEquals(estimate.ofUnit(entries.get(1).index()).getFirst().baseline() - estimate.ofUnit(entries.get(0).index()).getLast().baseline(), group, 0.1,
+                "the estimate spaces the groups as Typst does");
 
         // The pages draw each entry's leader and page on its last line, against the measure's right edge.
         onFx(() -> {

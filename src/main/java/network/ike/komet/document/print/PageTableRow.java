@@ -25,14 +25,15 @@ import javafx.scene.layout.StackPane;
 /**
  * One row of a table on a page, drawn as Typst draws it: the cells side by side across the
  * content width, each its column's share of it, every cell stroked in a hairline and its text
- * inset, and each cell's text standing at the middle of the row's height. The row is as tall as
- * its tallest cell, which the texts decide once they are laid out in their widths, so the row
- * sizes itself when it lays its cells out.
+ * inset. A body row's cells begin at the row's top; a header row's stand on their last lines, at
+ * the row's foot ({@link TypstWriter#HEAD_CELL}). The row is as tall as its tallest cell, which
+ * the texts decide once they are laid out in their widths, so the row sizes itself when it lays
+ * its cells out.
  *
  * <p>The page sets the row's top where the first cell's first line would begin if that cell were
- * the tallest. When another cell is taller the first cell's text is centered lower, so the row
- * shifts itself up by half the difference, keeping that first line on the baseline the layout
- * gave it.
+ * the tallest. In a header row whose first cell is shorter than the tallest, that cell's text
+ * begins lower, so the row shifts itself up by the difference, keeping that first line on the
+ * baseline the layout gave it.
  */
 public final class PageTableRow extends Region {
 
@@ -42,14 +43,17 @@ public final class PageTableRow extends Region {
     private final List<StackPane> cells = new ArrayList<>();
     private final List<Integer> weights;
     private final double total;
+    private final boolean header;
 
     /**
      * @param cells   each column's text, or {@code null} for an empty cell
      * @param weights the table's relative column widths, one per column
      * @param first   whether this is the table's first row, which draws the table's top edge
+     * @param header  whether this is a header row, whose cells stand on their last lines
      */
-    public PageTableRow(List<Node> cells, List<Integer> weights, boolean first) {
+    public PageTableRow(List<Node> cells, List<Integer> weights, boolean first, boolean header) {
         this.weights = List.copyOf(weights);
+        this.header = header;
         double sum = 0;
         for (int weight : weights) {
             sum += Math.max(1, weight);
@@ -58,12 +62,17 @@ public final class PageTableRow extends Region {
         setMinWidth(0);
         for (int c = 0; c < weights.size(); c++) {
             StackPane cell = new StackPane();
-            cell.setAlignment(Pos.CENTER_LEFT);
+            cell.setAlignment(header ? Pos.BOTTOM_LEFT : Pos.TOP_LEFT);
             cell.setMinSize(0, 0);
             cell.setStyle("-fx-background-color: transparent; -fx-border-color: " + STROKE + "; -fx-border-width: "
                     + (first ? 0.5 : 0) + " 0.5 0.5 " + (c == 0 ? 0.5 : 0) + ";");
             Node text = c < cells.size() ? cells.get(c) : null;
             if (text != null) {
+                if (text instanceof Region region) {
+                    // as tall as its text and no taller: a text stretched to the cell's height would begin at its
+                    // top whatever the cell's alignment, and a header's would not stand on its last line
+                    region.setMaxHeight(Region.USE_PREF_SIZE);
+                }
                 cell.getChildren().add(text);
             }
             this.cells.add(cell);
@@ -106,9 +115,9 @@ public final class PageTableRow extends Region {
             cells.get(c).resizeRelocate(Math.round(x), 0, Math.ceil(w), tallest);
             x += w;
         }
-        // the first cell's text is centered in the row: lift the row so its first line keeps its baseline;
-        // an empty first cell has no line to keep, and the row stands where the page put it
+        // a header row's first cell stands at the row's foot: lift the row so its first line keeps its baseline;
+        // an empty first cell has no line to keep, and a body row's cells begin at its top, where the page put it
         boolean firstHasText = !cells.isEmpty() && !cells.getFirst().getChildren().isEmpty();
-        setTranslateY(firstHasText ? -(tallest - heights[0]) / 2 : 0);
+        setTranslateY(header && firstHasText ? -(tallest - heights[0]) : 0);
     }
 }
