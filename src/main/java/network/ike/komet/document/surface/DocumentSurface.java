@@ -167,6 +167,17 @@ public final class DocumentSurface extends BorderPane {
     }
 
     /**
+     * Whether the vertical scroll bar stands whether or not there is anything to scroll. A host
+     * whose room does not follow its content keeps the bar, so the text has one measure whatever
+     * the document's length, and a short document shows a bar with nowhere to go rather than none.
+     *
+     * @param always whether the bar always stands; otherwise it stands when the content is taller than its room
+     */
+    public void setVerticalBarAlways(boolean always) {
+        scroll.setVbarPolicy(always ? ScrollPane.ScrollBarPolicy.ALWAYS : ScrollPane.ScrollBarPolicy.AS_NEEDED);
+    }
+
+    /**
      * Sets the footer region, which stays put while the body scrolls; {@code null} removes it.
      *
      * @param node the footer's content, or {@code null}

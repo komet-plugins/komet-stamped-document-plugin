@@ -73,6 +73,8 @@ public final class SegmentedControl<T> extends HBox {
     public SegmentedControl(List<T> options, Function<T, String> label, Function<T, String> tooltip, Function<T, String> id,
                      Function<T, String> icon) {
         setSpacing(0);
+        // a row taller than the segments stretches this box: the segments stand in its middle, level with the controls beside it
+        setAlignment(javafx.geometry.Pos.CENTER_LEFT);
         getStyleClass().add("segmented");
         setAccessibleRole(AccessibleRole.RADIO_BUTTON);          // the group's role: a set of radio items (see each segment)
         setFocusTraversable(false);

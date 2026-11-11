@@ -227,6 +227,15 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
 
     private final BorderPane host = new BorderPane();
     /**
+     * The height the card's body asks for, whatever it shows. A card on the workspace stands as
+     * tall as its content asks, up to the workspace's standard window height: left to the
+     * document, a card of eleven source lines stood a third as tall as the same document's
+     * pages, and changed its height with its view. With the tab and the toolbar above it, this
+     * much body is that standard height, so the card has one height in every view and for every
+     * document, until a person drags it to another.
+     */
+    private static final double BODY_HEIGHT = 966;
+    /**
      * The host's center: the document area, which never leaves it, under the Graph view or the
      * pages while either shows. A layout area forgets itself, erasing its preferences node, when
      * its node leaves the scene, so swapping it out lost the print settings and failed every
@@ -858,6 +867,8 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
         center.getChildren().setAll(documentArea.fxObject());
         host.setCenter(center);
         host.setBottom(null);
+        host.setPrefHeight(BODY_HEIGHT);
+        documentArea.surface().setVerticalBarAlways(true);         // the bar stands in a card that does not shrink to a short document
         // On the card's root, not its body: the toolbar is part of the card's chrome, outside the
         // body, and was left in JavaFX's default look while the sheets sat on the body alone.
         for (String sheet : List.of("/network/ike/komet/document/stamped-document.css")) {
@@ -1404,6 +1415,8 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
         graph.show(null);
         showOverArea(null);
         host.setBottom(null);
+        // the pages and the graph took the footer under themselves: it is the surface's again, or the card would stand without one
+        documentArea.surface().setFooter(footer);
     }
 
     /**

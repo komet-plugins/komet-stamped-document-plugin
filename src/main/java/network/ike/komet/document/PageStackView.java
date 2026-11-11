@@ -169,7 +169,7 @@ public final class PageStackView extends ScrollPane {
         setFitToWidth(true);
         setPannable(false);
         setHbarPolicy(ScrollBarPolicy.AS_NEEDED);
-        setVbarPolicy(ScrollBarPolicy.AS_NEEDED);
+        setVbarPolicy(ScrollBarPolicy.ALWAYS);                    // as the Source and Reading views have it: the card keeps one height
         vvalueProperty().addListener((obs, was, is) -> viewportMoved());
         viewportBoundsProperty().addListener((obs, was, is) -> viewportMoved());
     }
