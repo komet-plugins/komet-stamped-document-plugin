@@ -90,6 +90,8 @@ public final class DocumentSurface extends BorderPane {
     private final VBox stack = new VBox(BLOCK_SPACING);
     private final StackPane header = new StackPane();
     private final StackPane footer = new StackPane();
+    /** The one horizontal scrollbar of the unwrapped areas the stack holds, under the body and above the footer. */
+    private final HorizontalScroll horizontal = new HorizontalScroll();
     private int leftTracks;
     private int rightTracks;
     private Supplier<PrintSource> printSource;
@@ -130,7 +132,23 @@ public final class DocumentSurface extends BorderPane {
         }
         setTop(header);
         setCenter(scroll);
-        setBottom(footer);
+        setBottom(new VBox(horizontal.bar(), footer));
+        // A sideways gesture moves every unwrapped area together, through the one bar. Left to the areas, the one
+        // under the pointer would move alone. A gesture is taken as going one way: mostly sideways, or mostly down.
+        scroll.addEventFilter(javafx.scene.input.ScrollEvent.SCROLL, event -> {
+            if (!horizontal.isShowing() || event.getDeltaX() == 0) {
+                return;
+            }
+            if (Math.abs(event.getDeltaX()) >= Math.abs(event.getDeltaY())) {
+                horizontal.scrollBy(-event.getDeltaX());
+            } else {
+                double range = stack.getBoundsInLocal().getHeight() - scroll.getViewportBounds().getHeight();
+                if (range > 0) {
+                    scroll.setVvalue(Math.clamp(scroll.getVvalue() - event.getDeltaY() / range, 0, 1));
+                }
+            }
+            event.consume();
+        });
         scroll.vvalueProperty().addListener((obs, was, is) -> lookSoon());
         scroll.viewportBoundsProperty().addListener((obs, was, is) -> lookSoon());
     }
@@ -157,6 +175,17 @@ public final class DocumentSurface extends BorderPane {
         footer.getChildren().setAll(node == null ? List.of() : List.of(node));
         footer.setVisible(node != null);
         footer.setManaged(node != null);
+    }
+
+    /**
+     * The surface's one horizontal scrollbar: a host that stacks unwrapped text, as a ledger of
+     * source lines is, takes its areas from here ({@link HorizontalScroll#area}), and the bar
+     * stands under the body while some line is wider than the surface.
+     *
+     * @return the horizontal scroll
+     */
+    public HorizontalScroll horizontalScroll() {
+        return horizontal;
     }
 
     /**
@@ -231,6 +260,8 @@ public final class DocumentSurface extends BorderPane {
     /** The room an unbuilt block takes when nothing better is known. */
     private static final double DEFAULT_ESTIMATE = 40;
     private static final String PLACEHOLDER_STYLE = "doc-block-placeholder";
+    /** How many layouts a newly built block keeps its stand-in's room for: its first, and those its text's height arrives in. */
+    private static final int FLOOR_PULSES = 3;
 
     private boolean virtual;
     private boolean virtualizing;
@@ -265,6 +296,10 @@ public final class DocumentSurface extends BorderPane {
         /** Holds the row, and is what is switched: the row's own visibility may be bound, as a hidden block's is. */
         final javafx.scene.layout.StackPane holder = new javafx.scene.layout.StackPane();
         Node row;
+        /** While the row is newly shown: counts the layouts since, and lets the stand-in's room go after {@link #FLOOR_PULSES}. */
+        private Runnable floor;
+        private javafx.scene.Scene floorScene;
+        private int floorPulses;
 
         Cell(double height) {
             stand.getStyleClass().add(PLACEHOLDER_STYLE);
@@ -292,11 +327,47 @@ public final class DocumentSurface extends BorderPane {
             holder.setVisible(true);
             holder.setManaged(true);
             stand.setVisible(false);
-            stand.setManaged(false);
+            keepRoom();
+        }
+
+        /**
+         * Keeps the stand-in's room under the row until the row has been laid out. A content-height
+         * text area answers one line's height until its first layout and its true height a layout
+         * later, while it draws all its lines from the start: given only the room it first asks for,
+         * it is drawn over the blocks below it for as long as those layouts take, which for a batch
+         * of long blocks is long enough to see (the Source view of a book, 2026-11-10). The room is
+         * the block's expected height, or the height it stood at when it was last built.
+         */
+        private void keepRoom() {
+            letRoomGo();
+            javafx.scene.Scene scene = getScene();
+            if (scene == null || scene.getWindow() == null || !scene.getWindow().isShowing()) {
+                stand.setManaged(false);                             // no pulses to count: the row's own height at once
+                return;
+            }
+            stand.setManaged(true);
+            floorPulses = 0;
+            floorScene = scene;
+            floor = () -> {
+                if (++floorPulses >= FLOOR_PULSES) {
+                    letRoomGo();
+                    stand.setManaged(false);
+                }
+            };
+            scene.addPostLayoutPulseListener(floor);
+        }
+
+        private void letRoomGo() {
+            if (floor != null) {
+                floorScene.removePostLayoutPulseListener(floor);
+                floor = null;
+                floorScene = null;
+            }
         }
 
         /** Shows the stand-in at the height the row stood at; the row stays, switched off. */
         void hide(double height) {
+            letRoomGo();
             standAt(height);
             holder.setVisible(false);
             holder.setManaged(false);

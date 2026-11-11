@@ -95,7 +95,8 @@ import java.util.stream.Collectors;
  * the header carries the document's title and the section at the top of the viewport. The
  * <em>Source view</em> is the ledger, one paragraph per line in areas of
  * {@link #LEDGER_CHUNK} lines with the number, identicon and mark as a side decorator, stacked
- * on the same surface with the margins off.
+ * on the same surface with the margins off. Its lines are not wrapped: the surface's one
+ * horizontal scrollbar moves every area's text together, the side decorators standing still.
  *
  * <p>What is shown is a {@link DocumentAssembly}: the host document and, in place of each of
  * its include lines that names a document the store holds, that child's blocks — each child
@@ -196,6 +197,10 @@ public final class DocumentSurfaceView {
     private static final Font SMALL = Font.font(11);
     /** Lines per ledger area: a content-height {@code RichTextArea} stops growing at the incubator's 10,000 px safeguard. */
     private static final int LEDGER_CHUNK = 200;
+    /** The width of the ledger's left column: number, identicon and mark. */
+    private static final double LEDGER_SIDE = 96;
+    /** The padding around an area's text, a ledger chunk's too. */
+    private static final Insets LEDGER_PADDING = new Insets(2, 4, 2, 4);
 
     /**
      * The text styles a build draws with: the screen's for the Reading view, a print theme's for
@@ -617,6 +622,15 @@ public final class DocumentSurfaceView {
          */
         Area(DocumentAssembly.Member member, StoredBlock block, List<StoredLine> lines, LineRunModel.Spec spec, boolean editable, String section,
              boolean bare) {
+            this(member, block, lines, spec, editable, section, bare, false);
+        }
+
+        /**
+         * @param ledger whether the area is a chunk of the Source view's ledger: unwrapped, and moved sideways with
+         *               every other chunk by the surface's one horizontal scrollbar
+         */
+        Area(DocumentAssembly.Member member, StoredBlock block, List<StoredLine> lines, LineRunModel.Spec spec, boolean editable, String section,
+             boolean bare, boolean ledger) {
             this.member = member;
             this.block = block;
             this.lines = lines;
@@ -628,14 +642,14 @@ public final class DocumentSurfaceView {
                 holder = null;
                 return;
             }
-            area = new RichTextArea();
+            area = ledger ? surface.horizontalScroll().area() : new RichTextArea();
             holder = new VBox();
             area.setEditable(false);
-            area.setWrapText(true);
+            area.setWrapText(!ledger);
             area.setUseContentHeight(true);
             area.setDisplayCaret(false);
             area.setHighlightCurrentParagraph(false);
-            area.setContentPadding(new Insets(2, 4, 2, 4));
+            area.setContentPadding(LEDGER_PADDING);
             area.getStyleClass().add("doc-prose-block");
             holder.getProperties().put(MarkdownRichText.BLOCK_SHOWN, shown);
             wire(this, area, () -> model);
@@ -839,7 +853,9 @@ public final class DocumentSurfaceView {
      * area outgrows the safeguard. The lines run in surface order, so the host's ledger lists
      * each resolved include line followed by the child's own ledger; the areas break where the
      * member changes, each member's lines numbered as its file is, with the path above a
-     * child's ledger and again where the host's resumes.
+     * child's ledger and again where the host's resumes. Each area says how tall it will stand,
+     * its lines times the font's line, so the stack is its full height before any area is built
+     * and a long scroll lands where it was aimed.
      */
     private void buildSource(DocumentAssembly shown) {
         sources.clear();
@@ -862,11 +878,12 @@ public final class DocumentSurfaceView {
             for (StoredLine line : chunk) {
                 paragraphs.add(new LineRunModel.Paragraph(List.of(new LineRunModel.Line(line, line.text())), "", Styles.SCREEN.mono()));
             }
-            Area source = new Area(member, null, chunk, new LineRunModel.Spec(paragraphs), false, "Source");
+            Area source = new Area(member, null, chunk, new LineRunModel.Spec(paragraphs), false, "Source", false, true);
             source.numbers = numbers;
             source.area.setId(chunkIndex == 0 ? "stampedDocumentSource" : "stampedDocumentSource" + chunkIndex);
-            source.area.setWrapText(false);
             source.area.setLeftDecorator(new LedgerDecorator(source));
+            // every line of a ledger is one unwrapped row of the one font, so how tall a chunk stands is known before it is built
+            double room = chunk.size() * ledgerPitch() + ledgerChrome;
             if (previous != null && previous != member) {
                 Label path = new Label((member.host() || member.depth() < previous.depth() ? "↩ " : "↳ ") + member.path());
                 path.setFont(Font.font("Menlo", 11));
@@ -874,16 +891,64 @@ public final class DocumentSurfaceView {
                 path.setPadding(new Insets(6, 0, 2, 8));
                 path.getStyleClass().add("stamped-document-member-path");
                 source.holder.getChildren().add(path);
+                room += ledgerPathHeight();
+                path.heightProperty().addListener((obs, was, is) -> {
+                    if (is.doubleValue() > 0) {
+                        ledgerPath = is.doubleValue();
+                    }
+                });
             }
             source.holder.getChildren().add(source.area);
+            source.holder.setMinWidth(0);
+            // What a line measures to and what an area makes of it can differ by a fraction, and the area's border is
+            // the stylesheet's to say: a chunk that has been laid out says both, for the chunks stacked after it.
+            int count = chunk.size();
+            RichTextArea laid = source.area;
+            laid.heightProperty().addListener((obs, was, is) -> {
+                double chrome = laid.snappedTopInset() + laid.snappedBottomInset() + LEDGER_PADDING.getTop() + LEDGER_PADDING.getBottom();
+                double line = (is.doubleValue() - chrome) / count;
+                if (count >= 10 && Math.abs(line - ledgerPitch()) < 1) {
+                    ledgerPitch = line;
+                    ledgerChrome = chrome;
+                }
+            });
             source.documentBlock = DocumentBlock.prose(source.holder, source.area, source.model,
-                    chunk.stream().map(StoredLine::text).collect(Collectors.joining("\n")));
+                    chunk.stream().map(StoredLine::text).collect(Collectors.joining("\n"))).withEstimatedHeight(room);
             sources.add(source);
             previous = member;
             chunkIndex++;
             at = end;
         }
     }
+
+    /** How tall one line of the ledger stands: the mono font's line, as a text area rounds it. */
+    private static double ledgerPitch() {
+        if (ledgerPitch == 0) {
+            StyleAttributeMap mono = Styles.SCREEN.mono();
+            ledgerPitch = lineHeight(Font.font(mono.getFontFamily(), mono.getFontSize()));
+        }
+        return ledgerPitch;
+    }
+
+    /** How tall the path over a member's ledger stands: its line and the padding around it, until one has been laid out. */
+    private static double ledgerPathHeight() {
+        if (ledgerPath == 0) {
+            ledgerPath = lineHeight(Font.font("Menlo", 11)) + 8;
+        }
+        return ledgerPath;
+    }
+
+    /** A line of text in the font, rounded up to the half pixel a region is sized to on a dense display. */
+    private static double lineHeight(Font font) {
+        javafx.scene.text.Text line = new javafx.scene.text.Text("Mg");
+        line.setFont(font);
+        return Math.ceil(line.getLayoutBounds().getHeight() * 2) / 2;
+    }
+
+    /** One ledger line's height, the padding and border around a chunk's lines, and a path's height: measured, then as laid out. */
+    private static double ledgerPitch;
+    private static double ledgerChrome = LEDGER_PADDING.getTop() + LEDGER_PADDING.getBottom();
+    private static double ledgerPath;
 
     /**
      * A ledger identicon's size: under the height of a 12 px Menlo line, so one line's identicon
@@ -901,7 +966,7 @@ public final class DocumentSurfaceView {
 
         @Override
         public double getPrefWidth(double viewWidth) {
-            return 96;
+            return LEDGER_SIDE;
         }
 
         @Override
