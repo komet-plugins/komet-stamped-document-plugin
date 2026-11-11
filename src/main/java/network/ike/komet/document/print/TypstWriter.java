@@ -51,7 +51,19 @@ import java.util.Objects;
  *
  * <p>The running head shows the document title on the left and the current section on the
  * right — the last heading of level 1 or 2 before the page, so a flowed child's title names
- * the section while the child runs. Folios are one sequence over the whole document.
+ * the section while the child runs. A page that opens something carries none: the title's page,
+ * and the page each part or top-level section begins on ({@link RunningHeads}); a folio the head
+ * would carry drops to the foot there.
+ *
+ * <p>The title is display type ({@link TitleLines}): centered, never hyphenated, tied at its
+ * phrase boundaries and broken in the narrowest measure that sets it in as few lines as the full
+ * measure does, so its lines run to similar lengths. Headings are flush left, ragged and never
+ * hyphenated.
+ *
+ * <p>A document with no front matter numbers its pages in arabic from 1. A document with front
+ * matter ({@link DocumentModel#frontMatter()}, {@code dev-document-front-matter}) numbers the
+ * front matter in lowercase roman numerals, shows no number on its title page, and starts the
+ * body at 1: see {@link #folioHelper}. {@link Folios} gives the same numbers to the Page layout.
  */
 public final class TypstWriter {
 
@@ -71,6 +83,18 @@ public final class TypstWriter {
 
     /** The size of a block's title, in ems of the body: what {@code ike-block-title} sets it at. */
     public static final double TITLE_SCALE = 0.95;
+
+    /** The size of the author line beneath the title, in ems of the body. */
+    public static final double AUTHOR_SCALE = 1.2;
+
+    /** The size of the date line beneath the title, in ems of the body. */
+    public static final double DATE_SCALE = 1.0;
+
+    /** The space from the title's last baseline to the top of the line beneath it (its cap height), in ems of the body. */
+    public static final double BYLINE_GAP = 1.4;
+
+    /** The space from the author line's last baseline to the top of the date line, in ems of the body. */
+    public static final double DATE_GAP = 0.5;
 
     /** The size of a boxed block's title, in ems of the body, as the print model has every container's. */
     public static final double BOX_TITLE_SCALE = 0.9;
@@ -178,7 +202,7 @@ public final class TypstWriter {
             TARGETS.remove();
         }
         StringBuilder out = new StringBuilder(content.length() + 2048);
-        out.append(preamble(InlineText.of(document.title()).text(), setup));
+        out.append(preamble(InlineText.of(document.title()).text(), setup, document.frontMatter(), document.titlePage()));
         // only where it is used, so a document with no drawn block is the source it always was
         if (content.indexOf("ike-figure(") >= 0) {                       // bare, or within a captioned figure
             out.append(figureHelper(setup));
@@ -195,30 +219,58 @@ public final class TypstWriter {
     /** The prefix of the label a front list's entry names its block by: {@code <ike-b123>} for the key {@code b123}. */
     public static final String TARGET_LABEL = "ike-";
 
-    /** The label after a measured entry's page room, carrying {@link TypstOracle#TAIL}: where its leader and page ended. */
-    public static final String TAIL_LABEL = "ike-tail";
+    /** The room between the end of an entry's text and its leader, in ems: see {@link #ENTRY_HELPERS}. */
+    public static final double ENTRY_GAP = 0.4;
 
-    /** The least room, in ems, between an entry's text and its page number: see {@link #ENTRY_HELPERS}. */
-    public static final double ENTRY_GAP = 1;
+    /** The least leader of an entry, in ems: with {@link #ENTRY_GAP}, the room every line of its text keeps clear. */
+    public static final double ENTRY_LEAD = 2;
 
-    /** The inset at each end of an entry's leader, in ems, inside the room the leader takes. */
-    public static final double ENTRY_INSET = 0.25;
+    /** The room between an entry's leader and the column of its page number, in ems. */
+    public static final double ENTRY_GUTTER = 0.4;
+
+    /** The room between two dots of an entry's leader, in ems. */
+    public static final double ENTRY_DOT_GAP = 0.15;
+
+    /** The room between an entry's mark ({@link FrontLists#mark}) and its text, in ems: what the column of marks is wider than its widest mark. */
+    public static final double ENTRY_MARK_GAP = 0.75;
+
+    /** How far a depth none of whose entries opens with a mark sets the depth under it in, in ems. */
+    public static final double ENTRY_STEP = 1;
+
+    /** The page number every entry's column has room for: a wider number widens its own entry's column. */
+    public static final String ENTRY_NUMBER_ROOM = "000";
 
     /**
      * A front list's entry, and the page its target lands on. An entry is a block that never
-     * breaks over a page, its text set ragged, a gap of {@link #ENTRY_GAP}, a leader in a box
-     * that takes the rest of the line, and the page: the printed document asks the page counter
-     * at the target's label, so Typst's own number stands there; a measured source
-     * ({@link Labels#WORDS}) holds the room of the number the last layout pass found — an empty
-     * box as wide as the digits would set — and its leader box empty: a box of a fraction takes
-     * the line's rest whatever it holds, and the oracle reads no dots and no digits as words,
-     * which it would otherwise align with the section number that opens the next entry. The gap
-     * is a spacing, which Typst breaks a line at like a space: when the text's last line has no
-     * room for the gap and the number, the leader and the number take a line of their own under
-     * it, the number against the measure's right edge, rather than crowding the text or running
-     * past the edge (seen on the regulatory book, 2026-11-10). The pages follow the same rule
-     * ({@link network.ike.komet.document.DocumentSurfaceView}). A target the document does not
-     * hold prints no page rather than failing the compile.
+     * breaks over a page, in two columns: its text and its leader, then its page number, set
+     * against the measure's right edge on the text's last line. The number is in a column of
+     * its own, as wide as {@link #ENTRY_NUMBER_ROOM} or as the number when that is wider, so it
+     * is no part of the text's line and cannot wrap away from it: set after the text on one
+     * line, as it once was, a number with no room left went under the text at the left edge
+     * with no leader, and one with a hair of room kept a leader of a dot or two (the regulatory
+     * book, 2026-11-10).
+     *
+     * <p>The entry's mark, its section or caption number ({@link FrontLists#mark}), stands in a
+     * column of its own before the text: as wide as the widest mark of the entry's depth in its
+     * list ({@link FrontLists#patterns}) and {@link #ENTRY_MARK_GAP}, so the texts of a depth
+     * begin at one edge, an entry with no mark among them, and every line of a text returns to
+     * it. A depth begins where the text of the depth above does; a depth with no marks at all has
+     * no column, and sets the depth under it {@link #ENTRY_STEP} in.
+     *
+     * <p>The text is set ragged and never hyphenated in a measure {@link #ENTRY_GAP} and
+     * {@link #ENTRY_LEAD} short of the page number's gutter, so every entry of a depth turns
+     * over at the same edge and its last line always has room for a leader. A short last word
+     * is tied to the word before it ({@link FrontLists#tied}), so it never turns over alone. The
+     * leader takes the rest of the last line and runs on over the room the text kept clear; its
+     * dots stand {@link #ENTRY_DOT_GAP} apart from the leader's right edge leftward, so the dots
+     * of one entry stand over those of the next.
+     *
+     * <p>The printed document asks the page counter at the target's label, so Typst's own number
+     * stands there; a measured source ({@link Labels#WORDS}) holds the room of the number the
+     * last layout pass found, an empty box as wide as the digits would set, and no dots: the
+     * oracle would read dots and digits as words. The pages follow the same rule
+     * ({@link network.ike.komet.document.DocumentSurfaceView}, {@link FrontLists#reserve}). A
+     * target the document does not hold prints no page rather than failing the compile.
      */
     static final String ENTRY_HELPERS = """
             #let ike-page(key) = context {
@@ -226,10 +278,25 @@ public final class TypstWriter {
               if found.len() > 0 { str(counter(page).at(found.first().location()).first()) }
             }
             #let ike-page-room(number) = context box(width: measure(number).width)
-            #let ike-entry(depth, leader, body, page) = block(width: 100%, breakable: false, above: 0.65em, below: 0.65em,
-              inset: (left: depth * 1em))[#set par(justify: false)
-              #body#h(1em)#box(width: 1fr, inset: (x: 0.25em), leader)#page]
-            """;
+            #let ike-leader = box(width: 1fr, move(dx: GAP, box(width: 100% + LEAD, align(right, repeat(justify: false, gap: DOT_GAP)[.]))))
+            #let ike-entry(marks, depth, mark, dots, body, page) = context {
+              let columns = marks.map(m => if m == "" { 0pt } else { measure(m).width + MARK_GAP.to-absolute() })
+              let edge = columns.slice(0, depth).map(c => if c > 0pt { c } else { STEP.to-absolute() }).sum(default: 0pt)
+              block(width: 100%, breakable: false, above: 0.65em, below: 0.65em, inset: (left: edge),
+                grid(columns: (columns.at(depth), 1fr, calc.max(measure[ROOM].width, measure(page).width)),
+                  column-gutter: (0pt, GUTTER), align: (left + top, left + top, bottom + right),
+                  if mark == none [] else [#mark],
+                  box(width: 100% - GAP - LEAD, par(justify: false,
+                    text(hyphenate: false)[#body#if dots { ike-leader } else { box(width: 1fr) }])),
+                  page))
+            }
+            """.replace("MARK_GAP", ems(ENTRY_MARK_GAP)).replace("DOT_GAP", ems(ENTRY_DOT_GAP)).replace("GAP", ems(ENTRY_GAP))
+            .replace("LEAD", ems(ENTRY_LEAD)).replace("GUTTER", ems(ENTRY_GUTTER)).replace("STEP", ems(ENTRY_STEP)).replace("ROOM", ENTRY_NUMBER_ROOM);
+
+    /** A length in ems as Typst reads it. */
+    private static String ems(double value) {
+        return (value == Math.rint(value) ? Long.toString((long) value) : Double.toString(value)) + "em";
+    }
 
     /**
      * A drawn block: scaled to the measure, whole on a page, as {@link LayoutOracle.Unit#figureScale}
@@ -252,14 +319,31 @@ public final class TypstWriter {
             if (labels != Labels.NONE) {
                 out.append(marker(index++));
             }
-            out.append("#ike-title[").append(markup(document.title())).append("]\n\n");
+            // the title's ties as text and as markup: the helper finds its narrowest measure from the widest tied piece
+            String tied = TitleLines.tie(document.title());
+            out.append("#ike-title(").append(string(InlineText.of(tied).text()));
+            // the author and the date beneath it, smaller: part of the title's block, as the title page sets them
+            DocumentModel.Byline byline = document.byline();
+            if (!byline.author().isEmpty()) {
+                out.append(", author: [").append(markup(byline.author())).append("]");
+            }
+            if (!byline.date().isEmpty()) {
+                out.append(", date: [").append(markup(byline.date())).append("]");
+            }
+            out.append(")[").append(markup(tied)).append("]\n\n");
         }
         Block previous = null;
+        boolean opened = false;                                   // whether the body has been opened
         for (Block block : document.blocks()) {
-            if (block instanceof DocumentModel.FrontList || previous instanceof DocumentModel.FrontList) {
+            boolean list = block instanceof DocumentModel.FrontList;
+            if (list || previous instanceof DocumentModel.FrontList) {
                 // each front list opens a page, and so does the body after the last of them: the title page stands alone;
                 // weak, so a page already empty (a document with no title) is not left blank
                 out.append(PAGE_BREAK);
+                if (!list && !opened) {
+                    out.append(BODY_START);                       // the body's first page is page 1
+                    opened = true;
+                }
             }
             if (labels != Labels.NONE) {
                 out.append(marker(index++));
@@ -275,6 +359,63 @@ public final class TypstWriter {
     /** The page break before a front list and before the body that follows the lists: see {@link #body}. */
     public static final String PAGE_BREAK = "#pagebreak(weak: true)\n\n";
 
+    /**
+     * The label the title's helper sets on the title's page: with every level-1 heading, a page
+     * it stands on opens something and carries no running head ({@link RunningHeads}).
+     */
+    public static final String OPENER_LABEL = "ike-opener";
+
+    /**
+     * Whether the page being laid out opens something: the title stands on it, or a level-1
+     * heading (a part, a top-level section, a front list) begins on it. Asked in the header's and
+     * footer's context.
+     */
+    static final String OPENING_HELPER = "#let ike-opening() = {\n"
+            + "  let at = here().page()\n"
+            + "  query(selector(heading.where(level: 1)).or(<" + OPENER_LABEL + ">)).any(it => it.location().page() == at)\n"
+            + "}\n";
+
+    /** The label at the top of the body's first page, in a document with front matter: where {@link #folioHelper} counts from. */
+    public static final String BODY_LABEL = "ike-body";
+
+    /**
+     * What stands at the top of the body's first page, after the page break that ends the front
+     * matter: the label the folios are counted from, and the page counter set to 1, so a front
+     * list's entry, which asks the counter at its target, prints the target's folio.
+     */
+    public static final String BODY_START = "#metadata(none) <" + BODY_LABEL + ">\n#counter(page).update(1)\n";
+
+    /** The label on the folio every page of a document with front matter prints, carrying the folio's text: see {@link #folioHelper}. */
+    public static final String FOLIO_LABEL = "ike-folio";
+
+    /**
+     * The folio of a page in a document with front matter, as {@link Folios} reckons it for the
+     * Page layout: lowercase roman before the body, none on a title page, arabic from 1 in the
+     * body. The folio is reckoned from the page's place and the place of the body's first page
+     * ({@link #BODY_LABEL}), not read from the page counter: Typst lays a running head out
+     * before the page's content, so on the body's first page a head that asked the counter
+     * would still print the front matter's count (14 over a footer's 1, typst 0.15.1).
+     *
+     * <p>Each page's folio stands beside a {@code metadata} element labelled
+     * {@link #FOLIO_LABEL} that carries its text, empty for a title page, so what every page
+     * prints can be asked of Typst: {@code query(<ike-folio>).map(it => it.value)}.
+     *
+     * @param titlePage whether the first page is a title page, which shows no number
+     * @return the helper's definition
+     */
+    static String folioHelper(boolean titlePage) {
+        return "#let ike-folio = context {\n"
+                + "  let body = query(<" + BODY_LABEL + ">)\n"
+                + "  let at = here().page()\n"
+                + "  let folio = if body.len() == 0 or at < body.first().location().page() {\n"
+                + (titlePage ? "    if at > 1 { numbering(\"i\", at) } else { \"\" }\n" : "    numbering(\"i\", at)\n")
+                + "  } else {\n"
+                + "    numbering(\"1\", at - body.first().location().page() + 1)\n"
+                + "  }\n"
+                + "  [#metadata(folio) <" + FOLIO_LABEL + ">#folio]\n"
+                + "}\n";
+    }
+
     /** The label on a block a front list's entry names, with its leading space; empty for every other block. */
     private static String target(String key) {
         return !key.isEmpty() && TARGETS.get().contains(key) ? " <" + TARGET_LABEL + key + ">" : "";
@@ -283,22 +424,58 @@ public final class TypstWriter {
     /** A front list: its title as a heading, then its entries. */
     private static void frontList(DocumentModel.FrontList list, StringBuilder out, String indent) {
         out.append(indent).append("= ").append(markup(list.title())).append("\n\n");
+        // the widest mark of each depth, by which the entry block sizes that depth's column of marks
+        List<String> patterns = FrontLists.patterns(list.entries().stream().map(DocumentModel.Entry::text).toList(),
+                list.entries().stream().map(DocumentModel.Entry::depth).toList());
+        out.append(indent).append("#let ike-marks = (");
+        for (String pattern : patterns) {
+            out.append('"').append(pattern).append("\", ");
+        }
+        out.append(")\n");
         for (DocumentModel.Entry entry : list.entries()) {
-            // the measured form labels the tail's end, so the oracle reads which line the leader and the page took
-            String page = CHUNK_WORDS.get() ? "#ike-page-room([" + entry.page() + "])#metadata(" + TypstOracle.TAIL + ")<" + TAIL_LABEL + ">"
-                    : "#ike-page(<" + TARGET_LABEL + entry.target() + ">)";
-            out.append(indent).append("#ike-entry(").append(Math.max(0, entry.depth())).append(", ").append(CHUNK_WORDS.get() ? "[]" : "repeat[.]")
-                    .append(")[").append(markup(entry.text())).append("][").append(page).append("]\n");
+            // the measured form holds the room of the number the last pass found, and no dots: the oracle reads neither as words
+            String page = CHUNK_WORDS.get() ? "#ike-page-room([" + entry.page() + "])" : "#ike-page(<" + TARGET_LABEL + entry.target() + ">)";
+            String mark = FrontLists.mark(entry.text());
+            String text = mark.isEmpty() ? entry.text() : entry.text().substring(mark.length() + 1);
+            out.append(indent).append("#ike-entry(ike-marks, ").append(Math.max(0, entry.depth())).append(", ")
+                    .append(mark.isEmpty() ? "none" : '"' + mark + '"').append(", ").append(!CHUNK_WORDS.get())
+                    .append(")[").append(markup(tied(InlineText.of(text, NOTES.get())))).append("][").append(page).append("]\n");
         }
         out.append('\n');
     }
 
-    /** The page setup and the styles every construct relies on. */
+    /** An entry's text with its short last word tied to the word before it ({@link FrontLists#tied}): its spans stand where they did. */
+    private static InlineText tied(InlineText entry) {
+        return new InlineText(FrontLists.tied(entry.text()), entry.runs(), entry.notes(), entry.offsets());
+    }
+
+    /** The page setup and the styles every construct relies on, for a document with no front matter. */
     static String preamble(String title, PageSetup setup) {
+        return preamble(title, setup, false, false);
+    }
+
+    /**
+     * The page setup and the styles every construct relies on.
+     *
+     * @param title       the document title
+     * @param setup       the page
+     * @param frontMatter whether the document has front matter, numbered in roman before a body that starts at 1
+     * @param titlePage   whether its first page is a title page, which shows no number
+     */
+    static String preamble(String title, PageSetup setup, boolean frontMatter, boolean titlePage) {
         String t = string(title);
+        // a document with no front matter is the source it always was
+        String folio = frontMatter ? "ike-folio" : "counter(page).display(\"1\")";
         StringBuilder sb = new StringBuilder(2048);
         sb.append("// Written by Komet's stamped document surface — do not edit; the source is the AsciiDoc in git.\n");
         sb.append("#set document(title: ").append(t).append(")\n");
+        if (frontMatter && setup.folio() != Folio.NONE) {
+            sb.append(folioHelper(titlePage));
+        }
+        boolean headerFolio = setup.folio() == Folio.HEADER_RIGHT;
+        if (setup.runningHead() || headerFolio) {
+            sb.append(OPENING_HELPER);
+        }
         sb.append("#set page(\n");
         sb.append("  paper: ").append(string(setup.paper())).append(",\n");
         if (setup.landscape()) {
@@ -306,21 +483,21 @@ public final class TypstWriter {
         }
         sb.append("  margin: (top: ").append(points(setup.marginTop())).append(", bottom: ").append(points(setup.marginBottom()))
                 .append(", left: ").append(points(setup.marginLeft())).append(", right: ").append(points(setup.marginRight())).append("),\n");
-        boolean headerFolio = setup.folio() == Folio.HEADER_RIGHT;
         if (setup.runningHead() || headerFolio) {
-            sb.append("  header: context {\n");
+            // none on a page that opens something: the title's, a part's, a chapter's
+            sb.append("  header: context if not ike-opening() {\n");
             sb.append("    set text(size: 0.8em, fill: luma(70))\n");
             sb.append("    show footnote: none\n");   // a heading's note is the heading's, not the running head's
             sb.append("    let section = query(selector(heading).before(here())).filter(h => h.level <= ").append(RUNNING_HEAD_DEPTH).append(")\n");
             sb.append("    let current = if section.len() > 0 { section.last().body } else { [] }\n");
             if (setup.runningHead()) {
                 if (headerFolio) {
-                    sb.append("    grid(columns: (1fr, auto), align: (left, right), [").append("#text(").append(t).append(")").append(" #h(1em) #current], counter(page).display(\"1\"))\n");
+                    sb.append("    grid(columns: (1fr, auto), align: (left, right), [").append("#text(").append(t).append(")").append(" #h(1em) #current], ").append(folio).append(")\n");
                 } else {
                     sb.append("    grid(columns: (1fr, auto), align: (left, right), text(").append(t).append("), current)\n");
                 }
             } else {
-                sb.append("    align(right, counter(page).display(\"1\"))\n");
+                sb.append("    align(right, ").append(folio).append(")\n");
             }
             if (setup.runningHead()) {
                 sb.append("    v(-0.4em)\n    line(length: 100%, stroke: 0.4pt + luma(170))\n");
@@ -329,7 +506,10 @@ public final class TypstWriter {
         }
         if (setup.folio() == Folio.FOOTER_CENTER || setup.folio() == Folio.FOOTER_RIGHT) {
             sb.append("  footer: context align(").append(setup.folio() == Folio.FOOTER_CENTER ? "center" : "right")
-                    .append(", text(size: 0.8em, fill: luma(70), counter(page).display(\"1\"))),\n");
+                    .append(", text(size: 0.8em, fill: luma(70), ").append(folio).append(")),\n");
+        } else if (headerFolio) {
+            // a page that opens something drops its folio to the foot
+            sb.append("  footer: context if ike-opening() { align(center, text(size: 0.8em, fill: luma(70), ").append(folio).append(")) },\n");
         }
         sb.append(")\n");
         sb.append("#set text(font: ").append(fonts(setup.bodyFonts())).append(", size: ").append(points(setup.fontSize()))
@@ -337,7 +517,8 @@ public final class TypstWriter {
         sb.append("""
                 #set par(justify: true, leading: 0.65em, spacing: 1.1em)
                 #set heading(numbering: none)
-                #show heading: set text(weight: "bold")
+                #show heading: set text(weight: "bold", hyphenate: false)
+                #show heading: set par(justify: false)
                 """);
         // Absolute sizes: Typst's own heading rule already scales a level-1 heading by 1.4em and a level-2 by
         // 1.2em, and an em here would compound with it (a level-1 heading came out at 2.1 times the body).
@@ -368,7 +549,33 @@ public final class TypstWriter {
                 #set enum(indent: 1em)
                 #set terms(hanging-indent: 1.5em, separator: [: ])
 
-                #let ike-title(body) = block(below: 1.2em, text(size: 1.8em, weight: "bold", body))
+                #let ike-title(words, body, author: none, date: none) = block(below: 1.2em, width: 100%, {
+                  [#metadata(none) <OPENER>]
+                  block(below: 0pt, width: 100%, {
+                    set text(size: 1.8em, weight: "bold", hyphenate: false)
+                    set par(justify: false, linebreaks: "simple")
+                    layout(size => {
+                      let at(w) = block(width: w, align(center, body))
+                      let floor = calc.max(0pt, ..words.split(" ").map(w => measure(w).width))
+                      let lines = measure(at(size.width)).height
+                      let (lo, hi) = (calc.min(floor, size.width), size.width)
+                      for _ in range(STEPS) {
+                        let mid = (lo + hi) / 2
+                        if measure(at(mid)).height <= lines + 0.01pt { hi = mid } else { lo = mid }
+                      }
+                      align(center, at(hi))
+                    })
+                  })
+                  set par(justify: false, linebreaks: "simple")
+                  set text(hyphenate: false)
+                  if author != none {
+                    block(above: BYLINE_GAP, below: 0pt, width: 100%, align(center, text(size: AUTHOR_SCALE, author)))
+                  }
+                  if date != none {
+                    block(above: if author != none { DATE_GAP } else { BYLINE_GAP }, below: 0pt, width: 100%,
+                      align(center, text(size: DATE_SCALE, date)))
+                  }
+                })
                 #let ike-block-title(body) = block(above: 1em, below: 0.5em, text(weight: "bold", size: 0.95em, body))
                 #let ike-admonition-colors = (
                   NOTE: rgb("#2a5a8a"), TIP: rgb("#3b8c2f"), IMPORTANT: rgb("#b8860b"),
@@ -387,7 +594,9 @@ public final class TypstWriter {
                 #let ike-image(target, title) = block(width: 100%, inset: 6pt, stroke: 0.5pt + luma(190),
                   [#text(size: 0.85em, fill: luma(90))[Image: #raw(target)]#if title != none [ — #title]])
 
-                """);
+                """.replace("<OPENER>", "<" + OPENER_LABEL + ">").replace("range(STEPS)", "range(" + TitleLines.STEPS + ")")
+                .replace("BYLINE_GAP", ems(BYLINE_GAP)).replace("DATE_GAP", ems(DATE_GAP))
+                .replace("AUTHOR_SCALE", ems(AUTHOR_SCALE)).replace("DATE_SCALE", ems(DATE_SCALE)));
         return sb.toString();
     }
 

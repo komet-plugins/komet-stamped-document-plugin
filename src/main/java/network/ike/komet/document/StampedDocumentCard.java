@@ -77,10 +77,12 @@ import network.ike.komet.document.GitDocumentMaterializer.StoredBlock;
 import network.ike.komet.document.GitDocumentMaterializer.StoredDocument;
 import network.ike.komet.document.print.DocumentFonts;
 import network.ike.komet.document.print.DocumentModel;
+import network.ike.komet.document.print.Folios;
 import network.ike.komet.document.print.FrontLists;
 import network.ike.komet.document.print.GreedyFxOracle;
 import network.ike.komet.document.print.LayoutOracle;
 import network.ike.komet.document.print.PageFidelity;
+import network.ike.komet.document.print.RunningHeads;
 import network.ike.komet.document.print.TypstOracle;
 import network.ike.komet.document.print.TypstWriter;
 import network.ike.komet.document.print.PrintBlocks;
@@ -1596,7 +1598,40 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
             public String section(int page) {
                 return surface.sectionOn(page);
             }
+
+            @Override
+            public String folio(int page) {
+                return layout == null ? Integer.toString(page + 1) : layout.folios().label(page);
+            }
+
+            @Override
+            public boolean runningHead(int page) {
+                return runningHeads().shown(page);
+            }
         };
+    }
+
+    /** The running heads of the layout last asked, and that layout: the pages a chapter opens on are found once per layout. */
+    private RunningHeads runningHeads = RunningHeads.EVERY_PAGE;
+    private LayoutOracle.Layout runningHeadsOf;
+
+    /** Which pages of the layout in force carry the running head: none that opens the title or a chapter. */
+    private RunningHeads runningHeads() {
+        LayoutOracle.Layout layout = typstLayout != null ? typstLayout : greedyLayout;
+        if (layout == null) {
+            return RunningHeads.EVERY_PAGE;
+        }
+        if (layout != runningHeadsOf) {
+            runningHeads = RunningHeads.of(pageUnits, layout.lines());
+            runningHeadsOf = layout;
+        }
+        return runningHeads;
+    }
+
+    /** The folios of the layout in force: where the body begins, and whether a title page stands before it. */
+    private Folios folios() {
+        LayoutOracle.Layout layout = typstLayout != null ? typstLayout : greedyLayout;
+        return layout == null ? Folios.NONE : layout.folios();
     }
 
     /**
@@ -1690,7 +1725,7 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
 
     private void showPageIndicator() {
         if (pageStack != null) {
-            pageIndicator.setText("Page " + (pageStack.currentPageProperty().get() + 1) + " of " + pageStack.pageCount()
+            pageIndicator.setText(DocumentFooter.page(folios(), pageStack.currentPageProperty().get(), pageStack.pageCount())
                     + (typstLayout == null ? "  ·  estimated" : ""));
         }
     }
@@ -1704,25 +1739,44 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
             statusLine.setText("Choose a document first.");
             return;
         }
-        TextInputDialog dialog = new TextInputDialog(Integer.toString(pageStack.currentPageProperty().get() + 1));
+        Folios folios = folios();
+        int pages = pageStack.pageCount();
+        TextInputDialog dialog = new TextInputDialog(folios.counted(pageStack.currentPageProperty().get()));
         dialog.setTitle("Go to page");
-        dialog.setHeaderText("Page 1 to " + pageStack.pageCount());
+        dialog.setHeaderText(DocumentFooter.pageRange(folios, pages));
         dialog.setContentText("Page:");
         dialog.initOwner(window());
-        dialog.showAndWait().ifPresent(text -> {
-            try {
-                goToPage(Integer.parseInt(text.strip()));
-            } catch (NumberFormatException e) {
-                statusLine.setText("Not a page number: " + text);
-            }
-        });
+        dialog.showAndWait().ifPresent(text -> goToFolio(text));
     }
 
     /**
-     * Scrolls the Page layout to a page, public for automation; must be called on the JavaFX
-     * application thread.
+     * Scrolls the Page layout to the page that prints a number, public for automation; must be
+     * called on the JavaFX application thread. An arabic number names a page of the body, and a
+     * roman numeral a page of the front matter, so a reader sent to page 12 by the table of
+     * contents arrives at the page that prints 12.
      *
-     * @param page the 1-based page
+     * @param folio the page number as the page prints it, such as {@code 12} or {@code iii}
+     * @return whether the pages have such a page
+     */
+    public boolean goToFolio(String folio) {
+        if (pageStack == null) {
+            return false;
+        }
+        java.util.OptionalInt page = folios().pageOf(folio, pageStack.pageCount());
+        if (page.isEmpty()) {
+            statusLine.setText("Not a page of this document: " + (folio == null ? "" : folio.strip()));
+            return false;
+        }
+        pageStack.scrollToPage(page.getAsInt());
+        return true;
+    }
+
+    /**
+     * Scrolls the Page layout to a page by its place among all the pages, public for automation;
+     * must be called on the JavaFX application thread. {@link #goToFolio} goes to the page that
+     * prints a number.
+     *
+     * @param page the 1-based page, counted from the first sheet
      */
     public void goToPage(int page) {
         if (pageStack != null) {
@@ -1760,6 +1814,16 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
     /** @return the Page layout's page count, 0 when it is not shown */
     public int pageCount() {
         return pageStack == null ? 0 : pageStack.pageCount();
+    }
+
+    /**
+     * The number a page of the Page layout prints, public for automation.
+     *
+     * @param page the 1-based page, counted from the first sheet
+     * @return the folio, such as {@code iii} or {@code 12}; empty for a title page, which prints none, and when the Page layout is not shown
+     */
+    public String folioOf(int page) {
+        return pageStack == null || page < 1 || page > pageStack.pageCount() ? "" : folios().label(page - 1);
     }
 
     /** @return whether the Page layout shows Typst's lines (the second pass has settled) */

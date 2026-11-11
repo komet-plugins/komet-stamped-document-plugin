@@ -50,18 +50,98 @@ class FrontListsTest {
     }
 
     @Test
-    void theTailSharesTheTextsLastLineOnlyWhenTheGapAndTheNumberFit() {
-        assertTrue(FrontLists.tailFits(30, 11, 18), "room for the gap and the number: the leader takes what is left, if anything");
-        assertTrue(FrontLists.tailFits(29, 11, 18), "exactly the gap and the number");
-        assertFalse(FrontLists.tailFits(28, 11, 18), "a point short: the tail takes a line of its own, as Typst breaks at the gap");
-        assertFalse(FrontLists.tailFits(0, 11, 18), "a line filled to the edge");
-        assertFalse(FrontLists.tailFits(-2, 11, 18), "a line past the edge");
+    void anEntrysMarkIsItsSectionNumberOrItsCaptionsWordAndNumber() {
+        assertEquals("4", FrontLists.mark("4 Clearing the Jaw Implant"));
+        assertEquals("4.1", FrontLists.mark("4.1 How likely breakdown had to be"));
+        assertEquals("10.12.", FrontLists.mark("10.12. With a full stop"));
+        assertEquals("Figure 3.", FrontLists.mark("Figure 3. The decision tree"));
+        assertEquals("Table 12.", FrontLists.mark("Table 12. Costs"));
+        assertEquals("", FrontLists.mark("The Proposal in Brief"), "a heading with no number");
+        assertEquals("", FrontLists.mark("Step 1: how much the first signal changes"), "a number inside a title is no mark");
+        assertEquals("", FrontLists.mark("Phase 2 results"), "nor a word and a number with no full stop");
+        assertEquals("", FrontLists.mark("1983"), "a mark numbers the text after it");
+    }
+
+    @Test
+    void aShortLastWordIsTiedToTheWordBeforeIt() {
+        assertEquals("the FDA Did Not Ask\u00a0For", FrontLists.tied("the FDA Did Not Ask For"));
+        assertEquals("What Happens\u00a0to", FrontLists.tied("What Happens to"));
+        assertEquals("Apply to the\u00a0Jaw?", FrontLists.tied("Apply to the Jaw?"), "a mark of punctuation after it does not lengthen the word");
+        assertEquals("What Happens to Patients", FrontLists.tied("What Happens to Patients"), "a longer last word turns over by itself");
+        assertEquals("cleared in\u00a01983", FrontLists.tied("cleared in 1983"), "four letters or digits are short too");
+        assertEquals("of a Wear\u00a0Test", FrontLists.tied("of a Wear Test"));
+        assertEquals("for the device", FrontLists.tied("for the device"), "five are not");
+        assertEquals("Contents", FrontLists.tied("Contents"), "one word has nothing to be tied to");
+        assertEquals("a b\u00a0c", FrontLists.tied("a b c"), "only the last word is tied");
+        assertEquals("Ask For".length(), FrontLists.tied("Ask For").length(), "the text keeps its length");
+        assertEquals(4, FrontLists.TIE);
+    }
+
+    @Test
+    void theWidestMarkOfEachDepthIsItsLongestWithEveryDigitAZero() {
+        assertEquals(List.of("00", "00.00"), FrontLists.patterns(List.of("The Proposal in Brief", "The problem", "1 One", "1.1 Deeper", "10 Ten", "10.12 Twelve", "3.4 Four"),
+                List.of(0, 1, 0, 1, 0, 1, 1)), "one text for each depth, whatever the digits: both ends measure the same one");
+        assertEquals(List.of("Figure 00."), FrontLists.patterns(List.of("Figure 3. A tree", "Figure 12. A tornado"), List.of(0, 0)));
+        assertEquals(List.of("", "0.0"), FrontLists.patterns(List.of("Preface", "1.1 Deeper"), List.of(0, 1)), "a depth with no mark has none");
+        assertEquals(List.of("", ""), FrontLists.patterns(List.of("Preface", "Thanks"), List.of(0, 1)));
+        assertEquals(List.of(), FrontLists.patterns(List.of(), List.of()));
+    }
+
+    @Test
+    void theTextsOfADepthBeginAtOneEdgeAfterTheColumnOfItsMarks() {
+        LayoutOracle.Measure six = (text, unit, mono, bold, italic) -> text.length() * 6.0;
+        List<LayoutOracle.Unit> units = List.of(
+                new LayoutOracle.Unit(0, 1, LayoutOracle.Kind.HEADING, "Contents", 18, true, 0, 0, 0, true),
+                new LayoutOracle.Unit(1, 1, LayoutOracle.Kind.ENTRY, "The Proposal in Brief", 12, false, 0, 0, 0, false),
+                new LayoutOracle.Unit(2, 1, LayoutOracle.Kind.ENTRY, "The problem", 12, false, 12, 0, 0, false),
+                new LayoutOracle.Unit(3, 1, LayoutOracle.Kind.ENTRY, "4 Clearing", 12, false, 0, 0, 0, false),
+                new LayoutOracle.Unit(4, 1, LayoutOracle.Kind.ENTRY, "4.1 How likely", 12, false, 12, 0, 0, false),
+                new LayoutOracle.Unit(5, 1, LayoutOracle.Kind.ENTRY, "10 Ten", 12, false, 0, 0, 0, false),
+                new LayoutOracle.Unit(6, 2, LayoutOracle.Kind.ENTRY, "Preface", 12, false, 0, 0, 0, false),
+                new LayoutOracle.Unit(7, 2, LayoutOracle.Kind.ENTRY, "Thanks", 12, false, 12, 0, 0, false),
+                new LayoutOracle.Unit(8, 3, LayoutOracle.Kind.PARAGRAPH, "4 is no mark here", 12, false, 0, 0, 0, false));
+
+        Map<Integer, FrontLists.Place> places = FrontLists.places(units, six);
+
+        double outer = 2 * 6 + 12 * TypstWriter.ENTRY_MARK_GAP;       // "00" and the gap
+        double inner = 3 * 6 + 12 * TypstWriter.ENTRY_MARK_GAP;       // "0.0" and the gap
+        assertEquals(java.util.Set.of(1, 2, 3, 4, 5, 6, 7), places.keySet(), "the entries, and no other unit");
+        assertEquals(new FrontLists.Place(0, outer), places.get(3), "a mark stands at the left edge, in a column as wide as the depth's widest");
+        assertEquals(places.get(3), places.get(5));
+        assertEquals(places.get(3), places.get(1), "an entry with no mark begins where the others' texts do");
+        assertEquals(outer, places.get(3).text(), 1e-9);
+        assertEquals(new FrontLists.Place(outer, inner), places.get(4), "a depth begins where the text of the depth above does");
+        assertEquals(places.get(4), places.get(2));
+        assertEquals(new FrontLists.Place(0, 0), places.get(6), "a list with no marks has no column");
+        assertEquals(new FrontLists.Place(12 * TypstWriter.ENTRY_STEP, 0), places.get(7), "and sets its second depth a step in");
+        assertEquals(1, FrontLists.depth(units.get(4)));
+        assertEquals(0, FrontLists.depth(units.get(3)));
+    }
+
+    @Test
+    void everyLineOfAnEntryKeepsTheNumbersColumnTheLeastLeaderAndTheGapsClear() {
+        LayoutOracle.Measure six = (text, unit, mono, bold, italic) -> text.length() * 6.0;
+        LayoutOracle.Unit entry = new LayoutOracle.Unit(0, 0, LayoutOracle.Kind.ENTRY, "4.1 How likely", 10, false, 0, 0, 0, false);
+
+        assertEquals(18, FrontLists.column(18, 12), "room for three digits, whatever the number");
+        assertEquals(24, FrontLists.column(18, 24), "a wider number widens its own entry's column");
+        assertEquals(18 + 10 * (0.4 + 2 + 0.4), FrontLists.reserve(10, 18), 1e-9, "the column, its gutter, the least leader and the gap");
+        assertEquals(FrontLists.reserve(10, 18), FrontLists.reserve(entry, six), 1e-9, "an oracle keeps room for three digits");
     }
 
     @Test
     void thePagesOfTheTargetsAreReadOffTheirUnitsFirstLines() {
         assertEquals(Map.of("a", 2, "b", 9), FrontLists.pages(layout(2, 9), TARGETS));
         assertEquals(Map.of("a", 0), FrontLists.pages(new Layout(1, List.of(), false, 0, List.of()), Map.of("a", 4)), "no line, no page");
+    }
+
+    @Test
+    void anEntrysPageIsTheFolioItsTargetsPagePrints() {
+        // a title page, two pages of contents, then the body: the targets stand on the fourth and the twelfth pages
+        Layout book = new Layout(12, layout(4, 12).lines(), true, 0, List.of(), new Folios(3, true));
+
+        assertEquals(Map.of("a", 1, "b", 9), FrontLists.pages(book, TARGETS), "counted from the body's first page, as the pages print it");
+        assertEquals(Map.of("a", 4, "b", 12), FrontLists.pages(layout(4, 12), TARGETS), "a document with no front matter counts from its first page");
     }
 
     @Test

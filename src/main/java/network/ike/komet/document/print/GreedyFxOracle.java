@@ -102,6 +102,7 @@ public final class GreedyFxOracle implements LayoutOracle {
         double baseline = -1;                                     // the last baseline on the page; -1 at a page's top
         Unit previous = null;                                     // the unit before, on the same page
         Foot foot = new Foot(units, geometry);
+        Map<Integer, FrontLists.Place> places = FrontLists.places(units, this::width);   // where the front lists' entries stand
         List<Unit> header = List.of();                            // the header rows of the table being set
         for (int i = 0; i < units.size(); i++) {
             Unit unit = units.get(i);
@@ -159,9 +160,17 @@ public final class GreedyFxOracle implements LayoutOracle {
                 previous = unit;
                 continue;
             }
-            // A list item hangs its lines after the first under its text, past the marker.
+            // A list item hangs its lines after the first under its text, past the marker. A front list's entry has
+            // its mark in a column of its own and every line of its text after it, in a measure that keeps the
+            // leader's and the page number's room clear.
+            FrontLists.Place place = unit.kind() == Kind.ENTRY ? places.get(unit.index()) : null;
+            boolean entry = place != null;
+            int mark = entry ? FrontLists.mark(unit.text()).length() : 0;
             double hang = unit.kind() == Kind.LIST_ITEM ? unit.fontSize() * 0.9 : 0;
-            List<int[]> rows = breaks(unit, (geometry.contentWidth() - unit.indent()) * measure);
+            boolean title = unit.kind() == Kind.TITLE || unit.kind() == Kind.BYLINE;
+            List<int[]> rows = entry ? entryBreaks(unit, mark == 0 ? 0 : mark + 1, geometry.contentWidth() - place.text() - FrontLists.reserve(unit, this::width))
+                    : unit.kind() == Kind.TITLE ? titleBreaks(unit, geometry.contentWidth() * measure)
+                    : breaks(unit, (geometry.contentWidth() - unit.indent()) * measure);
             double first = baseline < 0 ? geometry.contentTop() + cap + UnitSpacing.gap(null, unit) : baseline + UnitSpacing.gap(previous, unit) + cap;
             double height = (rows.size() - 1) * pitch;
             Unit following = nextInFlow(units, i);
@@ -204,7 +213,12 @@ public final class GreedyFxOracle implements LayoutOracle {
                 }
                 for (int k = 0; k < fit; k++) {
                     int[] range = rows.get(row + k);
-                    double x = geometry.contentLeft() + unit.indent() + (row + k > 0 ? hang : 0);
+                    if (entry && row + k == 0 && mark > 0) {
+                        lines.add(new Line(i, page, geometry.contentLeft() + place.left(), y, 0, mark, false));   // the mark, in its column
+                    }
+                    double x = title ? centered(unit, range, geometry)
+                            : entry ? geometry.contentLeft() + place.text()
+                            : geometry.contentLeft() + unit.indent() + (row + k > 0 ? hang : 0);
                     lines.add(new Line(i, page, x, y + k * pitch, range[0], range[1], range[2] == 1));
                     foot.take(unit, range);
                 }
@@ -221,7 +235,7 @@ public final class GreedyFxOracle implements LayoutOracle {
         }
         foot.close(page, lines);
         lines.sort(Comparator.comparingInt(Line::page).thenComparingInt(Line::unit).thenComparingInt(Line::from));
-        return new Layout(page + 1, lines, false, (System.nanoTime() - started) / 1_000_000, List.of());
+        return new Layout(page + 1, lines, false, (System.nanoTime() - started) / 1_000_000, List.of(), Folios.of(units, lines));
     }
 
     /** Whether a row is its table's first: a table's notes stand between its rows. */
@@ -408,7 +422,35 @@ public final class GreedyFxOracle implements LayoutOracle {
      *         {@code hyphenated} is 1 when the line ends in a hyphen the breaker inserted
      */
     public List<int[]> breaks(Unit unit, double width) {
-        return breaks(unit, width, unit.kind() != Kind.TABLE_ROW);
+        // a table cell and a heading are ragged and never hyphenated, as the writer sets them
+        return breaks(unit, width, unit.kind() != Kind.TABLE_ROW && unit.kind() != Kind.HEADING && unit.kind() != Kind.TITLE
+                && unit.kind() != Kind.BYLINE);
+    }
+
+    /**
+     * Breaks a document's title as the Typst writer's {@code ike-title} sets it: ragged, never
+     * hyphenated, at its untied spaces, in the narrowest measure that keeps the line count
+     * ({@link TitleLines}).
+     *
+     * @param unit  the title
+     * @param width the full measure in points
+     * @return the lines as {@code {from, to, 0}} over the unit's text, at least one
+     */
+    public List<int[]> titleBreaks(Unit unit, double width) {
+        String text = unit.text();
+        Font font = font(unit);
+        return TitleLines.breaks(text, (from, to) -> width(text, from, to, unit, 0, font), width);
+    }
+
+    /** @return the left edge of a title's line, centered in the measure: its text's width less its trailing space */
+    private double centered(Unit unit, int[] range, Geometry geometry) {
+        String text = unit.text();
+        int to = range[1];
+        while (to > range[0] && Character.isWhitespace(text.charAt(to - 1))) {
+            to--;
+        }
+        double drawn = width(text, range[0], to, unit, 0, font(unit));
+        return geometry.contentLeft() + Math.max(0, (geometry.contentWidth() - drawn) / 2);
     }
 
     /**
@@ -435,6 +477,39 @@ public final class GreedyFxOracle implements LayoutOracle {
                 start = i + 1;
             }
         }
+        return out;
+    }
+
+    /**
+     * Breaks the text of a front list's entry as the Typst writer's entry block sets it: ragged,
+     * never hyphenated, each line taking the words that fit its measure. A word wider than the
+     * measure stands alone on its line, and a short last word goes with the word before it
+     * ({@link FrontLists#tied}). The entry's mark is no part of it: it stands in its own column.
+     *
+     * @param unit  the entry
+     * @param start where the entry's text begins in the unit's: after its mark and the space that follows, 0 with no mark
+     * @param width the measure of the entry's text in points: the content's, less where the text begins
+     *              ({@link FrontLists.Place#text}) and the room it keeps clear ({@link FrontLists#reserve})
+     * @return the lines as {@code {from, to, 0}} over the unit's text, at least one
+     */
+    public List<int[]> entryBreaks(Unit unit, int start, double width) {
+        List<int[]> out = new ArrayList<>();
+        String text = unit.text();
+        int from = -1;                                            // the line's first character, -1 before its first word
+        int to = start;                                           // the end of the last word taken
+        Font font = font(unit);
+        // a no-break space is no place to break: the tied words are one piece
+        for (int[] piece : pieces(FrontLists.tied(text.substring(start)))) {
+            if (from >= 0 && width(text, from, start + piece[1], unit, 0, font) > width) {
+                out.add(new int[] {from, to, 0});
+                from = -1;
+            }
+            if (from < 0) {
+                from = start + piece[0];
+            }
+            to = start + piece[1];
+        }
+        out.add(new int[] {from < 0 ? start : from, from < 0 ? text.length() : to, 0});
         return out;
     }
 

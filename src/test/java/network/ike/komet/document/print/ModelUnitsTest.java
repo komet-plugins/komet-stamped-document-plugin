@@ -67,6 +67,22 @@ class ModelUnitsTest {
     }
 
     @Test
+    void theAuthorAndTheDateAreUnitsOfTheTitlesBlockBeneathIt() {
+        DocumentModel model = new DocumentModel("Title", List.of(new Paragraph("Text.")), DocumentModel.Lists.NONE,
+                new DocumentModel.Byline("An Author", "November 10, 2026"));
+        List<Unit> units = ModelUnits.of(model, 12);
+        assertEquals(List.of(Kind.TITLE, Kind.BYLINE, Kind.BYLINE, Kind.PARAGRAPH), units.stream().map(Unit::kind).toList());
+        assertEquals(List.of(0, 0, 0, 1), units.stream().map(Unit::block).toList(), "the byline is the title's block, as the writer labels it");
+        assertEquals(12 * TypstWriter.AUTHOR_SCALE, units.get(1).fontSize(), 1e-9);
+        assertEquals(12 * TypstWriter.DATE_SCALE, units.get(2).fontSize(), 1e-9);
+        assertEquals(false, units.get(1).bold());
+        assertEquals(12 * TypstWriter.BYLINE_GAP, UnitSpacing.gap(units.get(0), units.get(1)), 1e-9, "the gap the writer leaves under the title");
+        assertEquals(12 * TypstWriter.DATE_GAP, UnitSpacing.gap(units.get(1), units.get(2)), 1e-9, "and under the author");
+        assertEquals(12 * 1.2, UnitSpacing.gap(units.get(2), units.get(3)), 1e-9, "the title block's own space below");
+        assertTrue(units.get(0).opensChapter() && !units.get(1).opensChapter());
+    }
+
+    @Test
     void aFrontListIsItsTitleAsAHeadingAndAnEntryUnitPerEntry() {
         DocumentModel model = new DocumentModel("Title", List.of(
                 new DocumentModel.FrontList(DocumentModel.FrontList.Kind.CONTENTS, List.of(
@@ -104,8 +120,12 @@ class ModelUnitsTest {
                 units.stream().map(Unit::text).toList());
         assertEquals(List.of(false, true, false, true, false, true, false, false, false), units.stream().map(Unit::pageBefore).toList(),
                 "the lists' titles and the body's first unit open pages: the title page stands alone");
+        assertEquals(List.of(false, false, false, false, false, true, false, false, false), units.stream().map(Unit::opensBody).toList(),
+                "the body's first unit opens it, and no other: its page is page 1");
         assertTrue(ModelUnits.of(new DocumentModel("Title", List.of(new Heading(1, "One"), new Paragraph("Prose."))), 12).stream()
                 .noneMatch(Unit::pageBefore), "no list, no page opened");
+        assertTrue(ModelUnits.of(new DocumentModel("Title", List.of(new Heading(1, "One"), new Paragraph("Prose."))), 12).stream()
+                .noneMatch(Unit::opensBody), "no front matter, no body to open");
     }
 
     @Test

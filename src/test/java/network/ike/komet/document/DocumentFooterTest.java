@@ -15,6 +15,7 @@
  */
 package network.ike.komet.document;
 
+import network.ike.komet.document.print.Folios;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -30,6 +31,26 @@ class DocumentFooterTest {
     void whatIsThereIsCountedInTheSingularToo() {
         assertEquals("1 line \u00b7 1 block \u00b7 1 reference \u00b7 2 affirmed \u00b7 1 included",
                 DocumentFooter.line(1, 1, 1, 2, 1, 0, ""));
+    }
+
+    @Test
+    void aDocumentWithNoFrontMatterNamesThePageByItsPlace() {
+        assertEquals("Page 3 of 12", DocumentFooter.page(Folios.NONE, 2, 12));
+        assertEquals("Page 1 to 12", DocumentFooter.pageRange(Folios.NONE, 12));
+        assertEquals("Page 1 to 1", DocumentFooter.pageRange(Folios.NONE, 1));
+    }
+
+    @Test
+    void aDocumentWithFrontMatterNamesThePageByItsPrintedFolioAndThenItsPlace() {
+        Folios book = new Folios(13, true);                       // the regulatory book: a title page, twelve pages of lists, then the body
+        assertEquals("Page iii, 3 of 196", DocumentFooter.page(book, 2, 196));
+        assertEquals("Page xiii, 13 of 196", DocumentFooter.page(book, 12, 196));
+        assertEquals("Page 1, 14 of 196", DocumentFooter.page(book, 13, 196), "the body's first page");
+        assertEquals("Page 183, 196 of 196", DocumentFooter.page(book, 195, 196));
+        assertEquals("Title page, 1 of 196", DocumentFooter.page(book, 0, 196), "the title page prints no number");
+        assertEquals("Page i, 1 of 9", DocumentFooter.page(new Folios(2, false), 0, 9), "a list on the first page prints its number");
+        assertEquals("Page i to xiii, then 1 to 183", DocumentFooter.pageRange(book, 196));
+        assertEquals("Page i to ii", DocumentFooter.pageRange(new Folios(2, false), 2), "pages laid out so far that are all front matter");
     }
 
     @Test

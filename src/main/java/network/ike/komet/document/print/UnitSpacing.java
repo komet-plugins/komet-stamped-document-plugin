@@ -56,6 +56,8 @@ public final class UnitSpacing {
     public static double[] of(Kind kind, Kind previous, double size, double base, boolean caption) {
         double above = switch (kind) {
             case TITLE -> 0;
+            // the author beneath the title, or the date beneath the author: the writer's ike-title sets the gaps
+            case BYLINE -> previous == Kind.BYLINE ? base * TypstWriter.DATE_GAP : base * TypstWriter.BYLINE_GAP;
             case HEADING -> size * 0.9;
             case LIST_ITEM -> previous == Kind.LIST_ITEM ? base * 0.65 : base * 1.1;
             case ENTRY -> previous == Kind.ENTRY ? base * 0.65 : base * 1.1;      // the writer's entry block keeps 0.65em above and below
@@ -64,7 +66,7 @@ public final class UnitSpacing {
             default -> base * 1.1;
         };
         double below = switch (kind) {
-            case TITLE -> base * 1.2;
+            case TITLE, BYLINE -> base * 1.2;
             case HEADING -> size * 0.5;
             case OTHER -> caption ? base * 0.65 : base * 0.5;
             default -> 0;
@@ -91,6 +93,9 @@ public final class UnitSpacing {
                 : unit.kind() == Kind.TABLE_ROW && (previous == null || previous.kind() != Kind.TABLE_ROW) ? CELL_INSET : 0;
         if (previous == null) {
             return inset;
+        }
+        if (unit.kind() == Kind.BYLINE && (previous.kind() == Kind.TITLE || previous.kind() == Kind.BYLINE)) {
+            return unit.spaceAbove();                             // within the title's block: its own gap, not the block's below
         }
         boolean previousWeak = previous.spaceBelow() > 0;
         boolean unitWeak = unit.kind() == Kind.HEADING || unit.kind() == Kind.OTHER;

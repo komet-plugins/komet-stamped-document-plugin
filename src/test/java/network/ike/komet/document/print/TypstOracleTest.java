@@ -96,32 +96,39 @@ class TypstOracleTest {
     }
 
     @Test
-    void anEntrysTailIsReadAsALineOfItsOwnAtTheTailsBaseline() {
-        // Block 1: a contents list of two entries; the first's tail shares its line, the second's took a line of its own.
+    void anEntrysMarkIsALineInItsColumnAndItsTextStandsAfterIt() {
+        // Block 1: a contents list of three entries; the second turns over after "Two", the third opens with no mark.
+        // Marks of "0" and "0.0": columns of 6 + 9 and 18 + 9 points, the second depth under the first's text.
         Unit title = new Unit(0, 1, Kind.HEADING, "Contents", 18, true, 0, 0, 9, true);
         Unit one = new Unit(1, 1, Kind.ENTRY, "1 One", 12, false, 0, 13.2, 0, false);
-        Unit two = new Unit(2, 1, Kind.ENTRY, "2 Two words", 12, false, 12, 7.8, 0, false);
+        Unit two = new Unit(2, 1, Kind.ENTRY, "2.1 Two words", 12, false, 12, 7.8, 0, false);
+        Unit three = new Unit(3, 1, Kind.ENTRY, "Preface", 12, false, 0, 7.8, 0, false);
         List<Item> items = new ArrayList<>();
         items.add(new Item(1, 0, 72, 72));
         word(items, "Contents", 0, 72, 84, 150);
-        word(items, "1", 0, 72, 101.5, 78);
-        word(items, "One", 0, 81, 101.5, 102);
-        items.add(new Item(TypstOracle.TAIL, 0, 540, 101.5));
-        word(items, "2", 0, 84, 117.9, 90);
-        word(items, "Two", 0, 93, 117.9, 114);
-        word(items, "words", 0, 117, 117.9, 150);
-        items.add(new Item(TypstOracle.TAIL, 0, 540, 134.3));
-        items.add(new Item(null, 0, 72, 150));
+        // a mark is the last word of its cell: its start label is at the cell's top, its end label at the cell's
+        // left edge on its baseline
+        items.add(new Item("1", 0, 72, 95));
+        items.add(new Item(Boolean.FALSE, 0, 72, 101.5));
+        word(items, "One", 0, 87, 101.5, 105);
+        items.add(new Item("2.1", 0, 87, 111.4));
+        items.add(new Item(Boolean.FALSE, 0, 87, 117.9));
+        word(items, "Two", 0, 114, 117.9, 132);
+        // the entry's last word begins its second line: its start label is left at the first line's end, its end label
+        // stands after it on its own line, where the leader's box follows it
+        items.add(new Item("words", 0, 132, 117.9));
+        items.add(new Item(Boolean.FALSE, 0, 144, 134.3));
+        word(items, "Preface", 0, 87, 150.7, 129);
+        items.add(new Item(null, 0, 72, 170));
 
-        Layout layout = TypstOracle.align(items, List.of(title, one, two), LETTER, WIDTH);
+        Layout layout = TypstOracle.align(items, List.of(title, one, two, three), LETTER, WIDTH);
 
-        assertEquals(List.of(new Line(1, 0, 72, 101.5, 0, 5, false), new Line(1, 0, 72, 101.5, 5, 5, false)), layout.ofUnit(1),
-                "the text's line, then the tail on the same baseline");
-        assertEquals(List.of(new Line(2, 0, 84, 117.9, 0, 11, false), new Line(2, 0, 84, 134.3, 11, 11, false)), layout.ofUnit(2),
-                "the tail a pitch under the text, at the entry's indent");
-        assertTrue(layout.ofUnit(1).getLast().tail(one) && layout.ofUnit(2).getLast().tail(two));
-        assertTrue(!layout.ofUnit(1).getFirst().tail(one) && !layout.ofUnit(0).getFirst().tail(title), "a line of text is no tail, nor a heading's");
-        assertEquals(0, layout.pageOf(2), "the tail begins nothing");
+        assertEquals(List.of(new Line(1, 0, 72, 101.5, 0, 1, false), new Line(1, 0, 72 + 15, 101.5, 2, 5, false)), layout.ofUnit(1),
+                "the mark in its column, then the text on its baseline: the leader and the page are the renderer's");
+        assertEquals(List.of(new Line(2, 0, 72 + 15, 117.9, 0, 3, false), new Line(2, 0, 72 + 15 + 27, 117.9, 4, 7, false),
+                new Line(2, 0, 72 + 15 + 27, 134.3, 8, 13, false)), layout.ofUnit(2),
+                "a second-level mark under the first level's text, and every line of its text after its own column");
+        assertEquals(List.of(new Line(3, 0, 72 + 15, 150.7, 0, 7, false)), layout.ofUnit(3), "an entry with no mark begins where its depth's texts do");
         assertTrue(layout.notes().isEmpty(), layout.notes().toString());
     }
 

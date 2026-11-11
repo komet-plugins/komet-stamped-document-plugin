@@ -57,16 +57,28 @@ public final class ModelUnits {
         int block = 0;
         Kind previous = null;
         if (!model.title().isEmpty()) {
-            previous = add(out, notes, block++, Kind.TITLE, model.title(), base * 1.8, true, 0, previous, base);
+            previous = add(out, notes, block, Kind.TITLE, model.title(), base * 1.8, true, 0, previous, base);
+            out.set(0, out.getFirst().withOpensChapter(true));
+            // the author and the date beneath it are the title's block, as the writer sets them
+            if (!model.byline().author().isEmpty()) {
+                previous = add(out, notes, block, Kind.BYLINE, model.byline().author(), base * TypstWriter.AUTHOR_SCALE, false, 0, previous, base);
+            }
+            if (!model.byline().date().isEmpty()) {
+                previous = add(out, notes, block, Kind.BYLINE, model.byline().date(), base * TypstWriter.DATE_SCALE, false, 0, previous, base);
+            }
+            block++;
         }
         boolean afterLists = false;
+        boolean opened = false;                                   // whether a unit has opened the body
         for (Block top : model.blocks()) {
             int first = out.size();
             previous = block(out, notes, block++, top, base, previous, 0);
             boolean list = top instanceof DocumentModel.FrontList;
             if ((list || afterLists) && out.size() > first) {
-                // each front list opens a page, and so does the body after the last of them: the title page stands alone
-                out.set(first, out.get(first).withPageBefore(true));
+                // each front list opens a page, and so does the body after the last of them: the title page stands alone;
+                // the body's first unit opens it, and its page is page 1
+                out.set(first, out.get(first).withPageBefore(true).withOpensBody(!list && !opened));
+                opened |= !list;
             }
             afterLists = list;
         }
@@ -91,7 +103,12 @@ public final class ModelUnits {
                     case 3 -> 1.1;
                     default -> 1.0;
                 };
-                return add(out, notes, block, Kind.HEADING, h.text(), base * scale, true, 0, previous, base);
+                int at = out.size();
+                Kind kind = add(out, notes, block, Kind.HEADING, h.text(), base * scale, true, 0, previous, base);
+                if (h.level() <= 1) {
+                    out.set(at, out.get(at).withOpensChapter(true));     // a part or a top-level section: a chapter, as the writer's level 1
+                }
+                return kind;
             }
             case Paragraph p -> {
                 return add(out, notes, block, Kind.PARAGRAPH, p.text(), base, false, 0, previous, base);
@@ -171,7 +188,9 @@ public final class ModelUnits {
             }
             case DocumentModel.FrontList f -> {
                 // its title is a level-1 heading; an entry's text alone is the unit, the page after its leader is the renderer's
+                int at = out.size();
                 Kind last = add(out, notes, block, Kind.HEADING, f.title(), base * 1.5, true, 0, previous, base);
+                out.set(at, out.get(at).withOpensChapter(true));
                 for (DocumentModel.Entry entry : f.entries()) {
                     last = add(out, notes, block, Kind.ENTRY, entry.text(), base, false, base * entry.depth(), last, base);
                 }

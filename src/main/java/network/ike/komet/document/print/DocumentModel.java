@@ -41,8 +41,36 @@ import java.util.Set;
  * @param title  the document title, possibly empty
  * @param blocks the blocks in reading order, the front lists first
  * @param lists  what the header asks for
+ * @param byline the author and the date set beneath the title
  */
-public record DocumentModel(String title, List<Block> blocks, Lists lists) {
+public record DocumentModel(String title, List<Block> blocks, Lists lists, Byline byline) {
+
+    /**
+     * What stands beneath a document's title: its author, or its authors joined as one line, and
+     * its date, both centered and smaller than the title ({@link StoredDocumentModel#byline}).
+     *
+     * @param author the author line, empty for none
+     * @param date   the date line, empty for none
+     */
+    public record Byline(String author, String date) {
+        /** No author and no date. */
+        public static final Byline NONE = new Byline("", "");
+
+        public Byline {
+            author = author == null ? "" : author.strip();
+            date = date == null ? "" : date.strip();
+        }
+
+        /** @return whether there is nothing to set */
+        public boolean isEmpty() {
+            return author.isEmpty() && date.isEmpty();
+        }
+    }
+
+    /** A model with the lists a header asks for and no byline. */
+    public DocumentModel(String title, List<Block> blocks, Lists lists) {
+        this(title, blocks, lists, Byline.NONE);
+    }
 
     /**
      * The lists a document asks to be generated in its front matter: a table of contents to a
@@ -78,7 +106,30 @@ public record DocumentModel(String title, List<Block> blocks, Lists lists) {
     public DocumentModel {
         Objects.requireNonNull(title, "title is null");
         Objects.requireNonNull(lists, "lists is null");
+        byline = byline == null ? Byline.NONE : byline;
         blocks = List.copyOf(blocks);
+    }
+
+    /**
+     * Whether the document has front matter ({@code dev-document-front-matter}): a list its
+     * header asks for, which stands before the body. Such a document's title stands on a page of
+     * its own, its front matter is numbered in lowercase roman numerals, and its body starts at
+     * page 1. A list with nothing to list is left out of the model, and is no front matter.
+     *
+     * @return whether a front list stands among the blocks
+     */
+    public boolean frontMatter() {
+        for (Block block : blocks) {
+            if (block instanceof FrontList) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** @return whether the title stands on a page of its own, counted as page i and showing no number: a titled document with front matter */
+    public boolean titlePage() {
+        return !title.isEmpty() && frontMatter();
     }
 
     /** @return the front lists' entries, in order */
@@ -104,7 +155,7 @@ public record DocumentModel(String title, List<Block> blocks, Lists lists) {
     /**
      * This model with the front lists' entries carrying the pages their targets begin on.
      *
-     * @param pages the 1-based page of each target, by key; a target not named keeps the page it has
+     * @param pages the folio number of each target's page, by key; a target not named keeps the page it has
      * @return the model, the same one when it has no front list
      */
     public DocumentModel withEntryPages(Map<String, Integer> pages) {
@@ -115,7 +166,7 @@ public record DocumentModel(String title, List<Block> blocks, Lists lists) {
         for (Block block : blocks) {
             out.add(block instanceof FrontList list ? list.withPages(pages) : block);
         }
-        return new DocumentModel(title, out, lists);
+        return new DocumentModel(title, out, lists, byline);
     }
 
     /** One block of the document. */
@@ -336,8 +387,8 @@ public record DocumentModel(String title, List<Block> blocks, Lists lists) {
      * @param text   what it says: a heading as read, with its number; a caption, {@code Figure 3. Title}
      * @param depth  how far it is indented, 0 for a top-level heading or any caption
      * @param target the key of the block it names
-     * @param page   the 1-based page the target begins on as last laid out, 0 while unknown; a writer that
-     *               prints the document asks the layout for the page itself, a measured source prints this
+     * @param page   the number of the folio the target's page prints as last laid out ({@link Folios}), 0 while unknown;
+     *               a writer that prints the document asks the layout for the page itself, a measured source prints this
      */
     public record Entry(String text, int depth, String target, int page) {
 

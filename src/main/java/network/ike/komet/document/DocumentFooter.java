@@ -15,6 +15,8 @@
  */
 package network.ike.komet.document;
 
+import network.ike.komet.document.print.Folios;
+
 import java.util.ArrayList;
 import java.util.List;
 
@@ -61,6 +63,44 @@ final class DocumentFooter {
             parts.add(unresolved);
         }
         return String.join(" \u00b7 ", parts);
+    }
+
+    /**
+     * What the footer names the page under the eye by in the Page layout
+     * ({@code dev-document-front-matter}). For a document with no front matter the footer reads
+     * "Page 3 of 12". For a document with front matter it gives the folio as the page prints it,
+     * so the screen can be matched to a printed copy, and then the page's place among all the
+     * pages: "Page iii, 3 of 196". A title page prints no number, and the footer reads "Title
+     * page, 1 of 196".
+     *
+     * @param folios the folios of the pages
+     * @param page   the 0-based page
+     * @param pages  the page count
+     * @return the footer's text
+     */
+    static String page(Folios folios, int page, int pages) {
+        String place = (page + 1) + " of " + pages;
+        if (!folios.frontMatter()) {
+            return "Page " + place;
+        }
+        String folio = folios.label(page);
+        return (folio.isEmpty() ? "Title page" : "Page " + folio) + ", " + place;
+    }
+
+    /**
+     * The pages a reader may ask to go to, as the pages print their numbers: "Page 1 to 12", or
+     * for a document with front matter "Page i to xiii, then 1 to 183".
+     *
+     * @param folios the folios of the pages
+     * @param pages  the page count
+     * @return the range, for the Go to page dialog
+     */
+    static String pageRange(Folios folios, int pages) {
+        int last = Math.max(0, pages - 1);
+        if (!folios.frontMatter() || folios.bodyPage() > last) {
+            return "Page " + folios.counted(0) + " to " + folios.counted(last);
+        }
+        return "Page " + folios.counted(0) + " to " + folios.counted(folios.bodyPage() - 1) + ", then 1 to " + folios.counted(last);
     }
 
     private static String count(int n, String noun) {

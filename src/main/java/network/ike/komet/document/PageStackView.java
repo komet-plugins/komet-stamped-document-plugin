@@ -40,7 +40,7 @@ import java.util.Optional;
  * (KEC, 2026-10-20: a stepper through pages is the HTML pagination approach, a strongly
  * discouraged anti-pattern for Komet). Every page is a white sheet of the print settings' size
  * at a point per pixel, with a gap between sheets and the running head and folio drawn in the
- * margins as Typst draws them; the sheets' content — the surface's line areas at the layout
+ * margins as Typst draws them, the folio as the content names it for the page; the sheets' content — the surface's line areas at the layout
  * oracle's baselines, and the marginalia beside them — is asked for only for the sheets near the
  * viewport, where the content builds it on first asking, and dropped from the sheet again once
  * it is far from it, so a long document costs as much as the few pages in view plus the pages
@@ -113,6 +113,30 @@ public final class PageStackView extends ScrollPane {
 
         /** @return the section the running head names on a page, blank for none */
         String section(int page);
+
+        /**
+         * The folio a page prints: its number as the printed document shows it, which in a
+         * document with front matter is lowercase roman before the body and starts again at 1
+         * in the body ({@link network.ike.komet.document.print.Folios}).
+         *
+         * @param page the 0-based page
+         * @return the folio; blank for a page that shows none, such as a title page
+         */
+        default String folio(int page) {
+            return Integer.toString(page + 1);
+        }
+
+        /**
+         * Whether a page carries the running head: not one that opens something, the title's page
+         * or a chapter's first ({@link network.ike.komet.document.print.RunningHeads}). On such a
+         * page a folio set in the head drops to the foot.
+         *
+         * @param page the 0-based page
+         * @return whether the head is drawn
+         */
+        default boolean runningHead(int page) {
+            return true;
+        }
     }
 
     private final PrintSettings settings;
@@ -352,15 +376,18 @@ public final class PageStackView extends ScrollPane {
         double left = m.left();
         double width = pageWidth - m.left() - m.right();
         PageNumberPlacement numbers = settings.pageNumbers();
-        boolean head = settings.runningHead().shown();
-        String folio = Integer.toString(page + 1);
-        if (head || numbers.inHeader()) {
+        // a page that opens something carries no head, and its folio, set in the head elsewhere, drops to the foot
+        boolean opener = !content.runningHead(page);
+        boolean head = settings.runningHead().shown() && !opener;
+        boolean headFolio = numbers.inHeader() && !opener;
+        String folio = content.folio(page);
+        if (head || headFolio) {
             double bottom = m.top() * 0.7;
             double height = size * 1.4;
             if (head) {
                 String section = content.section(page);
                 String text = runningHead + (section.isBlank() || section.equals(runningHead) ? "" : "    " + section);
-                Label label = furniture(text, size, Pos.CENTER_LEFT, left, bottom - height, numbers.inHeader() ? width * 0.8 : width, height);
+                Label label = furniture(text, size, Pos.CENTER_LEFT, left, bottom - height, headFolio ? width * 0.8 : width, height);
                 label.getStyleClass().add("stamped-page-running-head");
                 sheet.getChildren().add(label);
                 Line rule = new Line(left, bottom + 1, left + width, bottom + 1);
@@ -368,15 +395,17 @@ public final class PageStackView extends ScrollPane {
                 rule.setStrokeWidth(0.4);
                 sheet.getChildren().add(rule);
             }
-            if (numbers.inHeader()) {
+            if (headFolio && !folio.isBlank()) {
                 Label label = furniture(folio, size, Pos.CENTER_RIGHT, left, bottom - height, width, height);
                 label.getStyleClass().add("stamped-page-folio");
                 sheet.getChildren().add(label);
             }
         }
-        if (numbers.inFooter()) {
+        boolean dropped = numbers.inHeader() && opener;
+        if ((numbers.inFooter() || dropped) && !folio.isBlank()) {
             double top = pageHeight - m.bottom() + m.bottom() * 0.3;
-            Label label = furniture(folio, size, numbers == PageNumberPlacement.FOOTER_CENTER ? Pos.CENTER : Pos.CENTER_RIGHT, left, top, width, size * 1.4);
+            Pos at = dropped || numbers == PageNumberPlacement.FOOTER_CENTER ? Pos.CENTER : Pos.CENTER_RIGHT;
+            Label label = furniture(folio, size, at, left, top, width, size * 1.4);
             label.getStyleClass().add("stamped-page-folio");
             sheet.getChildren().add(label);
         }

@@ -52,7 +52,7 @@ class TypstWriterTest {
     private static String body(String asciidoc) {
         StoredDocument stored = StoredFixture.parse(HEADER + asciidoc);
         String typst = TypstWriter.write(StoredDocumentModel.of(stored), TypstWriter.PageSetup.DEFAULT);
-        int title = typst.indexOf("#ike-title[");
+        int title = typst.indexOf("#ike-title(\"");
         assertTrue(title >= 0, "title block missing in\n" + typst);
         return typst.substring(typst.indexOf('\n', title) + 1).strip();
     }
@@ -68,10 +68,11 @@ class TypstWriterTest {
         assertTrue(typst.contains("margin: (top: 36pt, bottom: 36pt, left: 36pt, right: 36pt)"));
         assertTrue(typst.contains("\"Libertinus Serif\""), "serif body for the manuscript theme");
         assertTrue(typst.contains("size: 12pt"));
-        assertTrue(typst.contains("header: context {"), "a running head");
+        assertTrue(typst.contains("header: context if not ike-opening() {"), "a running head, but on a page that opens something");
         assertTrue(typst.contains("text(\"The Fixture Title\"), current)"), "title left, section right");
         assertTrue(typst.contains("footer: context align(right, text(size: 0.8em, fill: luma(70), counter(page).display(\"1\")))"));
-        assertTrue(typst.contains("#ike-title[The Fixture Title]"));
+        // "The" tied to the word it leads, the last two words tied, so the title never ends on a lone word
+        assertTrue(typst.contains("#ike-title(\"The\u00A0Fixture\u00A0Title\")[The\u00A0Fixture\u00A0Title]"), typst);
     }
 
     @Test
@@ -86,11 +87,85 @@ class TypstWriterTest {
     }
 
     @Test
+    void theTitleIsDisplayTypeCenteredBalancedAndNeverHyphenated() {
+        String typst = TypstWriter.write(new DocumentModel(
+                "Applying Decision Theory to Create Transparent and Reproducible Regulatory Decisions", List.of()), TypstWriter.PageSetup.DEFAULT);
+        // tied after its short words and between its last two, so no line ends on "to" or "and", and none is a lone word
+        assertTrue(typst.contains("#ike-title(\"Applying Decision Theory to\u00A0Create Transparent and\u00A0Reproducible Regulatory\u00A0Decisions\")"), typst);
+        assertTrue(typst.contains("set text(size: 1.8em, weight: \"bold\", hyphenate: false)"), "never hyphenated");
+        assertTrue(typst.contains("set par(justify: false, linebreaks: \"simple\")"), "ragged, broken line by line");
+        assertTrue(typst.contains("if measure(at(mid)).height <= lines + 0.01pt { hi = mid } else { lo = mid }"), "the narrowest measure that keeps the line count");
+        assertTrue(typst.contains("align(center, at(hi))"), "centered");
+        assertTrue(typst.contains("[#metadata(none) <" + TypstWriter.OPENER_LABEL + ">]"), "its page opens the document");
+    }
+
+    @Test
+    void theAuthorAndTheDateStandCenteredBeneathTheTitle() {
+        StoredDocument stored = StoredFixture.parse("""
+                = A Book
+                :doctype: book
+                :author: Keith E. Campbell, MD, PhD
+                :revdate: 2026-11-10
+
+                Hello.
+                """);
+        DocumentModel model = StoredDocumentModel.of(stored);
+        assertEquals(new DocumentModel.Byline("Keith E. Campbell, MD, PhD", "November 10, 2026"), model.byline(), "an ISO date is spelled out");
+        String typst = TypstWriter.write(model, TypstWriter.PageSetup.DEFAULT);
+        assertTrue(typst.contains("#ike-title(\"A\u00A0Book\", author: [Keith E. Campbell, MD, PhD], date: [November 10, 2026])[A\u00A0Book]"), typst);
+        assertTrue(typst.contains("#let ike-title(words, body, author: none, date: none)"), typst);
+        assertTrue(typst.contains("block(above: 1.4em, below: 0pt, width: 100%, align(center, text(size: 1.2em, author)))"), "the author, centered and smaller");
+        assertTrue(typst.contains("align(center, text(size: 1em, date))"), "the date beneath it");
+        assertTrue(typst.contains("if author != none { 0.5em } else { 1.4em }"), typst);
+    }
+
+    @Test
+    void theHeadersImplicitAuthorAndRevisionLinesNameTheAuthorAndTheDate() {
+        StoredDocument stored = StoredFixture.parse("""
+                = A Report
+                Ada Lovelace <ada@example.org>; Charles Babbage; Mary Somerville
+                v2.1, 3 March 1843: the notes
+
+                Hello.
+                """);
+        StoredDocumentModel.Header header = StoredDocumentModel.header(stored);
+        assertEquals("Ada Lovelace, Charles Babbage and Mary Somerville", header.author(), "addresses dropped, the authors joined as one line");
+        assertEquals("3 March 1843", header.date(), "a date that is not ISO prints as written");
+        assertEquals(new DocumentModel.Byline("Ada Lovelace, Charles Babbage and Mary Somerville", "3 March 1843"), StoredDocumentModel.of(stored).byline());
+        assertEquals("A and B", StoredDocumentModel.authors("A; B"));
+
+        DocumentModel bare = StoredDocumentModel.of(StoredFixture.parse(HEADER + "Hello.\n"));
+        assertEquals(DocumentModel.Byline.NONE, bare.byline(), "no author named and no commit: nothing beneath the title");
+        assertTrue(TypstWriter.write(bare, TypstWriter.PageSetup.DEFAULT).contains("#ike-title(\"The\u00A0Fixture\u00A0Title\")["), "nor in the source");
+    }
+
+    @Test
+    void headingsAreFlushLeftRaggedAndNeverHyphenated() {
+        String typst = TypstWriter.write(new DocumentModel("T", List.of(new Heading(1, "Transparent Regulatory Decisions"))), TypstWriter.PageSetup.DEFAULT);
+        assertTrue(typst.contains("#show heading: set text(weight: \"bold\", hyphenate: false)"), typst);
+        assertTrue(typst.contains("#show heading: set par(justify: false)"), typst);
+    }
+
+    @Test
+    void aPageThatOpensTheTitleOrAChapterCarriesNoRunningHead() {
+        String typst = TypstWriter.write(new DocumentModel("T", List.of(new Heading(1, "One"))), TypstWriter.PageSetup.DEFAULT);
+        assertTrue(typst.contains(TypstWriter.OPENING_HELPER), "the helper asks where the title and the level-1 headings stand");
+        assertTrue(typst.contains("query(selector(heading.where(level: 1)).or(<ike-opener>))"), typst);
+        assertTrue(typst.indexOf(TypstWriter.OPENING_HELPER) < typst.indexOf("#set page("), "defined before the page uses it");
+        assertTrue(typst.contains("header: context if not ike-opening() {"), typst);
+        PrintSettings bare = new PrintSettings(PageSize.LETTER, PageOrientation.PORTRAIT, MarginPreset.NORMAL,
+                DocumentTheme.DEFAULT, FurnitureVisibility.HIDDEN, PageNumberPlacement.FOOTER_CENTER);
+        assertFalse(TypstWriter.write(new DocumentModel("T", List.of()), TypstPdf.setup(bare)).contains("ike-opening"),
+                "no head, nothing to stand down");
+    }
+
+    @Test
     void headerFolioSharesTheRunningHeadBand() {
         PrintSettings settings = PrintSettings.DEFAULT.withPageNumbers(PageNumberPlacement.HEADER_RIGHT);
         String typst = TypstWriter.write(StoredDocumentModel.of(StoredFixture.parse(HEADER + "Hello.\n")), TypstPdf.setup(settings));
         assertTrue(typst.contains("#h(1em) #current], counter(page).display(\"1\"))"));
-        assertFalse(typst.contains("footer:"));
+        // on a page that opens something the head is not drawn, and its folio drops to the foot
+        assertTrue(typst.contains("footer: context if ike-opening() { align(center, text(size: 0.8em, fill: luma(70), counter(page).display(\"1\"))) },"), typst);
     }
 
     private static DocumentModel drawn() {
@@ -492,7 +567,7 @@ class TypstWriterTest {
         }
         assertEquals(1 + model.blocks().size(), count, "one marker before the title and one before each top-level block");
         assertTrue(typst.contains("#metadata(none) <" + TypstWriter.END_LABEL + ">"), "the end label closes the document");
-        assertTrue(typst.indexOf(marker) < typst.indexOf("#ike-title["), "the title's marker precedes it");
+        assertTrue(typst.indexOf(marker) < typst.indexOf("#ike-title(\""), "the title's marker precedes it");
         assertFalse(TypstWriter.write(model, TypstWriter.PageSetup.DEFAULT).contains("<" + TypstWriter.BLOCK_LABEL + ">"), "the plain form carries no markers");
         assertFalse(typst.contains(TypstOracle.WORD_RULE), "block labels alone label no words");
         String words = TypstWriter.write(model, TypstWriter.PageSetup.DEFAULT, TypstWriter.Labels.WORDS);
@@ -520,16 +595,30 @@ class TypstWriterTest {
 
         assertFalse(typst.contains("#outline"), "the lists are the model's entries, not Typst's outline");
         assertTrue(typst.contains(TypstWriter.ENTRY_HELPERS), "the entry and page helpers come with the lists");
-        assertTrue(typst.contains("= Contents\n\n#ike-entry(0, repeat[.])[1 Intro][#ike-page(<ike-b1>)]\n#ike-entry(1, repeat[.])[1.1 Deeper][#ike-page(<ike-b2>)]\n\n"), typst);
-        assertTrue(typst.contains("= Tables\n\n#ike-entry(0, repeat[.])[Table 1. Costs][#ike-page(<ike-b3>)]\n\n"), typst);
+        assertTrue(typst.contains("= Contents\n\n#let ike-marks = (\"0\", \"0.0\", )\n#ike-entry(ike-marks, 0, \"1\", true)[Intro][#ike-page(<ike-b1>)]\n"
+                + "#ike-entry(ike-marks, 1, \"1.1\", true)[Deeper][#ike-page(<ike-b2>)]\n\n"), typst);
+        assertTrue(typst.contains("= Tables\n\n#let ike-marks = (\"Table 0.\", )\n#ike-entry(ike-marks, 0, \"Table 1.\", true)[Costs][#ike-page(<ike-b3>)]\n\n"), typst);
         assertTrue(typst.contains("= 1 Intro <ike-b1>\n\n"), "a heading an entry names carries its label");
         assertTrue(typst.contains(TypstWriter.PAGE_BREAK + "= Contents\n"), "each list opens a page: the title page stands alone");
         assertTrue(typst.contains(TypstWriter.PAGE_BREAK + "= Tables\n"), typst);
-        assertTrue(typst.contains(TypstWriter.PAGE_BREAK + "= 1 Intro <ike-b1>\n"), "and so does the body after the last list");
+        assertTrue(typst.contains(TypstWriter.PAGE_BREAK + TypstWriter.BODY_START + "= 1 Intro <ike-b1>\n"), "and so does the body after the last list");
         assertEquals(3, typst.split(java.util.regex.Pattern.quote(TypstWriter.PAGE_BREAK), -1).length - 1, "no other page break");
-        assertTrue(TypstWriter.ENTRY_HELPERS.contains("#body#h(1em)#box(width: 1fr"), "a gap of an em before the leader, which Typst breaks the line at when the number has no room");
-        assertTrue(TypstWriter.ENTRY_HELPERS.contains("#set par(justify: false)"), "an entry's lines are ragged");
-        assertEquals(1, TypstWriter.ENTRY_GAP, "the pages keep the same gap");
+        assertTrue(TypstWriter.ENTRY_HELPERS.contains("grid(columns: (columns.at(depth), 1fr, calc.max(measure[000].width, measure(page).width)),"),
+                "the mark and the page number have columns of their own: the number cannot wrap away from its entry");
+        assertTrue(TypstWriter.ENTRY_HELPERS.contains("let columns = marks.map(m => if m == \"\" { 0pt } else { measure(m).width + 0.75em.to-absolute() })"),
+                "a depth's column of marks is as wide as its widest mark and a gap; a depth with no mark has none");
+        assertTrue(TypstWriter.ENTRY_HELPERS.contains("let edge = columns.slice(0, depth).map(c => if c > 0pt { c } else { 1em.to-absolute() }).sum(default: 0pt)"),
+                "a depth begins where the text of the depth above does, or a step in under a depth with no marks");
+        assertTrue(TypstWriter.ENTRY_HELPERS.contains("align: (left + top, left + top, bottom + right)"), "the number stands on the text's last line, against the right edge");
+        assertTrue(TypstWriter.ENTRY_HELPERS.contains("if mark == none [] else [#mark],"), "an entry with no mark leaves its column empty: its text begins where the others' do");
+        assertTrue(TypstWriter.ENTRY_HELPERS.contains("box(width: 100% - 0.4em - 2em, par(justify: false,"),
+                "an entry's lines are ragged, in a measure that keeps the gap and the least leader clear");
+        assertTrue(TypstWriter.ENTRY_HELPERS.contains("text(hyphenate: false)"), "an entry is never hyphenated");
+        assertTrue(TypstWriter.ENTRY_HELPERS.contains("move(dx: 0.4em, box(width: 100% + 2em, align(right, repeat(justify: false, gap: 0.15em)[.])))"),
+                "the leader runs on over the room the text kept clear, its dots a fixed step apart from its right edge");
+        assertFalse(TypstWriter.ENTRY_HELPERS.matches("(?s).*\\b(MARK_GAP|DOT_GAP|GAP|LEAD|GUTTER|STEP|ROOM)\\b.*"), "every length is written out");
+        assertEquals(List.of(0.4, 2.0, 0.4, 0.15, 0.75, 1.0), List.of(TypstWriter.ENTRY_GAP, TypstWriter.ENTRY_LEAD, TypstWriter.ENTRY_GUTTER,
+                TypstWriter.ENTRY_DOT_GAP, TypstWriter.ENTRY_MARK_GAP, TypstWriter.ENTRY_STEP), "the pages keep the same lengths");
         assertTrue(typst.contains("== 1.1 Deeper <ike-b2>\n\n"), typst);
         assertTrue(typst.contains("=== Unlisted\n\n"), "a heading no entry names carries none");
         assertTrue(typst.contains("  kind: table,\n) <ike-b3>\n\n"), "a table an entry names carries its label");
@@ -537,20 +626,105 @@ class TypstWriterTest {
     }
 
     @Test
+    void aDocumentWithFrontMatterNumbersItInRomanShowsNoNumberOnItsTitlePageAndStartsTheBodyAtOne() {
+        String typst = TypstWriter.write(listed(), TypstWriter.PageSetup.DEFAULT);
+
+        String helper = TypstWriter.folioHelper(true);
+        assertTrue(typst.contains(helper), "the folio is reckoned by a helper of the document's own");
+        assertTrue(typst.indexOf(helper) < typst.indexOf("#set page("), "defined before the page setup that draws it");
+        assertTrue(helper.contains("if at > 1 { numbering(\"i\", at) } else { \"\" }"), "roman before the body, and none on the first page, the title page");
+        assertTrue(helper.contains("numbering(\"1\", at - body.first().location().page() + 1)"), "arabic from 1 at the body's first page");
+        assertTrue(helper.contains("query(<ike-body>)"), "counted from where the body begins");
+        assertTrue(helper.contains("[#metadata(folio) <ike-folio>#folio]"), "each page's folio can be asked of Typst");
+        assertTrue(typst.contains("footer: context align(center, text(size: 0.8em, fill: luma(70), ike-folio)),"), "the footer draws the folio");
+        assertFalse(typst.contains("counter(page).display("), "no page prints the counter's own number");
+
+        assertEquals("#metadata(none) <ike-body>\n#counter(page).update(1)\n", TypstWriter.BODY_START);
+        assertEquals(1, typst.split(java.util.regex.Pattern.quote(TypstWriter.BODY_START), -1).length - 1, "the body is opened once");
+        assertTrue(typst.indexOf("= Tables") < typst.indexOf(TypstWriter.BODY_START) && typst.indexOf(TypstWriter.BODY_START) < typst.indexOf("= 1 Intro"),
+                "after the last list and before the body's first block, so an entry's page is its target's folio");
+    }
+
+    @Test
+    void theFolioInTheRunningHeadsBandIsTheSameFolio() {
+        TypstWriter.PageSetup header = new TypstWriter.PageSetup("us-letter", false, 72, 72, 72, 72, List.of("Noto Serif"), List.of("Noto Sans Mono"), 12, true, TypstWriter.Folio.HEADER_RIGHT);
+        String typst = TypstWriter.write(listed(), header);
+        assertTrue(typst.contains("#h(1em) #current], ike-folio)"), typst);
+        assertTrue(typst.contains("footer: context if ike-opening() { align(center, text(size: 0.8em, fill: luma(70), ike-folio)) },"),
+                "only a page that opens something has its folio at the foot");
+
+        TypstWriter.PageSetup alone = new TypstWriter.PageSetup("us-letter", false, 72, 72, 72, 72, List.of("Noto Serif"), List.of("Noto Sans Mono"), 12, false, TypstWriter.Folio.HEADER_RIGHT);
+        assertTrue(TypstWriter.write(listed(), alone).contains("    align(right, ike-folio)\n"));
+
+        TypstWriter.PageSetup none = new TypstWriter.PageSetup("us-letter", false, 72, 72, 72, 72, List.of("Noto Serif"), List.of("Noto Sans Mono"), 12, true, TypstWriter.Folio.NONE);
+        String unnumbered = TypstWriter.write(listed(), none);
+        assertFalse(unnumbered.contains("ike-folio"), "no folio asked for, no helper");
+        assertTrue(unnumbered.contains(TypstWriter.BODY_START), "the entries' pages are still the body's");
+    }
+
+    @Test
+    void frontMatterWithNoTitleShowsARomanNumberOnItsFirstPage() {
+        DocumentModel untitled = new DocumentModel("", listed().blocks(), listed().lists());
+        String typst = TypstWriter.write(untitled, TypstWriter.PageSetup.DEFAULT);
+
+        assertFalse(untitled.titlePage());
+        assertTrue(typst.contains(TypstWriter.folioHelper(false)), "the first page is a list's, not a title page");
+        assertTrue(TypstWriter.folioHelper(false).contains("    numbering(\"i\", at)\n"));
+        assertFalse(TypstWriter.folioHelper(false).contains("at > 1"));
+    }
+
+    @Test
+    void aDocumentWithNoFrontMatterIsWrittenAsItAlwaysWas() {
+        DocumentModel plain = new DocumentModel("Plain", List.of(new Heading(1, "One"), new DocumentModel.Paragraph("Prose.")));
+        String typst = TypstWriter.write(plain, TypstWriter.PageSetup.DEFAULT);
+
+        assertFalse(plain.frontMatter());
+        assertFalse(plain.titlePage());
+        assertTrue(typst.contains("footer: context align(center, text(size: 0.8em, fill: luma(70), counter(page).display(\"1\"))),"), "arabic from the first page");
+        assertFalse(typst.contains("ike-folio"), typst);
+        assertFalse(typst.contains("ike-body"), "no body to open: the title stands at the top of page 1");
+        assertFalse(typst.contains("counter(page).update"));
+        assertFalse(typst.contains("#pagebreak"));
+        assertEquals(TypstWriter.preamble("Plain", TypstWriter.PageSetup.DEFAULT), TypstWriter.preamble("Plain", TypstWriter.PageSetup.DEFAULT, false, false));
+
+        DocumentModel asked = new DocumentModel("Plain", plain.blocks(), new DocumentModel.Lists(true, 2, true, true));
+        assertFalse(asked.frontMatter(), "a header that asks for lists with nothing to list has no front matter");
+        assertEquals(typst, TypstWriter.write(asked, TypstWriter.PageSetup.DEFAULT));
+        assertTrue(listed().frontMatter());
+        assertTrue(listed().titlePage());
+    }
+
+    @Test
+    void anEntrysShortLastWordIsWrittenTiedToTheWordBeforeIt() {
+        DocumentModel model = new DocumentModel("Tied", List.of(
+                new DocumentModel.FrontList(DocumentModel.FrontList.Kind.CONTENTS, List.of(
+                        new DocumentModel.Entry("1 The Test the FDA Did Not *Ask* For", 0, "b1"), new DocumentModel.Entry("2 What Happens to Patients", 0, "b2"))),
+                new Heading(1, "1 The Test the FDA Did Not *Ask* For", "b1"),
+                new Heading(1, "2 What Happens to Patients", "b2")),
+                new DocumentModel.Lists(true, 2, false, false));
+
+        String typst = TypstWriter.write(model, TypstWriter.PageSetup.DEFAULT);
+
+        assertTrue(typst.contains("#ike-entry(ike-marks, 0, \"1\", true)[The Test the FDA Did Not #strong[Ask];\u00a0For][#ike-page(<ike-b1>)]\n"),
+                "a no-break space before the short last word, after a span as after plain text: " + typst);
+        assertTrue(typst.contains("#ike-entry(ike-marks, 0, \"2\", true)[What Happens to Patients][#ike-page(<ike-b2>)]\n"), "a longer last word is left alone");
+        assertTrue(typst.contains("= 1 The Test the FDA Did Not #strong[Ask]; For <ike-b1>\n"), "the heading itself is not tied");
+    }
+
+    @Test
     void theMeasuredFormPrintsTheEntriesPagesAsFoundAndNoLeaderDots() {
         DocumentModel numbered = listed().withEntryPages(Map.of("b1", 2, "b2", 3, "b3", 4));
         String words = TypstWriter.write(numbered, TypstWriter.PageSetup.DEFAULT, TypstWriter.Labels.WORDS);
 
-        String tail = "#metadata(" + TypstOracle.TAIL + ")<" + TypstWriter.TAIL_LABEL + ">";
-        assertTrue(words.contains("#ike-entry(0, [])[1 Intro][#ike-page-room([2])" + tail + "]\n#ike-entry(1, [])[1.1 Deeper][#ike-page-room([3])" + tail + "]\n"), words);
-        assertTrue(words.contains("#ike-entry(0, [])[Table 1. Costs][#ike-page-room([4])" + tail + "]\n"), words);
-        assertTrue(TypstOracle.QUERY.contains("<" + TypstWriter.TAIL_LABEL + ">"), "the oracle asks where each tail ended");
-        assertFalse(TypstWriter.write(numbered, TypstWriter.PageSetup.DEFAULT).contains(TypstWriter.TAIL_LABEL), "the printed form carries no tail label");
-        assertTrue(words.contains(TypstWriter.PAGE_BREAK + "#metadata("), "the measured form breaks the pages where the printed one does, before the block's label");
+        assertTrue(words.contains("#ike-entry(ike-marks, 0, \"1\", false)[Intro][#ike-page-room([2])]\n#ike-entry(ike-marks, 1, \"1.1\", false)[Deeper][#ike-page-room([3])]\n"), words);
+        assertTrue(words.contains("#ike-entry(ike-marks, 0, \"Table 1.\", false)[Costs][#ike-page-room([4])]\n"), words);
+        assertFalse(TypstWriter.write(numbered, TypstWriter.PageSetup.DEFAULT).contains("ike-page-room(["), "the printed form asks the page counter");
+        assertTrue(words.contains(TypstWriter.PAGE_BREAK + "#metadata(1) <ike-block>\n= Contents"), "the measured form breaks the pages where the printed one does, before the block's label");
+        assertTrue(words.contains(TypstWriter.PAGE_BREAK + TypstWriter.BODY_START + "#metadata(3) <ike-block>\n"), "and opens the body where the printed one does");
         assertFalse(words.contains("#ike-page(<"), "a measured source holds the room of the number the last pass found, and no digits the oracle could read");
         assertTrue(words.contains("= 1 Intro <ike-b1>"), "the targets keep their labels, so the printed form reads the same document");
         String blocks = TypstWriter.write(numbered, TypstWriter.PageSetup.DEFAULT, TypstWriter.Labels.BLOCKS);
-        assertTrue(blocks.contains("[1 Intro][#ike-page(<ike-b1>)]"), "the block-labelled form is the printed one, with its leader and Typst's own page");
+        assertTrue(blocks.contains("\"1\", true)[Intro][#ike-page(<ike-b1>)]"), "the block-labelled form is the printed one, with its leader and Typst's own page");
         assertEquals(List.of(2, 3, 4), numbered.entries().stream().map(DocumentModel.Entry::page).toList());
         assertEquals(List.of(0, 0, 0), listed().entries().stream().map(DocumentModel.Entry::page).toList(), "unknown until a pass finds them");
     }

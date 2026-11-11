@@ -27,6 +27,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -89,9 +90,91 @@ class GreedyFxOracleTest {
         assertEquals(2, layout.pageOf(3), "the body opens a page after the lists");
         assertEquals(72 + 18 * LayoutOracle.CAP_HEIGHT, layout.ofUnit(1).getFirst().baseline(), 1e-6, "at the top of its page, with no space above");
 
+        assertEquals(Folios.NONE, layout.folios(), "no unit opens a body: the pages are numbered from 1");
+
         var alone = oracle.layout(List.of(contents, entry), geometry);
         assertEquals(1, alone.pages(), "a page already empty is not left blank");
         assertEquals(0, alone.pageOf(1));
+    }
+
+    @Test
+    void anEntrysMarkStandsInItsColumnAndItsTextTurnsOverShortOfThePageNumbersRoom() {
+        LayoutOracle.Geometry geometry = new LayoutOracle.Geometry(612, 792, 72, 72, 468, 648);
+        Unit outer = new Unit(0, 0, Kind.ENTRY, "4 Clearing", 12, false, 0, 13.2, 0, false);
+        Unit entry = new Unit(1, 0, Kind.ENTRY, "4.1 " + "characterization ".repeat(12).strip(), 12, false, 12, 7.8, 0, false);
+        Unit plain = new Unit(2, 0, Kind.ENTRY, "Thanks", 12, false, 12, 7.8, 0, false);
+        List<Unit> units = List.of(outer, entry, plain);
+        FrontLists.Place place = FrontLists.places(units, oracle::width).get(1);
+        assertEquals(oracle.width("0", outer) + 12 * TypstWriter.ENTRY_MARK_GAP, place.left(), 1e-9, "under the outer depth's text");
+        assertEquals(oracle.width("0.0", entry) + 12 * TypstWriter.ENTRY_MARK_GAP, place.column(), 1e-9);
+        double edge = 72 + 468 - FrontLists.reserve(entry, oracle::width);
+
+        var layout = oracle.layout(units, geometry);
+        var lines = layout.ofUnit(1);
+
+        assertEquals(new LayoutOracle.Line(1, 0, 72 + place.left(), lines.getFirst().baseline(), 0, 3, false), lines.getFirst(), "the mark is a line of its own, in its column");
+        assertTrue(lines.size() >= 4, lines.toString());
+        assertEquals(4, lines.get(1).from(), "the text begins after the mark and its space");
+        assertEquals(lines.getFirst().baseline(), lines.get(1).baseline(), "on the mark's baseline");
+        assertEquals(entry.text().length(), lines.getLast().to(), "the lines cover the entry");
+        for (int k = 1; k < lines.size(); k++) {
+            LayoutOracle.Line line = lines.get(k);
+            assertEquals(72 + place.text(), line.x(), 1e-6, "every line of the text stands after the column of marks: line " + k);
+            assertFalse(line.hyphenated(), "an entry is never hyphenated");
+            double end = line.x() + oracle.width(line.text(entry), entry);
+            assertTrue(end <= edge + 1e-6, "line " + k + " keeps the leader's and the number's room clear: " + end + " > " + edge);
+            if (k + 1 < lines.size()) {
+                String next = entry.text().substring(lines.get(k + 1).from()).split(" ")[0];
+                assertTrue(end + oracle.width(" " + next, entry) > edge, "line " + k + " takes every word that fits");
+            }
+        }
+        assertEquals(lines.get(1).baseline() + 12 * LayoutOracle.PITCH, lines.get(2).baseline(), 1e-6);
+        assertEquals(List.of(new LayoutOracle.Line(2, 0, 72 + place.text(), layout.ofUnit(2).getFirst().baseline(), 0, 6, false)), layout.ofUnit(2),
+                "an entry with no mark is one line, begun where its depth's texts begin");
+        assertEquals(List.of(0, 2), layout.ofUnit(0).stream().map(LayoutOracle.Line::from).toList(), "a short entry is its mark and its text");
+    }
+
+    @Test
+    void anEntrysShortLastWordTurnsOverWithTheWordBeforeIt() {
+        LayoutOracle.Geometry geometry = new LayoutOracle.Geometry(612, 792, 72, 72, 468, 648);
+        Unit probe = new Unit(0, 0, Kind.ENTRY, "1 x", 12, false, 0, 13.2, 0, false);
+        double room = 468 - FrontLists.places(List.of(probe), oracle::width).get(0).text() - FrontLists.reserve(probe, oracle::width);
+        // An entry whose words but the last fill its text's measure: untied, "it" alone would turn over.
+        StringBuilder words = new StringBuilder("Asking");
+        while (oracle.width(words + " again and", probe) <= room) {
+            words.append(" again");
+        }
+        while (oracle.width(words + " and it", probe) <= room) {
+            words.append('n');                                    // a letter is narrower than the last word: the room closes without overflowing
+        }
+        String filled = words + " and";
+        assertTrue(oracle.width(filled, probe) <= room && oracle.width(filled + " it", probe) > room, "the last word alone has no room");
+        Unit entry = new Unit(0, 0, Kind.ENTRY, "1 " + filled + " it", 12, false, 0, 13.2, 0, false);
+        Unit longer = new Unit(0, 0, Kind.ENTRY, "1 " + filled + " items", 12, false, 0, 13.2, 0, false);
+
+        var tied = oracle.layout(List.of(entry), geometry).ofUnit(0);
+        var untied = oracle.layout(List.of(longer), geometry).ofUnit(0);
+
+        assertEquals(3, tied.size(), "the mark, and two lines of text");
+        assertEquals("and it", tied.getLast().text(entry), "the short word takes the word before it down with it");
+        assertEquals(3, untied.size());
+        assertEquals("items", untied.getLast().text(longer), "a longer last word turns over by itself");
+    }
+
+    @Test
+    void theLayoutSaysWhereTheBodyBeginsSoThePagesCanBeNumbered() {
+        LayoutOracle.Geometry geometry = new LayoutOracle.Geometry(612, 792, 72, 72, 468, 648);
+        Unit title = new Unit(0, 0, Kind.TITLE, "Title", 21.6, true, 0, 0, 14.4, false);
+        Unit contents = new Unit(1, 1, Kind.HEADING, "Contents", 18, true, 0, 16.2, 9, true).withPageBefore(true);
+        Unit entry = new Unit(2, 1, Kind.ENTRY, "1 One", 12, false, 0, 13.2, 0, false);
+        Unit body = new Unit(3, 2, Kind.HEADING, "1 One", 18, true, 0, 16.2, 9, true).withPageBefore(true).withOpensBody(true);
+        Unit text = new Unit(4, 2, Kind.PARAGRAPH, "The body.", 12, false, 0, 13.2, 0, false);
+
+        var layout = oracle.layout(List.of(title, contents, entry, body, text), geometry);
+
+        assertEquals(new Folios(2, true), layout.folios(), "a title page and a page of contents, then the body");
+        assertEquals(List.of("", "ii", "1"), java.util.stream.IntStream.range(0, layout.pages()).mapToObj(layout.folios()::label).toList());
+        assertEquals(java.util.Map.of("a", 1), FrontLists.pages(layout, java.util.Map.of("a", 3)), "the entry for the first heading prints 1");
     }
 
     @Test

@@ -37,9 +37,11 @@ public interface LayoutOracle {
     /**
      * What kind of unit, for the spacing and keep rules a greedy oracle applies. An
      * {@link #ENTRY} is a front list's entry: prose that never splits over a page, set a leading
-     * apart from the next, its target's page drawn after a leader on its last line.
+     * apart from the next, its lines after the first hung under the text after its mark, its
+     * target's page in a column of its own after a leader on its last line ({@link FrontLists#reserve}).
+     * A {@link #BYLINE} is the author or the date beneath the title: centered, ragged, never hyphenated.
      */
-    enum Kind { TITLE, HEADING, PARAGRAPH, LIST_ITEM, VERBATIM, TABLE_ROW, FIGURE, FOOTNOTE, ENTRY, OTHER }
+    enum Kind { TITLE, BYLINE, HEADING, PARAGRAPH, LIST_ITEM, VERBATIM, TABLE_ROW, FIGURE, FOOTNOTE, ENTRY, OTHER }
 
     /** The one word a {@link Kind#FIGURE} unit reads as: Typst labels it, and its line is the figure's. */
     String FIGURE_WORD = "figure";
@@ -101,10 +103,15 @@ public interface LayoutOracle {
      * @param columns      a {@link Kind#TABLE_ROW} unit's table's relative column widths; empty for columns of one width
      * @param pageBefore   whether the unit opens a page: a front list's title, and the body's first unit after the lists, as
      *                     the Typst writer's weak page break sets them — a page already empty is not left blank
+     * @param opensBody    whether the unit is the body's first after the front matter: its page is the body's page 1
+     *                     ({@link Folios}); no unit of a document with no front matter opens a body
+     * @param opensChapter whether the unit opens a chapter: the document's title, a part's or a top-level section's
+     *                     heading, a front list's title. The page it begins on carries no running head ({@link RunningHeads})
      */
     record Unit(int index, int block, Kind kind, String text, double fontSize, boolean bold, double indent, double spaceAbove,
                 double spaceBelow, boolean keepWithNext, double figureWidth, double figureHeight, List<InlineText.Run> runs,
-                List<InlineText.Mark> marks, int note, List<Integer> columns, boolean pageBefore) {
+                List<InlineText.Mark> marks, int note, List<Integer> columns, boolean pageBefore, boolean opensBody,
+                boolean opensChapter) {
         public Unit {
             Objects.requireNonNull(kind, "kind is null");
             text = text == null ? "" : text;
@@ -116,7 +123,7 @@ public interface LayoutOracle {
         /** A figure, or a unit of one style. */
         public Unit(int index, int block, Kind kind, String text, double fontSize, boolean bold, double indent, double spaceAbove,
                     double spaceBelow, boolean keepWithNext, double figureWidth, double figureHeight) {
-            this(index, block, kind, text, fontSize, bold, indent, spaceAbove, spaceBelow, keepWithNext, figureWidth, figureHeight, List.of(), List.of(), 0, List.of(), false);
+            this(index, block, kind, text, fontSize, bold, indent, spaceAbove, spaceBelow, keepWithNext, figureWidth, figureHeight, List.of(), List.of(), 0, List.of(), false, false, false);
         }
 
         /** A unit of text. */
@@ -127,17 +134,27 @@ public interface LayoutOracle {
 
         /** @return this unit with inline spans */
         public Unit withInline(List<InlineText.Run> styled, List<InlineText.Mark> marked, int number) {
-            return new Unit(index, block, kind, text, fontSize, bold, indent, spaceAbove, spaceBelow, keepWithNext, figureWidth, figureHeight, styled, marked, number, columns, pageBefore);
+            return new Unit(index, block, kind, text, fontSize, bold, indent, spaceAbove, spaceBelow, keepWithNext, figureWidth, figureHeight, styled, marked, number, columns, pageBefore, opensBody, opensChapter);
         }
 
         /** @return this unit with its table's relative column widths */
         public Unit withColumns(List<Integer> widths) {
-            return new Unit(index, block, kind, text, fontSize, bold, indent, spaceAbove, spaceBelow, keepWithNext, figureWidth, figureHeight, runs, marks, note, widths, pageBefore);
+            return new Unit(index, block, kind, text, fontSize, bold, indent, spaceAbove, spaceBelow, keepWithNext, figureWidth, figureHeight, runs, marks, note, widths, pageBefore, opensBody, opensChapter);
         }
 
         /** @return this unit opening a page, or not */
         public Unit withPageBefore(boolean opens) {
-            return new Unit(index, block, kind, text, fontSize, bold, indent, spaceAbove, spaceBelow, keepWithNext, figureWidth, figureHeight, runs, marks, note, columns, opens);
+            return new Unit(index, block, kind, text, fontSize, bold, indent, spaceAbove, spaceBelow, keepWithNext, figureWidth, figureHeight, runs, marks, note, columns, opens, opensBody, opensChapter);
+        }
+
+        /** @return this unit opening the body, or not */
+        public Unit withOpensBody(boolean opens) {
+            return new Unit(index, block, kind, text, fontSize, bold, indent, spaceAbove, spaceBelow, keepWithNext, figureWidth, figureHeight, runs, marks, note, columns, pageBefore, opens, opensChapter);
+        }
+
+        /** @return this unit opening a chapter, or not */
+        public Unit withOpensChapter(boolean opens) {
+            return new Unit(index, block, kind, text, fontSize, bold, indent, spaceAbove, spaceBelow, keepWithNext, figureWidth, figureHeight, runs, marks, note, columns, pageBefore, opensBody, opens);
         }
 
         /** @return the styled run holding a character, or {@code null} where the text is plain */
@@ -194,16 +211,6 @@ public interface LayoutOracle {
      */
     record Line(int unit, int page, double x, double baseline, int from, int to, boolean hyphenated) {
 
-        /**
-         * @return whether the line is a front list entry's tail — its leader and page, which the
-         *         Typst oracle reads from the measured source: an empty range at the text's end, at
-         *         the tail's baseline, the text's last line's or a line of its own under it. The
-         *         greedy oracle gives none: the pages then place the tail by the writer's rule.
-         */
-        public boolean tail(Unit of) {
-            return of.kind() == Kind.ENTRY && from >= of.text().length() && to == from;
-        }
-
         /** @return the line's characters of the unit's text, with the hyphen when the oracle broke a word */
         public String text(Unit of) {
             String t = of.text();
@@ -243,12 +250,19 @@ public interface LayoutOracle {
      * @param exact  whether the answer is Typst's own (the second pass) rather than a greedy estimate
      * @param millis how long the oracle took
      * @param notes  what the oracle could not do exactly, one per line; empty when nothing
+     * @param folios the page numbers the pages print: where the body begins, and whether a title page stands before it
      */
-    record Layout(int pages, List<Line> lines, boolean exact, long millis, List<String> notes) {
+    record Layout(int pages, List<Line> lines, boolean exact, long millis, List<String> notes, Folios folios) {
 
         public Layout {
             lines = List.copyOf(lines);
             notes = List.copyOf(notes);
+            Objects.requireNonNull(folios, "folios is null");
+        }
+
+        /** A layout of a document with no front matter, numbered in arabic from 1. */
+        public Layout(int pages, List<Line> lines, boolean exact, long millis, List<String> notes) {
+            this(pages, lines, exact, millis, notes, Folios.NONE);
         }
 
         /** @return the lines on a page, in order */

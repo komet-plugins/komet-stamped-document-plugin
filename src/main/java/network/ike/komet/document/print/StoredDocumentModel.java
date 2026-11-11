@@ -241,7 +241,149 @@ public final class StoredDocumentModel {
         // the lists stand at the front, after the title, as the printed document and the pages have them
         List<DocumentModel.Block> blocks = new ArrayList<>(figures.frontLists(document, lists));
         String title = new StoredDocumentModel(document, 0, Map.copyOf(includes), figures).read(blocks, true);
-        return new DocumentModel(title, blocks, lists);
+        List<StoredDocument> all = new ArrayList<>();
+        all.add(document);
+        includes.values().forEach(child -> all.add(child.document()));
+        return new DocumentModel(title, blocks, lists, byline(document, all));
+    }
+
+    private static final Pattern AUTHOR = Pattern.compile("^:author:\\s*(.*)$");
+    private static final Pattern AUTHORS = Pattern.compile("^:authors:\\s*(.*)$");
+    private static final Pattern REVDATE = Pattern.compile("^:revdate:\\s*(.*)$");
+    /** An AsciiDoc revision line: a version, then the date after a comma, then a remark after a colon; or a date alone. */
+    private static final Pattern REVISION_LINE = Pattern.compile("^v?\\d[\\w.\\-]*(?:,\\s*([^:]+))?(?::.*)?$");
+    private static final Pattern ISO_DATE = Pattern.compile("^\\d{4}-\\d{2}-\\d{2}$");
+    /** How a date prints beneath the title: the month spelled out, as a title page has it. */
+    private static final java.time.format.DateTimeFormatter DATE = java.time.format.DateTimeFormatter.ofPattern("MMMM d, yyyy", java.util.Locale.US);
+
+    /**
+     * Where a document's header names its author and date, and what it names.
+     *
+     * @param authorLine the line that names the author ({@code :author:}, {@code :authors:}, or the author line under the title), or null
+     * @param author     the author, or the authors joined as one line ("A, B and C"), empty for none
+     * @param dateLine   the line that names the date ({@code :revdate:}, or the revision line), or null
+     * @param date       the date as the header names it, empty for none
+     */
+    public record Header(StoredLine authorLine, String author, StoredLine dateLine, String date) { }
+
+    /**
+     * The author and date a document's header names. The author is {@code :author:} or
+     * {@code :authors:}, else the author line directly under the title, its addresses dropped;
+     * authors separated by {@code ;} are joined as one line. The date is {@code :revdate:}, else
+     * the date of the revision line under the author line.
+     *
+     * @param document the host document
+     * @return what the header names
+     */
+    public static Header header(StoredDocument document) {
+        StoredLine authorLine = null;
+        String author = "";
+        StoredLine dateLine = null;
+        String date = "";
+        List<StoredLine> lines = document.lines();
+        for (StoredLine line : lines) {
+            String text = line.text().strip();
+            Matcher m;
+            if (authorLine == null && ((m = AUTHOR.matcher(text)).matches() || (m = AUTHORS.matcher(text)).matches())) {
+                authorLine = line;
+                author = authors(m.group(1));
+            } else if (dateLine == null && (m = REVDATE.matcher(text)).matches()) {
+                dateLine = line;
+                date = m.group(1).strip();
+            }
+        }
+        // the implicit lines: the author line and the revision line directly under the title, in the header
+        for (int i = 0; i < lines.size(); i++) {
+            if (!lines.get(i).text().startsWith("= ")) {
+                continue;
+            }
+            int at = i + 1;
+            if (at < lines.size() && implicit(lines.get(at).text())) {
+                if (authorLine == null) {
+                    authorLine = lines.get(at);
+                    author = authors(lines.get(at).text().replaceAll("<[^>]*>", ""));
+                }
+                at++;
+                if (at < lines.size() && implicit(lines.get(at).text())) {
+                    Matcher revision = REVISION_LINE.matcher(lines.get(at).text().strip());
+                    if (dateLine == null && revision.matches()) {
+                        dateLine = lines.get(at);
+                        date = revision.group(1) == null ? lines.get(at).text().strip() : revision.group(1).strip();
+                    }
+                }
+            }
+            break;
+        }
+        return new Header(authorLine, author, dateLine, date);
+    }
+
+    /** Whether a header line is an implicit one, an author or a revision line: not blank, not an attribute entry, a comment or a block. */
+    private static boolean implicit(String text) {
+        String t = text.strip();
+        return !t.isEmpty() && !t.startsWith(":") && !t.startsWith("//") && !t.startsWith("[") && !t.startsWith("include::")
+                && !t.startsWith("=") && !t.startsWith("+") && !t.startsWith(".");
+    }
+
+    /** Authors separated by semicolons, joined as one line: "A", "A and B", "A, B and C". */
+    static String authors(String value) {
+        List<String> names = new ArrayList<>();
+        for (String name : value.split(";")) {
+            if (!name.isBlank()) {
+                names.add(name.strip().replaceAll("\\s+", " "));
+            }
+        }
+        if (names.size() <= 1) {
+            return names.isEmpty() ? "" : names.getFirst();
+        }
+        return String.join(", ", names.subList(0, names.size() - 1)) + " and " + names.getLast();
+    }
+
+    /**
+     * What stands beneath a document's title: the author its header names, and the date — the
+     * header's, when it names one, else the day of the newest commit that introduced a line the
+     * document or anything it includes still reads: the day its text was last written. Only the
+     * STAMP that introduced a line counts, as in the Reading view's date margin; a line's later
+     * versions may be the store's own upkeep, such as a store repaired when it opens, which
+     * dated the regulatory book the day it was opened (2026-11-10). An uncommitted change has no
+     * day yet, and is not counted. A header that names neither an author nor a date has
+     * nothing beneath its title: a topic is not dated for being committed.
+     *
+     * @param host      the host document
+     * @param documents the host and every document it includes
+     * @return the byline, {@link DocumentModel.Byline#NONE} for a header that names no author and no date
+     */
+    public static DocumentModel.Byline byline(StoredDocument host, java.util.Collection<StoredDocument> documents) {
+        Header header = header(host);
+        if (header.author().isEmpty() && header.date().isEmpty()) {
+            return DocumentModel.Byline.NONE;
+        }
+        String date = header.date();
+        if (ISO_DATE.matcher(date).matches()) {
+            date = java.time.LocalDate.parse(date).format(DATE);
+        } else if (date.isEmpty()) {
+            long newest = committed(documents);
+            date = newest > 0 ? date(newest) : "";
+        }
+        return new DocumentModel.Byline(header.author(), date);
+    }
+
+    /** @return a time as the date a title page prints: the month spelled out, in this machine's time zone */
+    public static String date(long epochMillis) {
+        return java.time.Instant.ofEpochMilli(epochMillis).atZone(java.time.ZoneId.systemDefault()).toLocalDate().format(DATE);
+    }
+
+    /** @return the time of the newest commit that introduced a line of the documents, 0 for none */
+    public static long committed(java.util.Collection<StoredDocument> documents) {
+        long newest = 0;
+        for (StoredDocument document : documents) {
+            for (StoredLine line : document.lines()) {
+                var stamp = line.introduced();
+                if (stamp != null && stamp.time() != Long.MAX_VALUE && stamp.time() != Long.MIN_VALUE) {
+                    newest = Math.max(newest, stamp.time());
+                }
+            }
+        }
+        return newest;
     }
 
     private static final Pattern TOC_LEVELS = Pattern.compile("^:toclevels:\\s*(\\d+)\\s*$");
