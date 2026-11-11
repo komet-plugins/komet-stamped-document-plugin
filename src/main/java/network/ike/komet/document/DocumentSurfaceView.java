@@ -897,6 +897,7 @@ public final class DocumentSurfaceView {
         buildSource(shown);
         folding.clear();
         folding.restore(foldKeys, key -> areaIndexOf(key), this::levelAt, areas.size());
+        drawLeftOut();
         stack();
         if (place != null && place.blockIndex() >= 0 && place.blockIndex() < surface.blockCount()) {
             surface.restoreViewpoint(new DocumentSurface.Viewpoint(place.blockIndex(), place.fraction(), null));
@@ -1022,10 +1023,13 @@ public final class DocumentSurfaceView {
         return own;
     }
 
-    /** Marks an area as a passage a conditional leaves out: dimmed, and under a label where the passage begins. */
+    /**
+     * Marks an area as a passage a conditional leaves out, under a label where the passage begins.
+     * It is drawn faint once the document is built ({@link #drawLeftOut}), when everything the
+     * area stands with is in place: a table's rows, a picture, a title.
+     */
     private void leftOut(Area area, DocumentConditions.Condition condition) {
         area.leftOut = condition;
-        area.area.setOpacity(LEFT_OUT_OPACITY);
         area.holder.getStyleClass().add("stamped-document-left-out");
         int at = target.indexOf(area);
         Area before = at > 0 ? target.get(at - 1) : null;
@@ -1044,6 +1048,35 @@ public final class DocumentSurfaceView {
                     + (condition.member().path().isEmpty() ? "" : " of " + condition.member().fileName()))));
         }
         area.holder.getChildren().addFirst(label);
+    }
+
+    /** Draws every area a conditional leaves out faint, each with its label, if it has one, above all it stands with. */
+    private void drawLeftOut() {
+        for (Area area : areas) {
+            if (area.leftOut != null && area.holder != null) {
+                faint(area, LEFT_OUT_OPACITY);
+            }
+        }
+    }
+
+    /**
+     * Draws all an area stands with at a strength: its text, and a table row's grid, a picture, a
+     * block's title, its references; not the label that says the passage is left out, which is
+     * read at full strength and stands first, above a table's or a picture's title.
+     */
+    private static void faint(Area area, double opacity) {
+        Node label = null;
+        for (Node child : area.holder.getChildren()) {
+            if (child.getStyleClass().contains("stamped-document-left-out-label")) {
+                label = child;
+            } else {
+                child.setOpacity(opacity);
+            }
+        }
+        if (label != null && area.holder.getChildren().indexOf(label) > 0) {
+            area.holder.getChildren().remove(label);
+            area.holder.getChildren().addFirst(label);
+        }
     }
 
     /** Renders one member's blocks, or its lines as a ledger when the store holds no structure for it. */
@@ -5457,8 +5490,8 @@ public final class DocumentSurfaceView {
      * other parts faint, since their words are in the editor.
      */
     private void partsWhileEditing(Area area, boolean editing) {
-        if (area.leftOut != null && area.area != null) {
-            area.area.setOpacity(editing ? 1 : LEFT_OUT_OPACITY);
+        if (area.leftOut != null && area.holder != null) {
+            faint(area, editing ? 1 : LEFT_OUT_OPACITY);
         }
         if (area.parts == null) {
             return;
