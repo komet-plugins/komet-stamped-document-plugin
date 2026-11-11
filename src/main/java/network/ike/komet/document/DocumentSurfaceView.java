@@ -3191,6 +3191,11 @@ public final class DocumentSurfaceView {
         buildPages(theme);
         List<network.ike.komet.document.print.LayoutOracle.Unit> out = new ArrayList<>();
         double base = theme.baseFontSize();
+        // what the host's header asks for on its title page, read where its attributes have all been set, over the theme's
+        DocumentAttributes set = assembly == null || assembly.host().document().lines().isEmpty() ? DocumentAttributes.intrinsic()
+                : assembly.attributes(assembly.host(), assembly.host().document().lines().getLast().nid());
+        network.ike.komet.document.surface.print.settings.TitleSpacing titleSpacing =
+                network.ike.komet.document.surface.print.settings.TitleSpacing.asked(set::value).over(theme.titleSpacing());
         network.ike.komet.document.print.LayoutOracle.Kind previous = null;
         boolean afterFront = false;                               // the unit after the front lists, or after an abstract with no list, opens the body's first page
         boolean bodyOpened = false;
@@ -3245,6 +3250,14 @@ public final class DocumentSurfaceView {
                     kind == network.ike.komet.document.print.LayoutOracle.Kind.OTHER && blockKind == Block.Kind.TABLE);
             double above = spacing[0];
             double below = spacing[1];
+            // the title page's white space, as the writer's title block has it: the theme's, with what the header asks for
+            if (kind == network.ike.komet.document.print.LayoutOracle.Kind.BYLINE) {
+                above = previous == network.ike.komet.document.print.LayoutOracle.Kind.BYLINE ? titleSpacing.revision().in(base) : titleSpacing.authors().in(base);
+            }
+            if ((kind == network.ike.komet.document.print.LayoutOracle.Kind.TITLE || kind == network.ike.komet.document.print.LayoutOracle.Kind.BYLINE)
+                    && i + 1 < units.size() && units.get(i + 1).abstractPart) {
+                below = titleSpacing.abstractAbove().in(base);    // the last line of the title's block, with the abstract under it
+            }
             out.add(new network.ike.komet.document.print.LayoutOracle.Unit(i, area.modelOrdinal, kind, area.spec.plainText(), size, bold, indent,
                     above, below, kind == network.ike.komet.document.print.LayoutOracle.Kind.HEADING).withInline(area.spec.runs(), area.marks, 0).withColumns(area.columns)
                     .withPageBefore(opensPage).withOpensBody(opensBody)

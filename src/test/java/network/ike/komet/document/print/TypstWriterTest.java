@@ -114,10 +114,61 @@ class TypstWriterTest {
         assertEquals(new DocumentModel.Byline("Keith E. Campbell, MD, PhD", "November 10, 2026"), model.byline(), "an ISO date is spelled out");
         String typst = TypstWriter.write(model, TypstWriter.PageSetup.DEFAULT);
         assertTrue(typst.contains("#ike-title(\"A\u00A0Book\", author: [Keith E. Campbell, MD, PhD], date: [November 10, 2026])[A\u00A0Book]"), typst);
-        assertTrue(typst.contains("#let ike-title(words, body, author: none, date: none)"), typst);
-        assertTrue(typst.contains("block(above: 1.4em, below: 0pt, width: 100%, align(center, text(size: 1.2em, author)))"), "the author, centered and smaller");
+        assertTrue(typst.contains("#let ike-title(words, body, author: none, date: none, authors-gap: 2em, date-gap: 0.5em,"), typst);
+        assertTrue(typst.contains("block(above: authors-gap, below: 0pt, width: 100%, align(center, text(size: 1.2em, author)))"), "the author, centered and smaller");
         assertTrue(typst.contains("align(center, text(size: 1em, date))"), "the date beneath it");
-        assertTrue(typst.contains("if author != none { 0.5em } else { 1.4em }"), typst);
+        assertTrue(typst.contains("if author != none { date-gap } else { authors-gap }"), typst);
+    }
+
+    @Test
+    void theTitlePagesWhiteSpaceIsTheThemesUnlessTheHeaderAsksForItsOwn() {
+        String plain = """
+                = A Book
+                :author: Keith E. Campbell, MD, PhD
+                :revdate: 2026-11-10
+
+                [abstract]
+                What the book proposes, in one paragraph.
+
+                == Method
+
+                How it is done.
+                """;
+        DocumentModel model = StoredDocumentModel.of(StoredFixture.parse(plain));
+        assertEquals(network.ike.komet.document.surface.print.settings.TitleSpacing.NONE, model.spacing(), "a header that asks for nothing");
+        String typst = TypstWriter.write(model, TypstWriter.PageSetup.DEFAULT);
+        assertTrue(typst.contains("authors-gap: 2em, date-gap: 0.5em,\n    abstract: false, abstract-gap: 3em) = block(below: if abstract { abstract-gap } else { 1.2em }"),
+                "the theme's three spaces are the helper's own: " + typst.substring(typst.indexOf("#let ike-title"), typst.indexOf("#let ike-title") + 260));
+        assertTrue(typst.contains("date: [November 10, 2026], abstract: true)[A\u00A0Book]"), "an abstract under the title's block is set apart from it");
+
+        // Asciidoctor PDF's theme keys, written flat as attributes; the abstract's is this converter's own
+        DocumentModel asked = StoredDocumentModel.of(StoredFixture.parse(plain.replace(":revdate: 2026-11-10", """
+                :revdate: 2026-11-10
+                :title-page-authors-margin-top: 2.5em
+                :title-page-revision-margin-top: 6
+                :title-page-abstract-margin-top: 0.5in""")));
+        assertEquals(new network.ike.komet.document.surface.print.settings.TitleSpacing(
+                network.ike.komet.document.surface.print.settings.TitleSpacing.Measure.ems(2.5),
+                network.ike.komet.document.surface.print.settings.TitleSpacing.Measure.points(6),
+                network.ike.komet.document.surface.print.settings.TitleSpacing.Measure.points(36)), asked.spacing());
+        String own = TypstWriter.write(asked, TypstWriter.PageSetup.DEFAULT);
+        assertTrue(own.contains("date: [November 10, 2026], authors-gap: 2.5em, date-gap: 6pt, abstract: true, abstract-gap: 36pt)[A\u00A0Book]"), own);
+
+        // the pages' units keep the same white space
+        List<LayoutOracle.Unit> units = ModelUnits.of(asked, 12);
+        assertEquals(2.5 * 12, UnitSpacing.gap(units.get(0), units.get(1)), 1e-9, "above the author");
+        assertEquals(6, UnitSpacing.gap(units.get(1), units.get(2)), 1e-9, "above the date");
+        assertEquals(36, UnitSpacing.gap(units.get(2), units.get(3)), 1e-9, "above the abstract");
+        List<LayoutOracle.Unit> themed = ModelUnits.of(model, 12);
+        assertEquals(24, UnitSpacing.gap(themed.get(0), themed.get(1)), 1e-9);
+        assertEquals(6, UnitSpacing.gap(themed.get(1), themed.get(2)), 1e-9);
+        assertEquals(36, UnitSpacing.gap(themed.get(2), themed.get(3)), 1e-9, "three ems of white before the abstract");
+
+        // a theme of its own: the helper's spaces are the page's
+        TypstWriter.PageSetup wide = new TypstWriter.PageSetup("us-letter", false, 72, 72, 72, 72, List.of("Serif"), List.of("Mono"), 12, true, TypstWriter.Folio.FOOTER_CENTER,
+                new network.ike.komet.document.surface.print.settings.TitleSpacing(
+                        network.ike.komet.document.surface.print.settings.TitleSpacing.Measure.ems(4), null, null));
+        assertTrue(TypstWriter.write(model, wide).contains("authors-gap: 4em, date-gap: 0.5em,"), "what a theme leaves out is the standard");
     }
 
     @Test

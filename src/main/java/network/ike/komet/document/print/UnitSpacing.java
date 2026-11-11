@@ -55,10 +55,26 @@ public final class UnitSpacing {
      * @return {@code {above, below}} in points; a positive {@code below} is a weak spacing of the unit's own
      */
     public static double[] of(Kind kind, Kind previous, double size, double base, boolean caption) {
+        return of(kind, previous, size, base, caption, network.ike.komet.document.surface.print.settings.TitleSpacing.STANDARD);
+    }
+
+    /**
+     * The spacing of a unit, on a title page spaced as given.
+     *
+     * @param kind     the unit's kind
+     * @param previous the kind of the unit before it, or {@code null} for the first
+     * @param size     the unit's font size
+     * @param base     the body size
+     * @param caption  whether an {@link Kind#OTHER} unit is a table's caption
+     * @param title    the title page's spacing, every space given: the theme's, with what the document asks for
+     * @return {@code {above, below}} in points
+     */
+    public static double[] of(Kind kind, Kind previous, double size, double base, boolean caption,
+                              network.ike.komet.document.surface.print.settings.TitleSpacing title) {
         double above = switch (kind) {
             case TITLE -> 0;
             // the author beneath the title, or the date beneath the author: the writer's ike-title sets the gaps
-            case BYLINE -> previous == Kind.BYLINE ? base * TypstWriter.DATE_GAP : base * TypstWriter.BYLINE_GAP;
+            case BYLINE -> previous == Kind.BYLINE ? title.revision().in(base) : title.authors().in(base);
             case HEADING -> size * 0.9;
             case LIST_ITEM -> previous == Kind.LIST_ITEM ? base * 0.65 : base * 1.1;
             case ENTRY -> previous == Kind.ENTRY ? base * 0.65 : base * 1.1;      // the writer's entry block keeps 0.65em above and below

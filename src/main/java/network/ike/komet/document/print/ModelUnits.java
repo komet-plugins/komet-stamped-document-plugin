@@ -68,6 +68,20 @@ public final class ModelUnits {
             }
             block++;
         }
+        // the title page's white space: the theme's, with what the header asks for. The author and the date stand in
+        // the title's block at their own gaps, and the block's last line keeps the abstract's gap beneath it
+        network.ike.komet.document.surface.print.settings.TitleSpacing spacing =
+                model.spacing().over(network.ike.komet.document.surface.print.settings.TitleSpacing.STANDARD);
+        for (int i = 1; i < out.size(); i++) {
+            Unit unit = out.get(i);
+            if (unit.kind() == Kind.BYLINE) {
+                out.set(i, unit.withSpacing(out.get(i - 1).kind() == Kind.BYLINE ? spacing.revision().in(base) : spacing.authors().in(base), unit.spaceBelow()));
+            }
+        }
+        if (!out.isEmpty() && !model.blocks().isEmpty() && model.blocks().getFirst() instanceof DocumentModel.Abstract) {
+            Unit last = out.getLast();
+            out.set(out.size() - 1, last.withSpacing(last.spaceAbove(), spacing.abstractAbove().in(base)));
+        }
         boolean afterFront = false;                               // whether the block before was a front list or the abstract
         boolean opened = false;                                   // whether a unit has opened the body
         for (Block top : model.blocks()) {

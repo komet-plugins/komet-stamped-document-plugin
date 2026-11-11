@@ -76,8 +76,8 @@ class ModelUnitsTest {
         assertEquals(12 * TypstWriter.AUTHOR_SCALE, units.get(1).fontSize(), 1e-9);
         assertEquals(12 * TypstWriter.DATE_SCALE, units.get(2).fontSize(), 1e-9);
         assertEquals(false, units.get(1).bold());
-        assertEquals(12 * TypstWriter.BYLINE_GAP, UnitSpacing.gap(units.get(0), units.get(1)), 1e-9, "the gap the writer leaves under the title");
-        assertEquals(12 * TypstWriter.DATE_GAP, UnitSpacing.gap(units.get(1), units.get(2)), 1e-9, "and under the author");
+        assertEquals(network.ike.komet.document.surface.print.settings.TitleSpacing.STANDARD.authors().in(12), UnitSpacing.gap(units.get(0), units.get(1)), 1e-9, "the gap the writer leaves under the title");
+        assertEquals(network.ike.komet.document.surface.print.settings.TitleSpacing.STANDARD.revision().in(12), UnitSpacing.gap(units.get(1), units.get(2)), 1e-9, "and under the author");
         assertEquals(12 * 1.2, UnitSpacing.gap(units.get(2), units.get(3)), 1e-9, "the title block's own space below");
         assertTrue(units.get(0).opensChapter() && !units.get(1).opensChapter());
     }

@@ -80,4 +80,14 @@ public enum DocumentTheme implements EnumConceptBinding {
     public String fontFamily() {
         return fontFamily;
     }
+
+    /**
+     * The white space of this theme's title page: above the author, above the date and above the
+     * abstract. A document may ask for others in its header ({@link TitleSpacing#asked}).
+     *
+     * @return the theme's spacing, every space given
+     */
+    public TitleSpacing titleSpacing() {
+        return TitleSpacing.STANDARD;
+    }
 }

@@ -47,7 +47,8 @@ import java.util.Set;
  * @param lists  what the header asks for
  * @param byline the author and the date set beneath the title
  */
-public record DocumentModel(String title, List<Block> blocks, Lists lists, Byline byline) {
+public record DocumentModel(String title, List<Block> blocks, Lists lists, Byline byline,
+                            network.ike.komet.document.surface.print.settings.TitleSpacing spacing) {
 
     /**
      * What stands beneath a document's title: its author, or its authors joined as one line, and
@@ -74,6 +75,11 @@ public record DocumentModel(String title, List<Block> blocks, Lists lists, Bylin
     /** A model with the lists a header asks for and no byline. */
     public DocumentModel(String title, List<Block> blocks, Lists lists) {
         this(title, blocks, lists, Byline.NONE);
+    }
+
+    /** A model whose header asks for no spacing of its own on its title page: the print theme's. */
+    public DocumentModel(String title, List<Block> blocks, Lists lists, Byline byline) {
+        this(title, blocks, lists, byline, network.ike.komet.document.surface.print.settings.TitleSpacing.NONE);
     }
 
     /**
@@ -177,7 +183,7 @@ public record DocumentModel(String title, List<Block> blocks, Lists lists, Bylin
         for (Block block : blocks) {
             out.add(block instanceof FrontList list ? list.withPages(pages) : block);
         }
-        return new DocumentModel(title, out, lists, byline);
+        return new DocumentModel(title, out, lists, byline, spacing);
     }
 
     /** One block of the document. */

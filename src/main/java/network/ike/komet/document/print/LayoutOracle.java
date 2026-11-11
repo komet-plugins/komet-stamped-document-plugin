@@ -137,6 +137,12 @@ public interface LayoutOracle {
             return new Unit(index, block, kind, text, fontSize, bold, indent, spaceAbove, spaceBelow, keepWithNext, figureWidth, figureHeight, styled, marked, number, columns, pageBefore, opensBody, opensChapter);
         }
 
+        /** @return this unit with other space above and below it */
+        public Unit withSpacing(double above, double below) {
+            return new Unit(index, block, kind, text, fontSize, bold, indent, above, below, keepWithNext, figureWidth, figureHeight, runs, marks, note,
+                    columns, pageBefore, opensBody, opensChapter);
+        }
+
         /** @return this unit with its table's relative column widths */
         public Unit withColumns(List<Integer> widths) {
             return new Unit(index, block, kind, text, fontSize, bold, indent, spaceAbove, spaceBelow, keepWithNext, figureWidth, figureHeight, runs, marks, note, widths, pageBefore, opensBody, opensChapter);

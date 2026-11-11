@@ -362,7 +362,10 @@ public final class StoredDocumentModel {
         List<StoredDocument> all = new ArrayList<>();
         all.add(document);
         includes.values().forEach(child -> all.add(child.document()));
-        return new DocumentModel(title, blocks, lists, byline(document, all));
+        // the white space the header asks for on its title page, read where the document's attributes have all been set
+        DocumentAttributes set = document.lines().isEmpty() ? DocumentAttributes.intrinsic() : reading.at(document.lines().getLast().nid());
+        return new DocumentModel(title, blocks, lists, byline(document, all),
+                network.ike.komet.document.surface.print.settings.TitleSpacing.asked(set::value));
     }
 
     private static final Pattern AUTHOR = Pattern.compile("^:author:\\s*(.*)$");

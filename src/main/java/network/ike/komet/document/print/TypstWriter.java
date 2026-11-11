@@ -95,11 +95,8 @@ public final class TypstWriter {
     /** The size of the date line beneath the title, in ems of the body. */
     public static final double DATE_SCALE = 1.0;
 
-    /** The space from the title's last baseline to the top of the line beneath it (its cap height), in ems of the body. */
-    public static final double BYLINE_GAP = 1.4;
-
-    /** The space from the author line's last baseline to the top of the date line, in ems of the body. */
-    public static final double DATE_GAP = 0.5;
+    /** The space beneath the title's block when no abstract follows it on the title page, in ems of the body. */
+    public static final double TITLE_BELOW = 1.2;
 
     /** The size of a boxed block's title, in ems of the body, as the print model has every container's. */
     public static final double BOX_TITLE_SCALE = 0.9;
@@ -123,16 +120,27 @@ public final class TypstWriter {
      * @param fontSize     the body size in points
      * @param runningHead  whether the running head is drawn
      * @param folio        where the page number goes
+     * @param titlePage    the white space of the title page as the print theme has it, every space given
      */
     public record PageSetup(String paper, boolean landscape, double marginTop, double marginRight, double marginBottom,
                             double marginLeft, List<String> bodyFonts, List<String> monoFonts, double fontSize,
-                            boolean runningHead, Folio folio) {
+                            boolean runningHead, Folio folio, network.ike.komet.document.surface.print.settings.TitleSpacing titlePage) {
 
         public PageSetup {
             Objects.requireNonNull(paper, "paper is null");
             bodyFonts = List.copyOf(bodyFonts);
             monoFonts = List.copyOf(monoFonts);
             Objects.requireNonNull(folio, "folio is null");
+            titlePage = (titlePage == null ? network.ike.komet.document.surface.print.settings.TitleSpacing.NONE : titlePage)
+                    .over(network.ike.komet.document.surface.print.settings.TitleSpacing.STANDARD);
+        }
+
+        /** A page whose title page is spaced as every theme's is until one differs. */
+        public PageSetup(String paper, boolean landscape, double marginTop, double marginRight, double marginBottom,
+                         double marginLeft, List<String> bodyFonts, List<String> monoFonts, double fontSize,
+                         boolean runningHead, Folio folio) {
+            this(paper, landscape, marginTop, marginRight, marginBottom, marginLeft, bodyFonts, monoFonts, fontSize, runningHead, folio,
+                    network.ike.komet.document.surface.print.settings.TitleSpacing.STANDARD);
         }
 
         /** US Letter, one-inch margins, a serif body at 12 pt, running head and a centered footer folio. */
@@ -367,6 +375,21 @@ public final class TypstWriter {
             }
             if (!byline.date().isEmpty()) {
                 out.append(", date: [").append(markup(byline.date())).append("]");
+            }
+            // the white space the header asks for; what it does not name is the theme's, which the helper has
+            network.ike.komet.document.surface.print.settings.TitleSpacing asked = document.spacing();
+            if (asked.authors() != null) {
+                out.append(", authors-gap: ").append(asked.authors().typst());
+            }
+            if (asked.revision() != null) {
+                out.append(", date-gap: ").append(asked.revision().typst());
+            }
+            if (!document.blocks().isEmpty() && document.blocks().getFirst() instanceof DocumentModel.Abstract) {
+                // an abstract stands under the title's block on the title page, set apart from it
+                out.append(", abstract: true");
+                if (asked.abstractAbove() != null) {
+                    out.append(", abstract-gap: ").append(asked.abstractAbove().typst());
+                }
             }
             out.append(")[").append(markup(tied)).append("]\n\n");
         }
@@ -626,7 +649,8 @@ public final class TypstWriter {
                 #set enum(indent: 1em)
                 #set terms(hanging-indent: 1.5em, separator: [: ])
 
-                #let ike-title(words, body, author: none, date: none) = block(below: 1.2em, width: 100%, {
+                #let ike-title(words, body, author: none, date: none, authors-gap: AUTHORS_GAP, date-gap: REVISION_GAP,
+                    abstract: false, abstract-gap: ABSTRACT_GAP) = block(below: if abstract { abstract-gap } else { TITLE_BELOW }, width: 100%, {
                   [#metadata(none) <OPENER>]
                   block(below: 0pt, width: 100%, {
                     set text(size: 1.8em, weight: "bold", hyphenate: false)
@@ -646,10 +670,10 @@ public final class TypstWriter {
                   set par(justify: false, linebreaks: "simple")
                   set text(hyphenate: false)
                   if author != none {
-                    block(above: BYLINE_GAP, below: 0pt, width: 100%, align(center, text(size: AUTHOR_SCALE, author)))
+                    block(above: authors-gap, below: 0pt, width: 100%, align(center, text(size: AUTHOR_SCALE, author)))
                   }
                   if date != none {
-                    block(above: if author != none { DATE_GAP } else { BYLINE_GAP }, below: 0pt, width: 100%,
+                    block(above: if author != none { date-gap } else { authors-gap }, below: 0pt, width: 100%,
                       align(center, text(size: DATE_SCALE, date)))
                   }
                 })
@@ -672,7 +696,8 @@ public final class TypstWriter {
                   [#text(size: 0.85em, fill: luma(90))[Image: #raw(target)]#if title != none [ — #title]])
 
                 """.replace("<OPENER>", "<" + OPENER_LABEL + ">").replace("range(STEPS)", "range(" + TitleLines.STEPS + ")")
-                .replace("BYLINE_GAP", ems(BYLINE_GAP)).replace("DATE_GAP", ems(DATE_GAP))
+                .replace("AUTHORS_GAP", setup.titlePage().authors().typst()).replace("REVISION_GAP", setup.titlePage().revision().typst())
+                .replace("ABSTRACT_GAP", setup.titlePage().abstractAbove().typst()).replace("TITLE_BELOW", ems(TITLE_BELOW))
                 .replace("AUTHOR_SCALE", ems(AUTHOR_SCALE)).replace("DATE_SCALE", ems(DATE_SCALE)));
         return sb.toString();
     }

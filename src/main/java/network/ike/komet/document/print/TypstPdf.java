@@ -102,7 +102,7 @@ public final class TypstPdf {
         };
         return new TypstWriter.PageSetup(paper, settings.orientation().swapsDimensions(), m.top(), m.right(), m.bottom(), m.left(),
                 available(theme.fontFamily() == null ? SANS : SERIF, installed), available(MONO, installed), theme.baseFontSize(),
-                settings.runningHead().shown(), folio);
+                settings.runningHead().shown(), folio, theme.titleSpacing());
     }
 
     /** The preferred families typst has, in preference order; all of them when the installed set is unknown or holds none. */
