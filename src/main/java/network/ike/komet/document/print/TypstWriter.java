@@ -748,6 +748,9 @@ public final class TypstWriter {
                     out.append(open).append("ike-figure(").append(points(w)).append(", ").append(points(h)).append(", [])").append(close).append("\n\n");
                 } else {
                     out.append(indent).append(open).append("ike-figure(").append(points(w)).append(", ").append(points(h)).append(", [\n")
+                            // an image block's file, at the figure's head: its caption is among the figure's marks, beneath it
+                            .append(d.picture() == null ? "" : "#place(top + left, image(" + string(pictureName(d.picture().file())) + ", width: "
+                                    + points(d.picture().width()) + ", height: " + points(d.picture().height()) + "))\n")
                             .append(network.ike.komet.document.DecisionFigureTypst.write(d.figure()))
                             .append(indent).append("])").append(close).append("\n\n");
                 }
@@ -977,6 +980,69 @@ public final class TypstWriter {
             return "#ike-ref(<" + TARGET_LABEL + run.href().substring(1) + ">)[" + body + "];";
         }
         return "#link(" + string(run.href()) + ")[" + body + "];";
+    }
+
+    /** The folder, under the folder a source is compiled in, that holds the picture files the source embeds. */
+    public static final String PICTURES = "ike-pictures";
+
+    /**
+     * The name a picture file is embedded by: a file of {@link #PICTURES}, told from another of
+     * the same name in another directory by a number made from its path.
+     *
+     * @param file the picture file
+     * @return the path the source names it by, from the folder the source is compiled in
+     */
+    public static String pictureName(java.nio.file.Path file) {
+        String name = file.getFileName().toString().replaceAll("[^A-Za-z0-9._-]", "_");
+        return PICTURES + "/" + Integer.toHexString(file.toAbsolutePath().normalize().toString().hashCode()) + "-" + name;
+    }
+
+    /**
+     * Copies the picture files a document embeds to where its source names them. Typst reads a
+     * file only under the folder it compiles in, and a picture lives in the document's working
+     * tree; so whoever writes a document's printed source to a folder copies its pictures there.
+     *
+     * @param document the document
+     * @param folder   the folder its source is compiled in
+     * @throws java.io.IOException when a picture cannot be copied
+     */
+    public static void copyPictures(DocumentModel document, java.nio.file.Path folder) throws java.io.IOException {
+        for (Block block : document.blocks()) {
+            copyPictures(block, folder);
+        }
+    }
+
+    private static void copyPictures(Block block, java.nio.file.Path folder) throws java.io.IOException {
+        switch (block) {
+            case DocumentModel.Drawn d when d.picture() != null -> {
+                java.nio.file.Path to = folder.resolve(pictureName(d.picture().file()));
+                java.nio.file.Files.createDirectories(to.getParent());
+                java.nio.file.Files.copy(d.picture().file(), to, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            }
+            case Admonition a -> {
+                for (Block inner : a.blocks()) {
+                    copyPictures(inner, folder);
+                }
+            }
+            case Container c -> {
+                for (Block inner : c.blocks()) {
+                    copyPictures(inner, folder);
+                }
+            }
+            case ListBlock l -> {
+                for (Item item : l.items()) {
+                    for (Block inner : item.blocks()) {
+                        copyPictures(inner, folder);
+                    }
+                }
+            }
+            case DocumentModel.Abstract a -> {
+                for (Block inner : a.blocks()) {
+                    copyPictures(inner, folder);
+                }
+            }
+            default -> { }
+        }
     }
 
     /** What a label's name may hold; an anchor or a link's target with anything else is not written as a label. */

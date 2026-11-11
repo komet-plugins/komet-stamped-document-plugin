@@ -906,6 +906,24 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
         return summaries;
     }
 
+    /**
+     * Where a document's picture files are read from: the working tree the card was given, and
+     * the document library, which is the tree a document chosen from the store was most likely
+     * written in when the card has been given none.
+     */
+    @Override
+    public List<Path> workingTrees() {
+        List<Path> trees = new ArrayList<>();
+        if (repoRoot != null) {
+            trees.add(repoRoot);
+        }
+        Path library = DocumentLibrary.root();
+        if (library != null && !trees.contains(library)) {
+            trees.add(library);
+        }
+        return trees;
+    }
+
     @Override
     public void status(String text) {
         statusLine.setText(text);

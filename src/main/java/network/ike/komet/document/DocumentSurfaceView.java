@@ -130,6 +130,16 @@ public final class DocumentSurfaceView {
 
         CommitSummaries summaries();
 
+        /**
+         * The working trees a document's picture files are read from, the one it was materialized
+         * from first: the store holds a document's lines, not the pictures its image blocks name.
+         *
+         * @return the trees, none when the card knows of none
+         */
+        default List<java.nio.file.Path> workingTrees() {
+            return List.of();
+        }
+
         void status(String text);
 
         /** Prepares an annotation of the current selection and asks the person to confirm it. */
@@ -848,6 +858,7 @@ public final class DocumentSurfaceView {
         conditions = null;
         leftIn.clear();
         printed.clear();
+        pictures.clear();
         fittedColumns.clear();                                   // the document shown may have other tables, or other words in these
         // the same document's folds are carried across the rebuild by what the blocks say; another document's are what the card remembers of it
         boolean sameDocument = foldedDocument != null && foldedDocument.equals(shown.host().document().anchor());
@@ -1592,9 +1603,23 @@ public final class DocumentSurfaceView {
                 if (print && nesting == 0) {
                     modelOrdinal++;
                 }
-                Area area = add(member, block, own, paragraphs(own, " ", st.prose(), t -> "🖼 " + t), depth, false, section);
+                // in the Reading view a picture that is found is shown, and the lines that name it stand beneath it small and
+                // grey, as a table's own lines do; one that is not found is its lines, marked as a picture's
+                Optional<javafx.scene.image.Image> shown = print ? Optional.<javafx.scene.image.Image>empty()
+                        : pictureOf(document, block).flatMap(this::pictureImage);
+                Area area = add(member, block, own, shown.isPresent() ? paragraphs(own, "", st.smallGrey(), null)
+                        : paragraphs(own, " ", st.prose(), t -> "🖼 " + t), depth, false, section);
                 if (area != null && !print) {
                     title(area, block);
+                    // the picture itself above the lines that name it, no wider than the text beside it
+                    pictureOf(document, block).ifPresent(picture -> shown.ifPresent(image -> {
+                        javafx.scene.image.ImageView view = new javafx.scene.image.ImageView(image);
+                        view.setPreserveRatio(true);
+                        view.setSmooth(true);
+                        view.setFitWidth(Math.min(picture.width() / DocumentPictures.PIXEL, 520));
+                        view.getStyleClass().add("stamped-document-picture");
+                        area.holder.getChildren().add(Math.max(0, area.holder.getChildren().indexOf(area.area)), view);
+                    }));
                 }
             }
         }
@@ -1898,7 +1923,55 @@ public final class DocumentSurfaceView {
             public List<Integer> columns(StoredBlock table, List<List<String>> rows, List<List<Integer>> spans, int headerRows, List<Integer> widths) {
                 return fittedColumns(table, rows, spans, headerRows, widths);
             }
+
+            @Override
+            public Optional<network.ike.komet.document.print.DocumentModel.Picture> picture(network.ike.komet.document.DecisionFigure figure) {
+                return Optional.ofNullable(pictures.get(figure));
+            }
         };
+    }
+
+    /** {@code image::target[attributes]}, the line of an image block that names its file. */
+    private static final Pattern IMAGE_LINE = Pattern.compile("^image::([^\\[]*)\\[(.*)\\]$");
+
+    /** The picture each figure of an image block is drawn from, by the figure itself: two blocks may show the same file. */
+    private final Map<network.ike.komet.document.DecisionFigure, network.ike.komet.document.print.DocumentModel.Picture> pictures = new java.util.IdentityHashMap<>();
+    /** The images of the picture files drawn so far, by file; empty for a file that could not be drawn. */
+    private final Map<java.nio.file.Path, Optional<javafx.scene.image.Image>> pictureImages = new HashMap<>();
+
+    /**
+     * The picture file an image block names, looked for in the working trees the card knows
+     * ({@link DocumentPictures#file}), its target read with the attributes in force at its line.
+     *
+     * @param document the block's document, as a showing reads it
+     * @param block    an image block
+     * @return the picture, or empty when no tree holds the file or its size cannot be read
+     */
+    private Optional<network.ike.komet.document.print.DocumentModel.Picture> pictureOf(StoredDocument document, StoredBlock block) {
+        if (assembly == null || block.kind() != Block.Kind.IMAGE) {
+            return Optional.empty();
+        }
+        for (long nid : block.members()) {
+            Optional<StoredLine> line = document.line(nid);
+            java.util.regex.Matcher image = line.isEmpty() ? null : IMAGE_LINE.matcher(line.get().text().strip());
+            if (image != null && image.matches()) {
+                // the file the line is in, by the line: the view may be reading a document made for a layer, which is no showing's own
+                DocumentAssembly.Member member = assembly.memberOf(nid).orElse(null);
+                if (member == null) {
+                    return Optional.empty();
+                }
+                String target = assembly.reading(member).text(image.group(1), nid);
+                String asked = image.group(2);
+                return DocumentPictures.file(host.workingTrees(), assembly.host().path(), member.path(), target).flatMap(DocumentPictures::picture)
+                        .map(picture -> DocumentPictures.sized(picture, asked, fitWidth));
+            }
+        }
+        return Optional.empty();
+    }
+
+    /** The image of a picture file, drawn once and kept. */
+    private Optional<javafx.scene.image.Image> pictureImage(network.ike.komet.document.print.DocumentModel.Picture picture) {
+        return pictureImages.computeIfAbsent(picture.file(), file -> network.ike.komet.document.print.PictureRaster.image(picture));
     }
 
     /** The theme and the measure the tables' columns are fitted for; none until a page is to be set. */
@@ -2000,6 +2073,27 @@ public final class DocumentSurfaceView {
      * @return its figures in order, none when it prints as text
      */
     public List<network.ike.komet.document.DecisionFigure> printFigures(StoredDocument document, StoredBlock block) {
+        if (block.kind() == Block.Kind.IMAGE) {
+            // an image block whose file is found is a figure of the file's size, its caption beneath it as a drawn
+            // block's is; one whose file is not found prints as its name, as before
+            Optional<network.ike.komet.document.print.DocumentModel.Picture> picture = pictureOf(document, block);
+            if (picture.isEmpty()) {
+                return List.of();
+            }
+            // an image written with no title has its target for one, which is no caption
+            boolean titled = block.members().stream().map(document::line).flatMap(Optional::stream).map(line -> IMAGE_LINE.matcher(line.text().strip()))
+                    .filter(java.util.regex.Matcher::matches).noneMatch(image -> image.group(1).strip().equals(block.title()));
+            String caption = titled ? captions.text(block) : "";
+            return printed.computeIfAbsent("image\n" + picture.get().file() + "\n" + caption + "\n" + block.nid(), key -> {
+                network.ike.komet.document.DecisionFigure bare = new network.ike.komet.document.DecisionFigure(
+                        picture.get().width(), picture.get().height(), "image", List.of());
+                String read = network.ike.komet.document.print.InlineText.of(network.ike.komet.document.print.InlineText.withoutNotes(caption)).text();
+                network.ike.komet.document.DecisionFigure figure = read.isEmpty() ? bare
+                        : network.ike.komet.document.DecisionFigureText.inSerif(() -> network.ike.komet.document.TextFigure.captioned(read, bare));
+                pictures.put(figure, picture.get());
+                return List.of(figure);
+            });
+        }
         Optional<StructuredBlockKind> kind = StructuredBlocks.kindOf(block);
         if (kind.isEmpty()) {
             return List.of();
@@ -3490,7 +3584,20 @@ public final class DocumentSurfaceView {
             if (area.drawn != null) {
                 double scale = network.ike.komet.document.print.LayoutOracle.Unit.figureScale(area.drawn.width(), area.drawn.height(), contentWidth, bandHeight);
                 if (area.drawing == null) {
-                    area.drawing = network.ike.komet.document.print.FigureNode.of(area.drawn, scale);
+                    javafx.scene.layout.Pane drawing = network.ike.komet.document.print.FigureNode.of(area.drawn, scale);
+                    network.ike.komet.document.print.DocumentModel.Picture picture = pictures.get(area.drawn);
+                    if (picture != null) {
+                        // an image block's file at the figure's head, as the PDF has it; its caption is among the marks beneath
+                        pictureImage(picture).ifPresent(image -> {
+                            javafx.scene.image.ImageView view = new javafx.scene.image.ImageView(image);
+                            view.setFitWidth(picture.width() * scale);
+                            view.setFitHeight(picture.height() * scale);
+                            view.setSmooth(true);
+                            view.setMouseTransparent(true);
+                            drawing.getChildren().addFirst(view);
+                        });
+                    }
+                    area.drawing = drawing;
                     areaByNode.put(area.drawing, area);
                 }
                 area.drawnHeight = area.drawn.height() * scale;

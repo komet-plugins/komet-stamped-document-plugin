@@ -137,6 +137,7 @@ public final class PageFidelity {
         Path blocksOnly = folder.resolve("blocks.typ");
         Path words = folder.resolve("words.typ");
         Files.writeString(blocksOnly, TypstWriter.write(model, TypstPdf.setup(settings), TypstWriter.Labels.BLOCKS), StandardCharsets.UTF_8);
+        TypstWriter.copyPictures(model, folder);
         Files.writeString(words, TypstWriter.write(model, TypstPdf.setup(settings), TypstWriter.Labels.WORDS), StandardCharsets.UTF_8);
         TypstCompiler.Result a = TypstCompiler.locate(folder, blocksOnly, TypstWriter.BLOCK_LABEL, fonts);
         TypstCompiler.Result b = TypstCompiler.locate(folder, words, TypstWriter.BLOCK_LABEL, fonts);

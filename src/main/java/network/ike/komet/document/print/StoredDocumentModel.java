@@ -183,6 +183,18 @@ public final class StoredDocumentModel {
         }
 
         /**
+         * The picture file a figure is drawn from: none by default. A surface that knows the
+         * working tree a document was read from draws an image block as a figure of its file's
+         * size ({@link #of}), and says here which file, so the PDF embeds it.
+         *
+         * @param figure a figure {@link #of} gave
+         * @return the picture set at the figure's head, or empty for a figure of marks alone
+         */
+        default Optional<DocumentModel.Picture> picture(DecisionFigure figure) {
+            return Optional.empty();
+        }
+
+        /**
          * A reading that numbers headings and captions as an assembly's captions have them, and
          * lists them at the front, drawing nothing: what a document is read with where no surface
          * draws its blocks.
@@ -687,7 +699,7 @@ public final class StoredDocumentModel {
             // the first figure carries the block's caption, which the figures source has drawn beneath it
             String caption = valued(figures.caption(document, block), block);
             for (int i = 0; i < drawn.size(); i++) {
-                out.add(new DocumentModel.Drawn(drawn.get(i), i == 0 ? caption : "", i == 0 ? keyOf(block) : ""));
+                out.add(new DocumentModel.Drawn(drawn.get(i), i == 0 ? caption : "", i == 0 ? keyOf(block) : "", figures.picture(drawn.get(i)).orElse(null)));
             }
             return;
         }

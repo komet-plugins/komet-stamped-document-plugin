@@ -135,6 +135,34 @@ class TypstCompilerTest {
     }
 
     @Test
+    void anImageBlocksFileIsEmbeddedAtTheHeadOfItsFigure(@TempDir Path folder) throws IOException {
+        assumeTrue(TypstCompiler.locate().isPresent(), "typst is not installed");
+        Path chart = Files.createDirectories(folder.resolve("tree/images")).resolve("a chart.svg");
+        Files.writeString(chart, "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 400 200\" width=\"400\" height=\"200\">"
+                + "<rect width=\"400\" height=\"200\" fill=\"#dde6f5\"/><circle cx=\"200\" cy=\"100\" r=\"60\" fill=\"#1f3b73\"/></svg>");
+        DocumentModel.Picture picture = new DocumentModel.Picture(chart, 300, 150);
+        network.ike.komet.document.DecisionFigure figure = network.ike.komet.document.TextFigure.captioned("Figure 1. A chart",
+                new network.ike.komet.document.DecisionFigure(300, 150, "image", List.of()));
+        DocumentModel model = new DocumentModel("Pictures", List.of(new DocumentModel.Paragraph("Above it."),
+                new DocumentModel.Drawn(figure, "Figure 1. A chart", "", picture), new DocumentModel.Paragraph("Below it.")));
+
+        String typst = TypstWriter.write(model, TypstWriter.PageSetup.DEFAULT);
+        String named = TypstWriter.pictureName(chart);
+        assertTrue(named.startsWith(TypstWriter.PICTURES + "/") && named.endsWith("-a_chart.svg"), "a name typst can read, under the pictures' folder: " + named);
+        assertTrue(typst.contains("#place(top + left, image(\"" + named + "\", width: 300pt, height: 150pt))"), typst);
+        assertFalse(TypstWriter.write(model, TypstWriter.PageSetup.DEFAULT, TypstWriter.Labels.WORDS).contains(TypstWriter.PICTURES),
+                "the measured form sets a box of the figure's size: it needs no file");
+
+        Path out = folder.resolve("out");
+        TypstPdf.Printed printed = TypstPdf.print(model, PrintSettings.DEFAULT, out, "pictures");
+        assertTrue(Files.isRegularFile(out.resolve(named)), "the file is copied to where the source names it");
+        assertTrue(printed.ok(), printed.report());
+        assertTrue(printed.result().output().isBlank(), "typst warned: " + printed.result().output());
+        TypstCompiler.Result counted = TypstCompiler.evaluate(out, printed.source(), "query(image).len()", out.resolve("fonts"));
+        assertTrue(counted.ok() && counted.output().strip().equals("1"), "one picture in the document: " + counted.output());
+    }
+
+    @Test
     void everyConstructCompilesToAPdf(@TempDir Path folder) throws IOException {
         assumeTrue(TypstCompiler.locate().isPresent(), "typst is not installed");
         DocumentModel model = StoredDocumentModel.of(StoredFixture.parse(EVERYTHING));

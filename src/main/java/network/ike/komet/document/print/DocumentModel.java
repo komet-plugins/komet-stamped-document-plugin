@@ -247,16 +247,22 @@ public record DocumentModel(String title, List<Block> blocks, Lists lists, Bylin
      * @param figure  the figure
      * @param caption the caption drawn beneath it, empty for none
      * @param key     what a front list's entry names the figure by, empty for none
+     * @param picture the picture file set at the figure's head, for an image block whose file was found; else {@code null}
      */
-    public record Drawn(network.ike.komet.document.DecisionFigure figure, String caption, String key) implements Block {
+    public record Drawn(network.ike.komet.document.DecisionFigure figure, String caption, String key, Picture picture) implements Block {
         /** A drawn block with no caption. */
         public Drawn(network.ike.komet.document.DecisionFigure figure) {
-            this(figure, "", "");
+            this(figure, "", "", null);
         }
 
         /** A drawn block no entry names. */
         public Drawn(network.ike.komet.document.DecisionFigure figure, String caption) {
-            this(figure, caption, "");
+            this(figure, caption, "", null);
+        }
+
+        /** A drawn block of marks alone. */
+        public Drawn(network.ike.komet.document.DecisionFigure figure, String caption, String key) {
+            this(figure, caption, key, null);
         }
 
         public Drawn {
@@ -338,7 +344,17 @@ public record DocumentModel(String title, List<Block> blocks, Lists lists, Bylin
     }
 
     /**
-     * A block image, named rather than embedded: the writers draw its caption and target.
+     * A picture file an image block names, with its own size: the size it is set at unless the
+     * page is narrower.
+     *
+     * @param file   the file, in the working tree the document was read from
+     * @param width  its width, in points
+     * @param height its height, in points
+     */
+    public record Picture(java.nio.file.Path file, double width, double height) { }
+
+    /**
+     * A block image whose file was not found, named rather than embedded: the writers draw its caption and target.
      *
      * @param target the image target as written
      * @param title  the block title, possibly empty

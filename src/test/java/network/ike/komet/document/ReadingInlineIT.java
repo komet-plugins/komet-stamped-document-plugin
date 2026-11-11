@@ -322,6 +322,81 @@ class ReadingInlineIT {
         assertTrue(assembly.targets().block(entry).isPresent() && assembly.targets().block("b0").isEmpty());
     }
 
+    private static final String PICTURED = """
+            :topic-id: reading-pictured
+            = Reading Pictures
+            :charts: .
+
+            Before the chart.
+
+            .A chart of two bars
+            image::{charts}/images/chart.png["Two bars, the left one taller"]
+
+            image::images/missing.png[]
+
+            After it.
+            """;
+
+    @Test
+    void anImageBlockWhoseFileIsInTheWorkingTreeIsShownAndPrintedAsItsPicture() throws Exception {
+        Path dir = Files.createDirectories(root.resolve("pictured"));
+        git(dir, "init", "-q", "-b", "main");
+        git(dir, "config", "user.name", "author");
+        git(dir, "config", "user.email", "author@example.test");
+        Path file = dir.resolve("pictured.adoc");
+        Files.writeString(file, PICTURED);
+        Path chart = Files.createDirectories(dir.resolve("images")).resolve("chart.png");
+        java.awt.image.BufferedImage bars = new java.awt.image.BufferedImage(200, 100, java.awt.image.BufferedImage.TYPE_INT_RGB);
+        javax.imageio.ImageIO.write(bars, "png", chart.toFile());
+        git(dir, "add", "pictured.adoc", "images/chart.png");
+        git(dir, "commit", "-q", "--no-gpg-sign", "-m", "The document");
+        PublicId anchor = GitDocumentMaterializer.materialize(dir, file).anchor();
+        StoredDocument document = GitDocumentMaterializer.load(anchor, true).orElseThrow();
+        DocumentAssembly assembly = DocumentAssembly.single(document, "pictured.adoc");
+
+        // the card's host, which knows the working tree the document was read from
+        DocumentSurfaceView.Host plain = host();
+        DocumentSurfaceView.Host inTree = (DocumentSurfaceView.Host) java.lang.reflect.Proxy.newProxyInstance(getClass().getClassLoader(),
+                new Class<?>[] {DocumentSurfaceView.Host.class},
+                (proxy, method, args) -> method.getName().equals("workingTrees") ? List.of(dir) : method.invoke(plain, args));
+        DocumentSurface body = onFx(() -> new DocumentSurface(new BlockFactory(Calculators.View.Default(), 13)));
+        DocumentSurfaceView view = onFx(() -> {
+            DocumentSurfaceView made = new DocumentSurfaceView(inTree, body);
+            made.show(assembly);
+            return made;
+        });
+
+        List<javafx.scene.image.ImageView> shown = onFx(() -> {
+            List<javafx.scene.image.ImageView> found = new ArrayList<>();
+            for (int b = 0; b < body.blockCount(); b++) {
+                body.block(b).node().lookupAll(".stamped-document-picture").forEach(node -> found.add((javafx.scene.image.ImageView) node));
+            }
+            return found;
+        });
+        assertEquals(1, shown.size(), "the Reading view shows the picture the tree holds, and none for the file it does not");
+        assertEquals(200, shown.getFirst().getImage().getWidth(), 0.5);
+
+        network.ike.komet.document.surface.print.settings.PrintSettings settings = network.ike.komet.document.surface.print.settings.PrintSettings.DEFAULT;
+        List<network.ike.komet.document.print.LayoutOracle.Unit> units = onFx(() -> view.pageUnits(settings.theme()));
+        List<network.ike.komet.document.print.LayoutOracle.Unit> figures = units.stream()
+                .filter(u -> u.kind() == network.ike.komet.document.print.LayoutOracle.Kind.FIGURE).toList();
+        assertEquals(1, figures.size(), "on the pages the picture is a figure: " + units.stream().map(u -> u.kind() + " " + u.text()).toList());
+        assertEquals(150, figures.getFirst().figureWidth(), 0.01, "at its own size, a pixel three quarters of a point");
+        assertTrue(figures.getFirst().figureHeight() > 75, "with its caption beneath it: " + figures.getFirst().figureHeight());
+        assertTrue(units.stream().anyMatch(u -> u.text().contains("images/missing.png")), "an image whose file is not found prints as its name");
+
+        network.ike.komet.document.print.DocumentModel model = onFx(() -> network.ike.komet.document.print.StoredDocumentModel.of(assembly, view.printing()));
+        network.ike.komet.document.print.DocumentModel.Drawn drawn = model.blocks().stream()
+                .filter(network.ike.komet.document.print.DocumentModel.Drawn.class::isInstance)
+                .map(network.ike.komet.document.print.DocumentModel.Drawn.class::cast).findFirst().orElseThrow();
+        assertEquals(chart.toRealPath(), drawn.picture().file().toRealPath(), "the PDF embeds the same file");
+        assertEquals("Figure 1. A chart of two bars", drawn.caption());
+        assertEquals(1, model.blocks().stream().filter(network.ike.komet.document.print.DocumentModel.Image.class::isInstance).count(),
+                "and names the one it could not find");
+        String typst = network.ike.komet.document.print.TypstWriter.write(model, network.ike.komet.document.print.TypstWriter.PageSetup.DEFAULT);
+        assertTrue(typst.contains("image(\"" + network.ike.komet.document.print.TypstWriter.pictureName(drawn.picture().file()) + "\", width: 150pt, height: 75pt)"), typst);
+    }
+
     private static final String CONDITIONAL = """
             :topic-id: reading-conditional
             = Reading Conditionals

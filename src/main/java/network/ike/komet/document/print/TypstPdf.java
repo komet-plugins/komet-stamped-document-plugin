@@ -172,6 +172,7 @@ public final class TypstPdf {
         Path source = folder.resolve(stem + ".typ");
         Path pdf = folder.resolve(stem + ".pdf");
         Files.writeString(source, TypstWriter.write(model, setup(settings)), StandardCharsets.UTF_8);
+        TypstWriter.copyPictures(model, folder);                  // the picture files the source embeds, beside it
         Path fonts = DocumentFonts.extractTo(folder.resolve("fonts"));
         return new Printed(source, TypstCompiler.compile(folder, source, pdf, fonts));
     }
