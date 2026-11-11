@@ -189,7 +189,7 @@ public final class DocumentSurfaceView {
      * comments are a layer apart from the stamps: either stands in the right margin without the
      * other, and the margin goes only when no layer that is on has anything to draw there.
      */
-    enum Layer { DATES, STAMPS, COMMENTS, TINTS, REVIEW_QUEUE, ANNOTATION_MARKS }
+    enum Layer { DATES, STAMPS, COMMENTS, TINTS, REVIEW_QUEUE, ANNOTATION_MARKS, LEFT_OUT }
 
     /** The views: three on the surface's areas, and the Graph, a tree the card hosts in their place. */
     enum View { READING, SOURCE, PAGE_LAYOUT, GRAPH }
@@ -204,6 +204,8 @@ public final class DocumentSurfaceView {
     private static final double LEDGER_SIDE = 96;
     /** The padding around an area's text, a ledger chunk's too. */
     private static final Insets LEDGER_PADDING = new Insets(2, 4, 2, 4);
+    /** How faint a passage a conditional leaves out is drawn. */
+    private static final double LEFT_OUT_OPACITY = 0.5;
 
     /**
      * The text styles a build draws with: the screen's for the Reading view, a print theme's for
@@ -312,6 +314,10 @@ public final class DocumentSurfaceView {
     private final DocumentSurface surface;
     private final Map<Long, Image> badges = new HashMap<>();
     private final Set<Layer> layers = EnumSet.of(Layer.DATES, Layer.STAMPS, Layer.COMMENTS, Layer.ANNOTATION_MARKS);
+    /** The shown assembly's conditional directives, read when first asked for. */
+    private DocumentConditions conditions;
+    /** With {@link Layer#LEFT_OUT} on: each showing with the passages its conditionals leave out left in, the directives' own lines gone. */
+    private final Map<DocumentAssembly.Member, StoredDocument> leftIn = new java.util.IdentityHashMap<>();
     private final List<Area> areas = new ArrayList<>();
     private final List<Area> sources = new ArrayList<>();
     /** The Page layout's units: one area per paragraph-like piece of the print model, what the layout oracles place. */
@@ -468,6 +474,9 @@ public final class DocumentSurfaceView {
     /** Turns a layer toggle on or off and redraws the layer. */
     void setLayer(Layer layer, boolean on) {
         if (on ? layers.add(layer) : layers.remove(layer)) {
+            if (layer == Layer.LEFT_OUT) {
+                return;                                          // it changes what is drawn, not how: the host shows the document again
+            }
             redecorate();
         }
     }
@@ -583,6 +592,16 @@ public final class DocumentSurfaceView {
         final VBox holder;
         final boolean editable;
         final String section;
+        /**
+         * With the Passages left out layer on: every line the showing holds of the block, where the area
+         * draws fewer, a conditional's directives among them. An edit or a mark saves these, so nothing
+         * the area does not draw is lost. Null where the area draws all the block's lines.
+         */
+        List<StoredLine> source;
+        /** The areas one block is drawn as when a conditional parts its lines, this one among them; null for a block in one area. */
+        List<Area> parts;
+        /** The conditional that leaves the area's lines out of the document as it reads; null for lines that are read. */
+        DocumentConditions.Condition leftOut;
         /** Whether the area's row is laid out: false while a fold hides it. */
         final javafx.beans.property.BooleanProperty shown = new javafx.beans.property.SimpleBooleanProperty(true);
         /** Whether the area anchors a fold: a heading whose section is folded, or the first block of a folded run. */
@@ -735,6 +754,11 @@ public final class DocumentSurfaceView {
             decorate();
         }
 
+        /** @return the lines an edit or a mark of the area's block saves: its source where the area draws fewer, else what it draws */
+        List<StoredLine> saved() {
+            return source != null ? source : lines;
+        }
+
         void decorate() {
             if (area == null) {
                 return;                                          // a bare unit draws nothing
@@ -821,6 +845,8 @@ public final class DocumentSurfaceView {
         assembly = shown;
         // the structured blocks of this document read each other here: trees folded in, statements named, values computed
         blocks = new BlockContext();
+        conditions = null;
+        leftIn.clear();
         printed.clear();
         fittedColumns.clear();                                   // the document shown may have other tables, or other words in these
         // the same document's folds are carried across the rebuild by what the blocks say; another document's are what the card remembers of it
@@ -867,9 +893,151 @@ public final class DocumentSurfaceView {
         selectAgain();
     }
 
+    // ── what a conditional leaves out (the Passages left out layer) ───────────
+
+    /** Whether the Reading view draws the passages a conditional leaves out: the layer is on, and this is not a page. */
+    private boolean leftOutShown() {
+        return !print && assembly != null && layers.contains(Layer.LEFT_OUT);
+    }
+
+    private DocumentConditions conditions() {
+        if (conditions == null) {
+            conditions = DocumentConditions.of(assembly);
+        }
+        return conditions;
+    }
+
+    /**
+     * What a showing is drawn from: the document as it reads; or, with the Passages left out
+     * layer on, the same lines with those a conditional leaves out left in, so a person can read
+     * and change them. The directives' own lines are in neither: the label over a passage says
+     * its condition.
+     */
+    private StoredDocument reads(DocumentAssembly.Member member) {
+        if (!leftOutShown() || !conditions().touches(member)) {
+            return assembly.read(member);
+        }
+        return leftIn.computeIfAbsent(member, m -> {
+            Set<Long> kept = new HashSet<>();
+            for (StoredLine line : m.shown().lines()) {
+                if (!conditions().directive(m, line.nid())) {
+                    kept.add(line.nid());
+                }
+            }
+            return heldTextAsProse(DocumentAssembly.project(m.document(), kept));
+        });
+    }
+
+    /**
+     * A conditional that holds its text on its own line, {@code ifdef::draft[Not yet reviewed.]},
+     * is a paragraph of that text here whether or not its condition is met, as the document as it
+     * reads has the ones that are met ({@link DocumentAssembly#read}): one left out is drawn as
+     * its words, faint, under its condition, and not as a line of markup.
+     */
+    private static StoredDocument heldTextAsProse(StoredDocument document) {
+        Map<Long, StoredBlock> blocks = new java.util.LinkedHashMap<>(document.blocks());
+        boolean any = false;
+        for (StoredBlock block : document.blocks().values()) {
+            if (block.kind() == Block.Kind.OPAQUE && !block.members().isEmpty() && block.members().stream()
+                    .allMatch(nid -> document.line(nid).map(line -> DocumentAttributes.holdsText(line.text())).orElse(false))) {
+                blocks.put(block.nid(), new StoredBlock(block.nid(), Block.Kind.PARAGRAPH, block.level(), block.title(), block.parameters(),
+                        block.members(), block.stamp(), block.tree()));
+                any = true;
+            }
+        }
+        if (!any) {
+            return document;
+        }
+        StoredBlock root = document.root() == null ? null : blocks.get(document.root().nid());
+        return new StoredDocument(document.anchor(), document.commit(), document.lines(), document.manifestVersions(), document.attributes(),
+                root, blocks, document.references(), document.sentences());
+    }
+
+    /**
+     * Whether a block is edited where this showing has it. With the Passages left out layer on,
+     * a block a conditional cuts is edited as its whole source, directives and all
+     * ({@link Area#source}), so only a tagged region's edge keeps it from being edited.
+     */
+    private boolean held(DocumentAssembly.Member member, StoredBlock block) {
+        if (leftOutShown() && block != null) {
+            StoredBlock shown = member.shown().blocks().get(block.nid());
+            return shown != null && member.holds(shown);
+        }
+        return assembly.holds(member, block);
+    }
+
+    /** A block's lines split where they pass from read to left out, or from one condition to another, in order. */
+    private List<List<StoredLine>> runs(DocumentAssembly.Member member, List<StoredLine> lines) {
+        List<List<StoredLine>> runs = new ArrayList<>();
+        DocumentConditions.Condition last = null;
+        for (StoredLine line : lines) {
+            DocumentConditions.Condition at = conditions().leftOut(member, line.nid()).orElse(null);
+            if (runs.isEmpty() || at != last) {
+                runs.add(new ArrayList<>());
+            }
+            runs.getLast().add(line);
+            last = at;
+        }
+        return runs;
+    }
+
+    /**
+     * The lines an edit of a block replaces, where the area draws fewer: every line the showing
+     * holds of the block, its conditional directives among them. Null when the area's lines are
+     * not the block's own or its structured source, which no caller that edits passes.
+     */
+    private List<StoredLine> sourceOf(DocumentAssembly.Member member, StoredBlock block, List<StoredLine> lines) {
+        StoredDocument drawn = reads(member);
+        StoredDocument whole = member.shown();
+        StoredBlock stored = whole.blocks().get(block.nid());
+        if (stored == null) {
+            return null;
+        }
+        List<Long> nids = lines.stream().map(StoredLine::nid).toList();
+        if (nids.equals(own(drawn, block).stream().map(StoredLine::nid).toList())) {
+            return own(whole, stored);
+        }
+        if (nids.equals(StructuredBlocks.lines(drawn, block).stream().map(StoredLine::nid).toList())) {
+            return StructuredBlocks.lines(whole, stored);
+        }
+        return null;
+    }
+
+    private static List<StoredLine> own(StoredDocument document, StoredBlock block) {
+        List<StoredLine> own = new ArrayList<>();
+        for (long nid : block.members()) {
+            document.line(nid).ifPresent(own::add);
+        }
+        return own;
+    }
+
+    /** Marks an area as a passage a conditional leaves out: dimmed, and under a label where the passage begins. */
+    private void leftOut(Area area, DocumentConditions.Condition condition) {
+        area.leftOut = condition;
+        area.area.setOpacity(LEFT_OUT_OPACITY);
+        area.holder.getStyleClass().add("stamped-document-left-out");
+        int at = target.indexOf(area);
+        Area before = at > 0 ? target.get(at - 1) : null;
+        if (before != null && before.leftOut == condition) {
+            return;                                              // the passage goes on: its label stands over its first block
+        }
+        Label label = new Label(condition.label());
+        label.setFont(SMALL);
+        label.setWrapText(true);
+        label.setStyle("-fx-text-fill: #8a6d3b; -fx-font-style: italic;");
+        label.setPadding(new Insets(6, 0, 0, 0));
+        label.getStyleClass().add("stamped-document-left-out-label");
+        if (condition.line() != null && condition.member() != null) {
+            int index = assembly.indexInMember(assembly.ordinal(condition.member(), condition.line().nid()));
+            label.setTooltip(new Tooltip(condition.directive() + (index < 0 ? "" : "\nline " + (index + 1)
+                    + (condition.member().path().isEmpty() ? "" : " of " + condition.member().fileName()))));
+        }
+        area.holder.getChildren().addFirst(label);
+    }
+
     /** Renders one member's blocks, or its lines as a ledger when the store holds no structure for it. */
     private void renderMember(DocumentAssembly.Member member, int depth, String section) {
-        StoredDocument document = assembly.read(member);                 // an include that names tags shows its regions alone
+        StoredDocument document = reads(member);                         // an include that names tags shows its regions alone
         if (document.root() == null) {
             for (StoredLine line : document.lines()) {
                 add(member, null, List.of(line), paragraphs(List.of(line), "", st.mono(), null), depth, false, section);
@@ -1182,7 +1350,7 @@ public final class DocumentSurfaceView {
 
     /** Renders one block of a member and its members into the Reading view's areas. */
     private void render(DocumentAssembly.Member member, StoredBlock block, int depth, int ordinal, String section) {
-        StoredDocument document = assembly.read(member);
+        StoredDocument document = reads(member);
         List<StoredLine> own = new ArrayList<>();
         List<StoredBlock> children = new ArrayList<>();
         for (long nid : block.members()) {
@@ -1346,7 +1514,7 @@ public final class DocumentSurfaceView {
                     }
                     if (!print) {
                         title(area, block);
-                        attachStructured(area, assembly.read(member), block);
+                        attachStructured(area, reads(member), block);
                     }
                 }
             }
@@ -2056,7 +2224,7 @@ public final class DocumentSurfaceView {
         Map<Long, StoredBlock> blockOf = new HashMap<>();
         for (StoredBlock row : children) {
             for (long nid : row.members()) {
-                assembly.read(member).line(nid).ifPresent(line -> {
+                reads(member).line(nid).ifPresent(line -> {
                     body.add(line);
                     blockOf.put(line.nid(), row);
                 });
@@ -2327,6 +2495,34 @@ public final class DocumentSurfaceView {
 
     private Area add(DocumentAssembly.Member member, StoredBlock block, List<StoredLine> lines, LineRunModel.Spec spec, int depth, boolean editable, String section,
                      boolean prose) {
+        if (!leftOutShown() || block == null || lines.isEmpty() || !conditions().touches(member)) {
+            return added(member, block, lines, spec, depth, editable, section, prose);
+        }
+        // With the Passages left out layer on, a block's lines that a conditional leaves out are drawn apart from those
+        // that are read, each passage under its condition; an edit of any part is of the whole block's source.
+        List<StoredLine> source = editable ? sourceOf(member, block, lines) : null;
+        List<List<StoredLine>> runs = runs(member, lines);
+        if (runs.size() == 1) {
+            Area area = added(member, block, lines, spec, depth, editable && source != null, section, prose);
+            if (area != null && source != null && source.size() != lines.size()) {
+                area.source = source;
+            }
+            return area;
+        }
+        List<Area> parts = new ArrayList<>();
+        for (List<StoredLine> run : runs) {
+            Area area = added(member, block, run, restrict(spec, run), depth, editable && source != null, section, prose);
+            if (area != null) {
+                area.source = source;
+                area.parts = parts;
+                parts.add(area);
+            }
+        }
+        return parts.isEmpty() ? null : parts.getFirst();
+    }
+
+    private Area added(DocumentAssembly.Member member, StoredBlock block, List<StoredLine> lines, LineRunModel.Spec spec, int depth, boolean editable, String section,
+                       boolean prose) {
         // the pages read every block the print model calls prose; the Reading view the blocks its caller says are
         boolean inline = print ? printsInline(block) : prose;
         List<DocumentAssembly.Part> parts = assembly.parts(member, lines);
@@ -2398,7 +2594,7 @@ public final class DocumentSurfaceView {
         LineRunModel.Spec spec = inlined == null ? read : print ? inlined.spec() : inlined.spec().withInlines(text -> conceptChips(text, false));
         // a unit of the Page layout is bare: the oracles place it by its text and style, and its lines are built from it
         // a block that a tagged region cuts is read there and edited where its file is shown whole: an edit is of the whole block
-        Area area = new Area(member, block, lines, spec, editable && !past && assembly.holds(member, block), section, print);
+        Area area = new Area(member, block, lines, spec, editable && !past && held(member, block), section, print);
         area.inline = inlined != null;
         target.add(area);
         if (print) {
@@ -2416,6 +2612,9 @@ public final class DocumentSurfaceView {
             areasByBlock.putIfAbsent(block.nid(), area);              // a block shown twice is found by nid where it is first shown
         }
         area.holder.getChildren().add(area.area);
+        if (leftOutShown() && !lines.isEmpty()) {
+            conditions().leftOut(member, lines.getFirst().nid()).ifPresent(condition -> leftOut(area, condition));
+        }
         if (inlined != null) {
             // a footnote's mark stands in the text; its words stand beneath the block, where the page has them at its foot
             for (LineRunModel.FootNote foot : inlined.notes()) {
@@ -4609,14 +4808,16 @@ public final class DocumentSurfaceView {
         LineRun first = firstRun.get();
         LineRun last = lastRun.get();
         Area block = home.get();
-        List<String> lines = new ArrayList<>(block.lines.stream().map(StoredLine::text).toList());
+        // the lines the mark is saved in: the whole block's source where a conditional parts it, so no line is lost
+        List<StoredLine> stored = block.saved();
+        List<String> lines = new ArrayList<>(stored.stream().map(StoredLine::text).toList());
         int a = -1;
         int b = -1;
-        for (int i = 0; i < block.lines.size(); i++) {
-            if (block.lines.get(i).nid() == first.nid()) {
+        for (int i = 0; i < stored.size(); i++) {
+            if (stored.get(i).nid() == first.nid()) {
                 a = i;
             }
-            if (block.lines.get(i).nid() == last.nid()) {
+            if (stored.get(i).nid() == last.nid()) {
                 b = i;
             }
         }
@@ -4946,14 +5147,19 @@ public final class DocumentSurfaceView {
         long nid = assembly.lines().get(selection.min()).nid();
         // the block where the selection is: a block its file shows twice is edited in the place the reader chose
         DocumentAssembly.Member member = assembly.memberAt(selection.min()).orElse(null);
-        return areas.stream().filter(a -> a.editable && a.member == member && a.lines.stream().anyMatch(l -> l.nid() == nid)).findFirst();
+        // a block a conditional parts is found by any line of its source, a directive's among them
+        return areas.stream().filter(a -> a.editable && a.member == member && a.saved().stream().anyMatch(l -> l.nid() == nid)).findFirst();
     }
 
     /** Opens the block the selection starts in for editing in place, in the Reading view. */
     void editSelectedBlock() {
         Optional<Area> area = editableBlockOfSelection();
         if (area.isEmpty()) {
-            host.status("Select a line of a paragraph or listing to edit its block.");
+            boolean leftOut = selection != null && assembly != null && !layers.contains(Layer.LEFT_OUT) && selection.min() >= 0
+                    && selection.min() < assembly.lines().size() && assembly.memberAt(selection.min())
+                    .map(member -> assembly.read(member).line(assembly.lines().get(selection.min()).nid()).isEmpty()).orElse(false);
+            host.status(leftOut ? "That line is left out by a conditional: turn on Passages left out in the Layer menu to edit it."
+                    : "Select a line of a paragraph or listing to edit its block.");
             return;
         }
         if (editing != null) {
@@ -4999,12 +5205,14 @@ public final class DocumentSurfaceView {
         if (area.documentBlock != null) {
             area.documentBlock.setPinned(true);                          // stays built while it is edited, wherever the reader scrolls
         }
+        // the editor holds the whole block's source, so its other parts are drawn faint until the edit ends
+        partsWhileEditing(area, true);
         RichTextArea rta = area.area;
         RichTextModel model = new RichTextModel();
         applying = true;
         try {
             rta.setModel(model);
-            rta.appendText(area.lines.stream().map(StoredLine::text).collect(Collectors.joining("\n")), Styles.SCREEN.mono());
+            rta.appendText(area.saved().stream().map(StoredLine::text).collect(Collectors.joining("\n")), Styles.SCREEN.mono());
         } finally {
             applying = false;
         }
@@ -5136,6 +5344,25 @@ public final class DocumentSurfaceView {
                 jfx.incubator.scene.control.richtext.TextPos.ofLeading(index, edit.end()));
     }
 
+    /**
+     * While a block that a conditional parts is edited, its editor holds the source of all its
+     * parts: the editor is drawn at full strength though its passage is left out, and the block's
+     * other parts faint, since their words are in the editor.
+     */
+    private void partsWhileEditing(Area area, boolean editing) {
+        if (area.leftOut != null && area.area != null) {
+            area.area.setOpacity(editing ? 1 : LEFT_OUT_OPACITY);
+        }
+        if (area.parts == null) {
+            return;
+        }
+        for (Area part : area.parts) {
+            if (part != area && part.holder != null) {
+                part.holder.setOpacity(editing ? 0.25 : 1);
+            }
+        }
+    }
+
     /** Cancels the in-place edit: the block returns to its runs. */
     void cancelEdit(Area area) {
         if (area == null || editing != area) {
@@ -5161,6 +5388,7 @@ public final class DocumentSurfaceView {
                 ? "-fx-background-color: #F4F3F1; -fx-background-radius: 4;" : "");
         area.holder.getChildren().removeIf(n -> "stampedDocumentEditButtons".equals(n.getId()));
         editing = null;
+        partsWhileEditing(area, false);
         area.decorate();
         applySelection(area);
         if (area.structured != null) {

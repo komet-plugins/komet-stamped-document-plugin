@@ -204,12 +204,24 @@ public final class DocumentAssembly {
     private final Map<Member, DocumentReading> readings = new IdentityHashMap<>();
     private final Function<String, Optional<StoredDocument>> store;
     private final Function<String, List<Path>> underRoots;
+    /** The attribute names a reader set, entered before the host's first line. */
+    private final List<String> set;
     private final Map<String, Optional<StoredDocument>> looked = new HashMap<>();
 
     private DocumentAssembly(StoredDocument host, String hostPath, Function<String, Optional<StoredDocument>> store,
                              Function<String, List<Path>> underRoots) {
+        this(host, hostPath, store, underRoots, List.of());
+    }
+
+    /** An assembly read with attributes a reader set: each is entered before the host's first line, as an attribute given to AsciiDoc on its command line is. */
+    private DocumentAssembly(StoredDocument host, String hostPath, Function<String, Optional<StoredDocument>> store,
+                             Function<String, List<Path>> underRoots, List<String> set) {
         this.store = store;
         this.underRoots = underRoots;
+        this.set = List.copyOf(set);
+        for (String name : this.set) {
+            attributes.line(":" + name + ":");
+        }
         this.host = new Member(host, hostPath == null ? "" : hostPath, 0, null);
         flatten(this.host);
     }
@@ -243,6 +255,29 @@ public final class DocumentAssembly {
     public static DocumentAssembly of(StoredDocument host, String hostPath, Function<String, Optional<StoredDocument>> store,
                                       Function<String, List<Path>> underRoots) {
         return new DocumentAssembly(host, hostPath, store, underRoots);
+    }
+
+    /**
+     * The assembly of a host document read with attributes a reader set, so the document reads as
+     * another document that includes the same files reads them: {@code compendium} set, a topic
+     * shows the passage it keeps for the compendium. Each name is set before the host's first
+     * line; a document that unsets or sets it again has the last word from that line on.
+     *
+     * @param host       the host document
+     * @param hostPath   the host's repository-relative path, or {@code null} when none is recorded (then nothing resolves)
+     * @param store      a lookup of the store's documents by repository-relative path (forward slashes)
+     * @param underRoots the recorded paths under the AsciiDoc roots, as {@link #of(StoredDocument, String, Function, Function)} takes them
+     * @param set        the attribute names set, each with no value
+     * @return the assembly
+     */
+    public static DocumentAssembly of(StoredDocument host, String hostPath, Function<String, Optional<StoredDocument>> store,
+                                      Function<String, List<Path>> underRoots, List<String> set) {
+        return new DocumentAssembly(host, hostPath, store, underRoots, set);
+    }
+
+    /** @return the attribute names a reader set for this assembly, none when it is read as written */
+    public List<String> set() {
+        return set;
     }
 
     /**

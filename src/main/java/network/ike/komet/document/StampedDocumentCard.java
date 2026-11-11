@@ -55,6 +55,7 @@ import javafx.scene.control.ComboBox;
 import javafx.scene.control.Dialog;
 import javafx.scene.control.Label;
 import javafx.scene.control.ContentDisplay;
+import javafx.scene.control.Menu;
 import javafx.scene.control.MenuButton;
 import javafx.scene.control.MenuItem;
 import javafx.scene.control.ScrollPane;
@@ -171,6 +172,13 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
     private static final String PREF_LAYER = "network.ike.komet.document.layer.";
     /** What the reader folded in a document, by the document's identity: the view's keys, one per fold. */
     private static final String PREF_FOLDS = "network.ike.komet.document.folds.";
+    /**
+     * The attribute names this card sets when it reads a document, kept by the document: with
+     * {@code compendium} set, a book reads as the compendium reads the same topics.
+     */
+    private static final String PREF_ATTRIBUTES = "network.ike.komet.document.attributes.";
+    /** In the More menu: the attributes the document's conditionals ask about, each to set for this card. */
+    private final Menu attributesMenu = new Menu("Attributes set for this card");
     /** Between two folds' keys: a line break, since a key is one line of the document; the preferences are XML, which a control character would break. */
     private static final String FOLD_SEPARATOR = "\n";
 
@@ -663,14 +671,23 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
                 case TINTS -> "Commit tints";
                 case REVIEW_QUEUE -> "Review queue";
                 case ANNOTATION_MARKS -> "Annotation marks";
+                case LEFT_OUT -> "Passages left out";
             });
             item.setId("stampedDocumentLayer" + layer.name());
-            item.setSelected(preferences().getBoolean(PREF_LAYER + layer.name(), layer != DocumentSurfaceView.Layer.TINTS && layer != DocumentSurfaceView.Layer.REVIEW_QUEUE));
+            item.setSelected(preferences().getBoolean(PREF_LAYER + layer.name(), layer != DocumentSurfaceView.Layer.TINTS && layer != DocumentSurfaceView.Layer.REVIEW_QUEUE
+                    && layer != DocumentSurfaceView.Layer.LEFT_OUT));
             item.selectedProperty().addListener((obs, was, is) -> {
                 preferences().putBoolean(PREF_LAYER + layer.name(), is);
                 syncPreferences();
                 if (surface != null) {
                     surface.setLayer(layer, is);
+                    if (layer == DocumentSurfaceView.Layer.LEFT_OUT && assembly != null) {
+                        // this layer changes what the Reading view is made of: the document is drawn again, where the reader stood
+                        surface.show(assembly);
+                        if (surface.view() == DocumentSurfaceView.View.PAGE_LAYOUT) {
+                            buildPages();
+                        }
+                    }
                 }
                 if (graph != null) {
                     graph.relayer();
@@ -708,6 +725,9 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
                 item("Show history", "stampedDocumentHistory", "The STAMPs of the selected lines, or of the whole document, in order", this::showHistory),
                 new SeparatorMenuItem(),
                 item("Go to page…", "stampedDocumentGoToPage", "Scroll the Page layout to a page by its number", this::goToPage));
+        attributesMenu.setId("stampedDocumentAttributes");
+        overflow.getItems().addAll(new SeparatorMenuItem(), attributesMenu);
+        fillAttributesMenu();
         // Nothing here settles a pending edit: that is the bar's, at the bottom of the card.
         toolBar.getChildren().addAll(coordinateButton(), documents, views, modes, layerMenu, overflow);
         // Names beside the icons while the card is wide enough for them; icons alone when it is not.
@@ -1087,7 +1107,7 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
      * then of its neighbours, each listed once with one git call, and never against a listing of
      * the whole store while a tree is known.
      */
-    private static Opened read(PublicId anchor, Path root, long asOf) {
+    private static Opened read(PublicId anchor, Path root, long asOf, List<String> set) {
         Optional<Loaded> host = Loaded.read(anchor, root, true, asOf);
         if (host.isEmpty()) {
             if (asOf == Long.MAX_VALUE) {
@@ -1163,7 +1183,7 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
             }
             return List.of();
         };
-        DocumentAssembly assembly = DocumentAssembly.of(host.get().document(), host.get().path(), store, underRoots);
+        DocumentAssembly assembly = DocumentAssembly.of(host.get().document(), host.get().path(), store, underRoots, set);
         Map<String, Loaded> members = new LinkedHashMap<>();
         members.put(assembly.host().path(), host.get());
         for (DocumentAssembly.Member child : assembly.children()) {
@@ -1183,9 +1203,10 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
         // the card may never have opened this document's file: its repository is found before it is read,
         // so the includes are read from it and a comment or a commit has somewhere to go without asking
         java.util.concurrent.atomic.AtomicReference<Path> home = new java.util.concurrent.atomic.AtomicReference<>();
+        List<String> set = attributesSet(anchor);
         CompletableFuture.supplyAsync(() -> {
             home.set(home(anchor, known).orElse(null));
-            return read(anchor, home.get() != null ? home.get() : known, asOf);
+            return read(anchor, home.get() != null ? home.get() : known, asOf, set);
         }).whenComplete((loaded, failure) -> Platform.runLater(() -> {
             if (failure == null && loaded != null && home.get() != null && java.util.Objects.equals(repoRoot, known)) {
                 useWorkingTree(home.get());
@@ -1247,6 +1268,7 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
         summaries = CommitSummaries.merge(members.values().stream().map(Loaded::summaries).toList());
         surface.setPast(shownAsOf != Long.MAX_VALUE);
         surface.show(assembly);
+        fillAttributesMenu();
         pendingEdit = members.values().stream().anyMatch(Loaded::pending);
         repositoryPanel.refresh(state -> state.remotes().stream().findFirst()
                 .ifPresent(remote -> GitRepositoryTerms.record(shown.anchor(), remote.url(), state.branch())));
@@ -1289,6 +1311,7 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
                 + unresolved.stream().map(DocumentAssembly.Include::target).limit(3).collect(Collectors.joining(", ")) + (unresolved.size() > 3 ? ", …" : "");
         statusLine.setText((shownAsOf == Long.MAX_VALUE ? "" : "As of " + DateTimeUtil.format(shownAsOf)
                 + ", read only: the document as it stood then; move the view's time to the latest to edit it. ")
+                + readWith(assembly.set())
                 // the bar above the line counts the edited lines, so the line does not count them again
                 + DocumentFooter.line(assembly.storedLines(), blocks, references, affirmed, children, 0, lost));
         statusDetail = status(shown, tail
@@ -1487,6 +1510,96 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
                 StampedDocumentCard.this.showingMember(member);
             }
         };
+    }
+
+    // ── attributes set for this card ──────────────────────────────────────────
+
+    /** What the status line says of the attributes the card set: nothing when the document is read as written. */
+    static String readWith(List<String> set) {
+        return set.isEmpty() ? "" : "Read with " + String.join(", ", set) + " set. ";
+    }
+
+    /** The attribute names this card sets for a document, as its preferences keep them. */
+    private List<String> attributesSet(PublicId anchor) {
+        String kept;
+        try {
+            kept = preferences().get(PREF_ATTRIBUTES + foldsKey(anchor), "");
+        } catch (RuntimeException | AssertionError e) {
+            return List.of();
+        }
+        return kept.isBlank() ? List.of() : java.util.Arrays.stream(kept.split(",")).map(String::strip).filter(n -> !n.isEmpty()).distinct().toList();
+    }
+
+    /**
+     * Sets or clears an attribute for the shown document on this card, and reads the document
+     * again: every view, the pages and the PDF among them, then reads it with the attribute.
+     *
+     * @param name the attribute's name
+     * @param set  whether the card sets it
+     */
+    public void setAttribute(String name, boolean set) {
+        if (shown == null || name == null || name.isBlank()) {
+            return;
+        }
+        List<String> names = new ArrayList<>(attributesSet(shown.anchor()));
+        if (set ? names.contains(name) || !names.add(name) : !names.remove(name)) {
+            return;
+        }
+        try {
+            if (names.isEmpty()) {
+                preferences().remove(PREF_ATTRIBUTES + foldsKey(shown.anchor()));
+            } else {
+                preferences().put(PREF_ATTRIBUTES + foldsKey(shown.anchor()), String.join(",", names));
+            }
+            syncPreferences();
+        } catch (RuntimeException | AssertionError e) {
+            LOG.warn("The attributes set for {} could not be kept", shown.anchor(), e);
+        }
+        open(shown.anchor(), null, null);
+    }
+
+    /** @return the attribute names this card set for the shown document */
+    public List<String> attributesSet() {
+        return assembly == null ? List.of() : assembly.set();
+    }
+
+    /**
+     * Fills the More menu's attributes: every name a conditional of the shown document asks
+     * about, checked where this card sets it; one the document sets itself is shown checked and
+     * cannot be changed here, since the document's own line has the last word.
+     */
+    private void fillAttributesMenu() {
+        attributesMenu.getItems().clear();
+        if (assembly == null) {
+            attributesMenu.setDisable(true);
+            return;
+        }
+        List<String> names = new ArrayList<>(DocumentConditions.of(assembly).names());
+        for (String name : assembly.set()) {
+            if (!names.contains(name)) {
+                names.add(name);
+            }
+        }
+        attributesMenu.setDisable(false);
+        if (names.isEmpty()) {
+            MenuItem none = new MenuItem("No conditional in this document asks about an attribute");
+            none.setDisable(true);
+            attributesMenu.getItems().add(none);
+            return;
+        }
+        DocumentAttributes atEnd = assembly.lines().isEmpty() ? DocumentAttributes.intrinsic()
+                : assembly.memberAt(assembly.lines().size() - 1)
+                .map(member -> assembly.attributes(member, assembly.lines().getLast().nid())).orElse(DocumentAttributes.intrinsic());
+        for (String name : names) {
+            boolean here = assembly.set().contains(name);
+            boolean byDocument = !here && atEnd.defined(name);
+            CheckMenuItem item = new CheckMenuItem(byDocument ? name + " (set by the document)" : name);
+            item.setId("stampedDocumentAttribute-" + name);
+            item.setSelected(here || byDocument);
+            item.setDisable(byDocument);
+            item.setOnAction(e -> setAttribute(name, item.isSelected()));
+            attributesMenu.getItems().add(item);
+        }
     }
 
     /** The reader's folds in the shown document, kept with the card's preferences under the document's identity. */
