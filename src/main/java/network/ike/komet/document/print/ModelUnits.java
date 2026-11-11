@@ -68,19 +68,20 @@ public final class ModelUnits {
             }
             block++;
         }
-        boolean afterLists = false;
+        boolean afterFront = false;                               // whether the block before was a front list or the abstract
         boolean opened = false;                                   // whether a unit has opened the body
         for (Block top : model.blocks()) {
             int first = out.size();
             previous = block(out, notes, block++, top, base, previous, 0);
             boolean list = top instanceof DocumentModel.FrontList;
-            if ((list || afterLists) && out.size() > first) {
-                // each front list opens a page, and so does the body after the last of them: the title page stands alone;
+            if ((list || afterFront) && out.size() > first) {
+                // each front list opens a page, and so does the body after the last of them, or after an abstract with no
+                // list: the title page stands alone, with the abstract when there is one;
                 // the body's first unit opens it, and its page is page 1
                 out.set(first, out.get(first).withPageBefore(true).withOpensBody(!list && !opened));
                 opened |= !list;
             }
-            afterLists = list;
+            afterFront = list || top instanceof DocumentModel.Abstract;
         }
         return out;
     }
@@ -182,6 +183,14 @@ public final class ModelUnits {
                     last = add(out, notes, block, Kind.OTHER, c.title(), base * TypstWriter.BOX_TITLE_SCALE, true, 0, last, base);
                 }
                 for (Block inner : c.blocks()) {
+                    last = block(out, notes, block, inner, base, last, depth);
+                }
+                return last;
+            }
+            case DocumentModel.Abstract a -> {
+                // on the title page, set as the blocks it holds: one block of the model, as the writer labels it
+                Kind last = previous;
+                for (Block inner : a.blocks()) {
                     last = block(out, notes, block, inner, base, last, depth);
                 }
                 return last;

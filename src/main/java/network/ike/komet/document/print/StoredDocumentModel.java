@@ -36,6 +36,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -238,9 +239,19 @@ public final class StoredDocumentModel {
      */
     public static DocumentModel of(StoredDocument document, Map<Long, Child> includes, Figures figures) {
         DocumentModel.Lists lists = lists(document);
-        // the lists stand at the front, after the title, as the printed document and the pages have them
-        List<DocumentModel.Block> blocks = new ArrayList<>(figures.frontLists(document, lists));
-        String title = new StoredDocumentModel(document, 0, Map.copyOf(includes), figures).read(blocks, true);
+        StoredDocumentModel reader = new StoredDocumentModel(document, 0, Map.copyOf(includes), figures);
+        // the abstract stands first, on the title page; the lists follow it, after the title, as the printed document and the pages have them
+        List<DocumentModel.Block> blocks = new ArrayList<>();
+        abstractOf(document).ifPresent(block -> {
+            List<DocumentModel.Block> held = reader.abstractBlocks(block);
+            if (held.stream().anyMatch(StoredDocumentModel::sets)) {
+                blocks.add(new DocumentModel.Abstract(held));
+            } else {
+                blocks.addAll(held);                              // an abstract that sets nothing on a page is no abstract
+            }
+        });
+        blocks.addAll(figures.frontLists(document, lists));
+        String title = reader.read(blocks, true);
         List<StoredDocument> all = new ArrayList<>();
         all.add(document);
         includes.values().forEach(child -> all.add(child.document()));
@@ -386,6 +397,69 @@ public final class StoredDocumentModel {
         return newest;
     }
 
+    /**
+     * The document's abstract ({@code dev-document-front-matter}): the first paragraph or open
+     * block of the host that is written with AsciiDoc's {@code abstract} style and comes before
+     * its first section. There is at most one: a second block with the style is an ordinary
+     * block. An include line ends the search as a section does, since what it includes may open
+     * one. An abstract of an included document is not the host's, and is not looked for.
+     *
+     * @param document the host document
+     * @return the abstract's block, or empty for a document with none
+     */
+    public static Optional<StoredBlock> abstractOf(StoredDocument document) {
+        if (document.root() == null) {
+            return Optional.empty();
+        }
+        for (long nid : document.root().members()) {
+            StoredBlock child = document.blocks().get(nid);
+            if (child == null) {
+                continue;                                         // one of the root's own lines: the title, the header's attributes
+            }
+            if (child.kind() == Block.Kind.SECTION) {
+                break;
+            }
+            if (child.kind() == Block.Kind.OPAQUE && child.members().stream().map(document::line).flatMap(Optional::stream)
+                    .anyMatch(line -> line.text().startsWith("include::"))) {
+                break;
+            }
+            if ((child.kind() == Block.Kind.PARAGRAPH || child.kind() == Block.Kind.OPEN) && abstractStyle(child.parameters())) {
+                return Optional.of(child);
+            }
+        }
+        return Optional.empty();
+    }
+
+    /** Whether a block's attribute lines give it the {@code abstract} style: {@code [abstract]}, with or without a role or an id. */
+    static boolean abstractStyle(String parameters) {
+        if (parameters == null) {
+            return false;
+        }
+        for (String line : parameters.split("\n")) {
+            if (StructuredBlocks.style(line).filter("abstract"::equals).isPresent()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Whether a block sets anything on a page: a container, an admonition or a list with nothing in it sets nothing. */
+    private static boolean sets(DocumentModel.Block block) {
+        return switch (block) {
+            case Container c -> !c.title().isEmpty() || c.blocks().stream().anyMatch(StoredDocumentModel::sets);
+            case Admonition a -> a.blocks().stream().anyMatch(StoredDocumentModel::sets);
+            case ListBlock l -> !l.title().isEmpty() || !l.items().isEmpty();
+            default -> true;
+        };
+    }
+
+    /** What an abstract holds: its paragraph, or its open block with the paragraphs and lists inside it, read as any block is. */
+    private List<DocumentModel.Block> abstractBlocks(StoredBlock block) {
+        List<DocumentModel.Block> held = new ArrayList<>();
+        block(block, held);
+        return held;
+    }
+
     private static final Pattern TOC_LEVELS = Pattern.compile("^:toclevels:\\s*(\\d+)\\s*$");
     private static final Pattern SECTION_LEVELS = Pattern.compile("^:sectnumlevels:\\s*(\\d+)\\s*$");
 
@@ -445,8 +519,10 @@ public final class StoredDocumentModel {
         if (!isRoot && !title.isEmpty()) {
             out.add(new Heading(levelOffset, figures.heading(document, document.root(), title), key(document.root().nid())));
         }
+        // the host's abstract is read first, onto the title page: it is not read again where it was written
+        long titlePage = isRoot ? abstractOf(document).map(StoredBlock::nid).orElse(Long.MIN_VALUE) : Long.MIN_VALUE;
         for (Member member : members(document.root())) {
-            if (member.block() != null) {
+            if (member.block() != null && member.block().nid() != titlePage) {
                 block(member.block(), out);
             }
         }

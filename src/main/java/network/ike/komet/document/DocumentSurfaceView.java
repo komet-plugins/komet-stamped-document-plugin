@@ -606,6 +606,8 @@ public final class DocumentSurfaceView {
         boolean byline;
         /** In the Page layout: whether the area is a block's title, a unit of its own above the block. */
         boolean caption;
+        /** In the Page layout: whether the area is part of the document's abstract, which the title page prints beneath the title. */
+        boolean abstractPart;
         /** In the Page layout: whether the area is a front list's title or entry, generated from the header's request. */
         boolean frontList;
         /** In the Page layout: the key of the block a front list's entry names ({@link network.ike.komet.document.print.StoredDocumentModel#key}); empty for any other area. */
@@ -1215,8 +1217,14 @@ public final class DocumentSurfaceView {
                                 t -> captions.heading(block, t.startsWith("= ") ? t.substring(2) : t)), depth, false, under);
                     }
                 }
+                // the host's abstract, written before its first section: it stands before the lists, not where it was written
+                StoredBlock summary = member.host() ? network.ike.komet.document.print.StoredDocumentModel.abstractOf(document).orElse(null) : null;
                 if (print && member.host()) {
-                    // the lists the header asks for, after the title and before the body, as the print model has them
+                    // on the title page, beneath the title and the author, then the lists the header asks for, before the
+                    // body, as the print model has them
+                    if (summary != null) {
+                        abstractAreas(member, summary, depth, under);
+                    }
                     frontLists(member, document);
                 }
                 List<StoredLine> front = own.stream().filter(l -> !l.text().startsWith("= "))
@@ -1226,13 +1234,14 @@ public final class DocumentSurfaceView {
                     frontArea = add(member, block, front, paragraphs(front, "", st.monoGrey(), null), depth, false, under);
                 }
                 if (!print && member.host()) {
-                    // the lists the header asks for, beneath the header's own lines, before the body
-                    Area beneath = frontArea != null ? frontArea : target.isEmpty() ? null : target.getLast();
+                    // the abstract beneath the header's own lines, then the lists the header asks for, before the body
+                    Area abstractEnd = summary == null ? null : abstractAreas(member, summary, depth, under);
+                    Area beneath = abstractEnd != null ? abstractEnd : frontArea != null ? frontArea : target.isEmpty() ? null : target.getLast();
                     if (beneath != null) {
                         generatedLists(beneath, document);
                     }
                 }
-                renderChildren(member, children, depth, under);
+                renderChildren(member, summary == null ? children : children.stream().filter(child -> child.nid() != summary.nid()).toList(), depth, under);
             }
             case SECTION -> {
                 List<StoredLine> heading = own.stream().filter(l -> l.text().startsWith("=")).toList();
@@ -1390,6 +1399,23 @@ public final class DocumentSurfaceView {
 
     /** The figures of each block's source: the model and the page must draw the same ones, and a sweep is not free. */
     private final Map<String, List<network.ike.komet.document.DecisionFigure>> printed = new HashMap<>();
+
+    /**
+     * The host's abstract ({@code dev-document-front-matter}), drawn as its block is drawn anywhere,
+     * in the place the front of a document gives it: on the pages straight after the title and the
+     * author, so the title page prints it; in the Reading view beneath the header's lines and
+     * above the lists.
+     *
+     * @return the last area it drew, or null when it drew none
+     */
+    private Area abstractAreas(DocumentAssembly.Member host, StoredBlock block, int depth, String section) {
+        int before = target.size();
+        render(host, block, depth, 1, section);
+        for (Area area : target.subList(before, target.size())) {
+            area.abstractPart = true;
+        }
+        return target.size() > before ? target.getLast() : null;
+    }
 
     /**
      * The lists the document's header asks for, drawn beneath the header block that asks: the
@@ -2614,7 +2640,7 @@ public final class DocumentSurfaceView {
         List<network.ike.komet.document.print.LayoutOracle.Unit> out = new ArrayList<>();
         double base = theme.baseFontSize();
         network.ike.komet.document.print.LayoutOracle.Kind previous = null;
-        boolean afterLists = false;                               // the unit after the front lists opens the body's first page
+        boolean afterFront = false;                               // the unit after the front lists, or after an abstract with no list, opens the body's first page
         boolean bodyOpened = false;
         for (int i = 0; i < units.size(); i++) {
             Area area = units.get(i);
@@ -2625,12 +2651,14 @@ public final class DocumentSurfaceView {
                         base * network.ike.komet.document.print.LayoutOracle.FOOTNOTE_SCALE, false, 0, 0, 0, false).withInline(area.spec.runs(), List.of(), area.note));
                 continue;
             }
-            // Each front list opens a page, and so does the body after the last of them, as the writer's page breaks set it.
-            boolean opensPage = area.frontList ? area.heading : afterLists;
+            // Each front list opens a page, and so does the body after the last of them or after an abstract with no list, as
+            // the writer's page breaks set it. The abstract opens none: it stands on the title page.
+            boolean front = area.frontList || area.abstractPart;
+            boolean opensPage = area.frontList ? area.heading : !area.abstractPart && afterFront;
             // The body's first unit opens it: its page is page 1, and the pages before it are the front matter's (Folios).
-            boolean opensBody = !area.frontList && afterLists && !bodyOpened;
+            boolean opensBody = !front && afterFront && !bodyOpened;
             bodyOpened |= opensBody;
-            afterLists = area.frontList;
+            afterFront = front;
             if (area.drawn != null) {
                 double[] spacing = network.ike.komet.document.print.UnitSpacing.of(
                         network.ike.komet.document.print.LayoutOracle.Kind.FIGURE, previous, base, base);

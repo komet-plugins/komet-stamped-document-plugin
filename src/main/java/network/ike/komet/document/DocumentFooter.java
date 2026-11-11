@@ -89,7 +89,9 @@ final class DocumentFooter {
 
     /**
      * The pages a reader may ask to go to, as the pages print their numbers: "Page 1 to 12", or
-     * for a document with front matter "Page i to xiii, then 1 to 183".
+     * for a document with front matter "Page i to xiii, then 1 to 183". Where the title page is
+     * the only front matter, as in a document with a short abstract and no list, "Page i, then 1
+     * to 12".
      *
      * @param folios the folios of the pages
      * @param pages  the page count
@@ -100,7 +102,8 @@ final class DocumentFooter {
         if (!folios.frontMatter() || folios.bodyPage() > last) {
             return "Page " + folios.counted(0) + " to " + folios.counted(last);
         }
-        return "Page " + folios.counted(0) + " to " + folios.counted(folios.bodyPage() - 1) + ", then 1 to " + folios.counted(last);
+        String front = folios.bodyPage() == 1 ? folios.counted(0) : folios.counted(0) + " to " + folios.counted(folios.bodyPage() - 1);
+        return "Page " + front + ", then 1 to " + folios.counted(last);
     }
 
     private static String count(int n, String noun) {

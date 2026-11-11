@@ -215,6 +215,11 @@ public final class PrintBlocks {
                 box.setMaxWidth(Double.MAX_VALUE);
                 add(indented(box, depth), c.title(), true, false);
             }
+            case DocumentModel.Abstract a -> {
+                for (Block inner : a.blocks()) {
+                    block(inner, depth);                          // beneath the title, as the blocks it holds
+                }
+            }
             case DocumentModel.FrontList f -> {
                 // the preview knows no page numbers: the entries stand as text under their title
                 section = f.title();
@@ -297,6 +302,13 @@ public final class PrintBlocks {
                     box.getChildren().add(blockTitle(c.title(), 0));
                 }
                 for (Block inner : c.blocks()) {
+                    box.getChildren().add(node(inner));
+                }
+                yield box;
+            }
+            case DocumentModel.Abstract a -> {
+                VBox box = new VBox(base * 0.3);
+                for (Block inner : a.blocks()) {
                     box.getChildren().add(node(inner));
                 }
                 yield box;

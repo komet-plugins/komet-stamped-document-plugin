@@ -20,6 +20,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 
 /**
@@ -38,8 +39,11 @@ import java.util.Set;
  * {@code key}, so a writer can print the page the block lands on and a layout oracle can place
  * every entry as a unit of text.
  *
+ * <p>An abstract is a block of its own before the lists ({@link Abstract}): what the title page
+ * prints beneath the title and the author ({@code dev-document-front-matter}).
+ *
  * @param title  the document title, possibly empty
- * @param blocks the blocks in reading order, the front lists first
+ * @param blocks the blocks in reading order: the abstract first when the document has one, then the front lists, then the body
  * @param lists  what the header asks for
  * @param byline the author and the date set beneath the title
  */
@@ -111,20 +115,27 @@ public record DocumentModel(String title, List<Block> blocks, Lists lists, Bylin
     }
 
     /**
-     * Whether the document has front matter ({@code dev-document-front-matter}): a list its
-     * header asks for, which stands before the body. Such a document's title stands on a page of
-     * its own, its front matter is numbered in lowercase roman numerals, and its body starts at
-     * page 1. A list with nothing to list is left out of the model, and is no front matter.
+     * Whether the document has front matter ({@code dev-document-front-matter}): an abstract, or
+     * a list its header asks for, which stands before the body. Such a document's title stands on
+     * a page of its own, its front matter is numbered in lowercase roman numerals, and its body
+     * starts at page 1. A list with nothing to list is left out of the model, and is no front
+     * matter; nor is an abstract with nothing after it, which has no body to stand in front of.
      *
-     * @return whether a front list stands among the blocks
+     * @return whether a front list stands among the blocks, or an abstract with a block after it
      */
     public boolean frontMatter() {
-        for (Block block : blocks) {
-            if (block instanceof FrontList) {
+        for (int i = 0; i < blocks.size(); i++) {
+            Block block = blocks.get(i);
+            if (block instanceof FrontList || block instanceof Abstract && i + 1 < blocks.size()) {
                 return true;
             }
         }
         return false;
+    }
+
+    /** @return the document's abstract, which the title page prints beneath the title; empty for a document with none */
+    public Optional<Abstract> abstractBlock() {
+        return !blocks.isEmpty() && blocks.getFirst() instanceof Abstract first ? Optional.of(first) : Optional.empty();
     }
 
     /** @return whether the title stands on a page of its own, counted as page i and showing no number: a titled document with front matter */
@@ -170,7 +181,7 @@ public record DocumentModel(String title, List<Block> blocks, Lists lists, Bylin
     }
 
     /** One block of the document. */
-    public sealed interface Block permits Heading, Paragraph, Admonition, Verbatim, ListBlock, Table, Image, Drawn, Container, FrontList { }
+    public sealed interface Block permits Heading, Paragraph, Admonition, Verbatim, ListBlock, Table, Image, Drawn, Container, Abstract, FrontList { }
 
     /** The key of a block no list entry names. */
     private static String keyOrNone(String key) {
@@ -330,6 +341,22 @@ public record DocumentModel(String title, List<Block> blocks, Lists lists, Bylin
 
         /** The container kinds a writer distinguishes. */
         public enum Kind { EXAMPLE, SIDEBAR, QUOTE, OPEN }
+    }
+
+    /**
+     * The document's abstract ({@code dev-document-front-matter}): the block written with
+     * AsciiDoc's {@code abstract} style before the first section. It is the model's first block,
+     * and there is at most one. On the pages it is printed on the title page, beneath the title
+     * and the author; what does not fit runs on to the next pages, which are front matter. The
+     * lists and the body follow on pages of their own. It is no entry of the contents.
+     *
+     * @param blocks what the abstract holds: its paragraph, or its open block with the paragraphs and lists inside it
+     */
+    public record Abstract(List<Block> blocks) implements Block {
+
+        public Abstract {
+            blocks = List.copyOf(blocks);
+        }
     }
 
     /**

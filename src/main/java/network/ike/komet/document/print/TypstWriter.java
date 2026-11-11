@@ -64,6 +64,11 @@ import java.util.Objects;
  * matter ({@link DocumentModel#frontMatter()}, {@code dev-document-front-matter}) numbers the
  * front matter in lowercase roman numerals, shows no number on its title page, and starts the
  * body at 1: see {@link #folioHelper}. {@link Folios} gives the same numbers to the Page layout.
+ *
+ * <p>An abstract ({@link DocumentModel.Abstract}) is written straight after the title and the
+ * author, so it is printed on the title page; what the page has no room for runs on to the next
+ * pages, which are front matter. A page break follows it, before the first list or, in a document
+ * with no list, before the body.
  */
 public final class TypstWriter {
 
@@ -336,8 +341,9 @@ public final class TypstWriter {
         boolean opened = false;                                   // whether the body has been opened
         for (Block block : document.blocks()) {
             boolean list = block instanceof DocumentModel.FrontList;
-            if (list || previous instanceof DocumentModel.FrontList) {
-                // each front list opens a page, and so does the body after the last of them: the title page stands alone;
+            if (list || previous instanceof DocumentModel.FrontList || previous instanceof DocumentModel.Abstract) {
+                // each front list opens a page, and so does the body after the last of them, or after an abstract with no
+                // list: the title page stands alone, with the abstract when there is one;
                 // weak, so a page already empty (a document with no title) is not left blank
                 out.append(PAGE_BREAK);
                 if (!list && !opened) {
@@ -356,7 +362,7 @@ public final class TypstWriter {
         }
     }
 
-    /** The page break before a front list and before the body that follows the lists: see {@link #body}. */
+    /** The page break before a front list and before the body that follows the lists or the abstract: see {@link #body}. */
     public static final String PAGE_BREAK = "#pagebreak(weak: true)\n\n";
 
     /**
@@ -615,6 +621,7 @@ public final class TypstWriter {
             case Heading h -> out.append(indent).append("=".repeat(Math.clamp(h.level(), 1, 6))).append(' ')
                     .append(markup(h.text())).append(target(h.key())).append("\n\n");
             case DocumentModel.FrontList f -> frontList(f, out, indent);
+            case DocumentModel.Abstract a -> blocks(a.blocks(), out, indent);   // as it would be set anywhere: its place is what makes it the abstract
             case Paragraph p -> out.append(indent).append(markup(p.text()).replace("\n", "\n" + indent)).append("\n\n");
             case Admonition a -> {
                 out.append(indent).append("#ike-admonition(").append(string(a.label())).append(")[\n");
