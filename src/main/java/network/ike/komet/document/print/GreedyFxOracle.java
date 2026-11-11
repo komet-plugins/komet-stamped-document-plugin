@@ -98,6 +98,7 @@ public final class GreedyFxOracle implements LayoutOracle {
     public Layout layout(List<Unit> units, Geometry geometry) {
         long started = System.nanoTime();
         List<Line> lines = new ArrayList<>();
+        rowCells = new HashMap<>();
         int page = 0;
         double baseline = -1;                                     // the last baseline on the page; -1 at a page's top
         Unit previous = null;                                     // the unit before, on the same page
@@ -236,8 +237,11 @@ public final class GreedyFxOracle implements LayoutOracle {
         }
         foot.close(page, lines);
         lines.sort(Comparator.comparingInt(Line::page).thenComparingInt(Line::unit).thenComparingInt(Line::from));
-        return new Layout(page + 1, lines, false, (System.nanoTime() - started) / 1_000_000, List.of(), Folios.of(units, lines));
+        return new Layout(page + 1, lines, false, (System.nanoTime() - started) / 1_000_000, List.of(), Folios.of(units, lines), rowCells);
     }
+
+    /** The lines of each row's cells in the layout being made, by the row's unit: where a page draws them. */
+    private Map<Integer, List<LayoutOracle.CellLine>> rowCells = new HashMap<>();
 
     /** Whether a row is its table's first: a table's notes stand between its rows. */
     private static boolean opensTable(List<Unit> units, int row) {
@@ -300,11 +304,66 @@ public final class GreedyFxOracle implements LayoutOracle {
      * @return that cell's last baseline
      */
     private double setRow(Unit row, int page, double first, Geometry geometry, List<Line> lines) {
-        int[] cells = rowLines(row, geometry);
+        List<List<int[]>> broken = cellBreaks(row, geometry);
+        int tallest = Math.max(1, broken.stream().mapToInt(List::size).max().orElse(1));
+        int firstLines = broken.isEmpty() ? 1 : Math.max(1, broken.getFirst().size());
         double pitch = UnitSpacing.pitch(row);
-        double baseline = row.bold() ? first + (cells[0] - cells[1]) * pitch : first;
+        double baseline = row.bold() ? first + (tallest - firstLines) * pitch : first;
         lines.add(new Line(row.index(), page, geometry.contentLeft() + TypstOracle.TABLE_INSET, baseline, 0, row.text().length(), false));
-        return first + (cells[0] - 1) * pitch;
+        if (!rowCells.containsKey(row.index())) {                 // a header set again on a later page keeps the lines of its first setting
+            List<LayoutOracle.CellLine> own = new ArrayList<>();
+            for (int c = 0; c < broken.size(); c++) {
+                List<int[]> cell = broken.get(c);
+                for (int i = 0; i < cell.size(); i++) {
+                    // a body row's cells begin at its top; a header's stand on their last lines
+                    double at = first + (row.bold() ? tallest - cell.size() + i : i) * pitch;
+                    own.add(new LayoutOracle.CellLine(c, page, at, cell.get(i)[0], cell.get(i)[1]));
+                }
+            }
+            rowCells.put(row.index(), own);
+        }
+        return first + (tallest - 1) * pitch;
+    }
+
+    /**
+     * Where each cell of a row breaks its lines, as offsets of the row's text: the cells are the
+     * stretches between the bars, each wrapped to its column's share of the measure less the
+     * cell's inset either side. A cell with no text has no line.
+     */
+    private List<List<int[]>> cellBreaks(Unit row, Geometry geometry) {
+        String text = row.text();
+        List<int[]> cells = new ArrayList<>();                    // each cell's text, as offsets of the row's
+        int start = 0;
+        for (int bar = text.indexOf('\u2502'); bar >= 0; bar = text.indexOf('\u2502', start)) {
+            cells.add(new int[] {start, bar});
+            start = bar + 1;
+        }
+        cells.add(new int[] {start, text.length()});
+        int total = 0;
+        for (int c = 0; c < cells.size(); c++) {
+            total += c < row.columns().size() ? row.columns().get(c) : 1;
+        }
+        List<List<int[]>> out = new ArrayList<>();
+        for (int c = 0; c < cells.size(); c++) {
+            int from = cells.get(c)[0];
+            int to = cells.get(c)[1];
+            while (from < to && Character.isWhitespace(text.charAt(from))) {
+                from++;
+            }
+            while (to > from && Character.isWhitespace(text.charAt(to - 1))) {
+                to--;
+            }
+            List<int[]> lines = new ArrayList<>();
+            if (to > from) {
+                Unit one = new Unit(row.index(), row.block(), Kind.PARAGRAPH, text.substring(from, to), row.fontSize(), row.bold(), 0, 0, 0, false);
+                double share = geometry.contentWidth() * (c < row.columns().size() ? row.columns().get(c) : 1) / Math.max(1, total);
+                for (int[] line : breaks(one, share - 2 * TypstOracle.TABLE_INSET, false)) {
+                    lines.add(new int[] {from + line[0], from + line[1]});
+                }
+            }
+            out.add(lines);
+        }
+        return out;
     }
 
     /** The next unit in the flow after an index, a note being placed elsewhere; {@code null} at the end. */
@@ -810,21 +869,9 @@ public final class GreedyFxOracle implements LayoutOracle {
 
     /** @return the lines of a row's tallest cell, and of its first */
     private int[] rowLines(Unit row, Geometry geometry) {
-        String[] cells = row.text().split("\u2502");
-        int total = 0;
-        for (int c = 0; c < cells.length; c++) {
-            total += c < row.columns().size() ? row.columns().get(c) : 1;
-        }
-        int tallest = 1;
-        int first = 1;
-        for (int c = 0; c < cells.length; c++) {
-            Unit one = new Unit(row.index(), row.block(), Kind.PARAGRAPH, cells[c].strip(), row.fontSize(), row.bold(), 0, 0, 0, false);
-            double share = geometry.contentWidth() * (c < row.columns().size() ? row.columns().get(c) : 1) / total;
-            int lines = breaks(one, share - 2 * TypstOracle.TABLE_INSET, false).size();
-            tallest = Math.max(tallest, lines);
-            first = c == 0 ? lines : first;
-        }
-        return new int[] {tallest, first};
+        List<List<int[]>> broken = cellBreaks(row, geometry);
+        int tallest = Math.max(1, broken.stream().mapToInt(List::size).max().orElse(1));
+        return new int[] {tallest, broken.isEmpty() ? 1 : Math.max(1, broken.getFirst().size())};
     }
 
     /** @return the font a unit is set in */

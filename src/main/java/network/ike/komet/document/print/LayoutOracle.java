@@ -225,6 +225,21 @@ public interface LayoutOracle {
     }
 
     /**
+     * One line of one cell of a table row. A row is one {@link Line}, placed whole, but its cells
+     * break their own lines, and a renderer that broke them again by its own measure of the words
+     * would break some elsewhere: a cell a line taller than Typst set it runs into the row beneath.
+     * So the oracle says where each cell's lines are, and a page draws them there. A row Typst
+     * broke over a page has cell lines on both.
+     *
+     * @param cell     the cell's index in its row
+     * @param page     the 0-based page
+     * @param baseline the line's baseline, from the page's top edge, in points
+     * @param from     the first character of the row unit's text on the line
+     * @param to       the character after the last
+     */
+    record CellLine(int cell, int page, double baseline, int from, int to) { }
+
+    /**
      * The page geometry both oracles lay out for, in points.
      *
      * @param pageWidth    the page width
@@ -251,13 +266,25 @@ public interface LayoutOracle {
      * @param millis how long the oracle took
      * @param notes  what the oracle could not do exactly, one per line; empty when nothing
      * @param folios the page numbers the pages print: where the body begins, and whether a title page stands before it
+     * @param cells  the lines of each table row's cells, by the row's unit; none for a row whose cells the renderer wraps
      */
-    record Layout(int pages, List<Line> lines, boolean exact, long millis, List<String> notes, Folios folios) {
+    record Layout(int pages, List<Line> lines, boolean exact, long millis, List<String> notes, Folios folios, java.util.Map<Integer, List<CellLine>> cells) {
 
         public Layout {
             lines = List.copyOf(lines);
             notes = List.copyOf(notes);
             Objects.requireNonNull(folios, "folios is null");
+            cells = java.util.Map.copyOf(cells);
+        }
+
+        /** A layout that says nothing of its rows' cells. */
+        public Layout(int pages, List<Line> lines, boolean exact, long millis, List<String> notes, Folios folios) {
+            this(pages, lines, exact, millis, notes, folios, java.util.Map.of());
+        }
+
+        /** @return the lines of a row's cells, in the order of the row's text; empty when the oracle gave none */
+        public List<CellLine> cellsOf(int unit) {
+            return cells.getOrDefault(unit, List.of());
         }
 
         /** A layout of a document with no front matter, numbered in arabic from 1. */

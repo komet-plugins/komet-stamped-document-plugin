@@ -337,18 +337,25 @@ public final class PrintBlocks {
         row.setStyle("-fx-background-color: " + (header ? TINT_HEADER_CELL : "transparent")
                 + "; -fx-border-color: #cfcbc4; -fx-border-width: 0 0 0.5 0;");
         List<String> cells = t.rows().get(r);
+        List<Integer> spans = t.spansOf(r);
         for (int c = 0; c < columns; c++) {
             ColumnConstraints constraints = new ColumnConstraints();
             constraints.setPercentWidth(100.0 * (c < t.widths().size() ? t.widths().get(c) : 1) / total);
             constraints.setHgrow(Priority.ALWAYS);
             constraints.setFillWidth(true);
             row.getColumnConstraints().add(constraints);
-            Text text = new Text(c < cells.size() ? cells.get(c) : "");
+        }
+        int at = 0;
+        for (int k = 0; at < columns; k++) {
+            // a cell takes the columns it spans; a row short of cells is filled out with empty ones
+            int span = k < spans.size() ? Math.clamp(spans.get(k), 1, columns - at) : 1;
+            Text text = new Text(k < cells.size() ? cells.get(k) : "");
             text.setFont(font(header ? FontWeight.BOLD : FontWeight.NORMAL, FontPosture.REGULAR, 0.9));
             TextFlow cell = new TextFlow(text);
             cell.setPadding(new Insets(base * 0.3, base * 0.5, base * 0.3, base * 0.5));
             cell.setMaxWidth(Double.MAX_VALUE);
-            row.add(cell, c, 0);
+            row.add(cell, at, 0, span, 1);
+            at += span;
         }
         return row;
     }

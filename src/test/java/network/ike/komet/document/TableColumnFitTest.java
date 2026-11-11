@@ -37,6 +37,20 @@ class TableColumnFitTest {
     }
 
     @Test
+    @DisplayName("A printed table keeps its weights when every word fits, and else is set in the widths that hold them")
+    void printedWidthsWidenAColumnTooNarrowForItsWord() {
+        List<Integer> weights = List.of(3, 1, 3);
+        assertEquals(weights, TableColumnFit.printed(weights, new double[] {40, 60, 40}, 468), "a seventh of the measure holds the word: nothing changes");
+
+        // the middle column's share is 66.9 points, and its longest word needs 75
+        List<Integer> printed = TableColumnFit.printed(weights, new double[] {40, 75, 40}, 468);
+        assertEquals(7500, printed.get(1), "the narrow column is as wide as its word, in hundredths of a point");
+        assertEquals(46800, printed.stream().mapToInt(Integer::intValue).sum(), "and the three still share the measure");
+        assertEquals(printed.get(0), printed.get(2), "the others give up the room alike");
+        assertEquals(weights, TableColumnFit.printed(weights, new double[] {40, 75, 40}, 0), "with no measure there is nothing to fit to");
+    }
+
+    @Test
     @DisplayName("With room for every word, each column takes its weight's share")
     void weightsDecideWhenEveryWordFits() {
         double[] share = TableColumnFit.shares(WEIGHTS, new double[] {40, 30, 30, 60}, 460);

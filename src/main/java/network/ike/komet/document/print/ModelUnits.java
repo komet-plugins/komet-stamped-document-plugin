@@ -164,7 +164,7 @@ public final class ModelUnits {
                     boolean header = r++ < t.headerRows();
                     int at = out.size();
                     last = add(out, notes, block, Kind.TABLE_ROW, String.join(TableCells.BAR, row), base, header, 0, last, base);
-                    out.set(at, out.get(at).withColumns(t.widths()));
+                    out.set(at, out.get(at).withColumns(t.weightsOf(r - 1)));   // a spanning cell is as wide as its columns together
                 }
                 return last;
             }

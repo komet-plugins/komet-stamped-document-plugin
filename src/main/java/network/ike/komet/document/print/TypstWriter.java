@@ -198,7 +198,15 @@ public final class TypstWriter {
         StringBuilder content = new StringBuilder(4096);
         CHUNK_WORDS.set(labels == Labels.WORDS);
         NOTES.set(new InlineText.Numbering());
-        TARGETS.set(document.targets());
+        // a block is labelled when something names it: a front list's entry, or a link in the text
+        java.util.Set<String> named = new java.util.LinkedHashSet<>(document.targets());
+        document.blocks().forEach(block -> texts(block, text -> {
+            java.util.regex.Matcher link = INTERNAL_LINK.matcher(text);
+            while (link.find()) {
+                named.add(link.group(1));
+            }
+        }));
+        TARGETS.set(named);
         try {
             body(document, labels, content);
         } finally {
@@ -214,6 +222,12 @@ public final class TypstWriter {
         }
         if (content.indexOf("ike-entry(") >= 0) {
             out.append(ENTRY_HELPERS);
+        }
+        if (content.indexOf("ike-ref(") >= 0) {
+            out.append(REF_HELPER);
+        }
+        if (content.indexOf("ike-head-note(") >= 0) {
+            out.append(HEAD_NOTE_HELPER);
         }
         if (labels == Labels.WORDS) {
             out.append(TypstOracle.WORD_RULE);
@@ -500,7 +514,7 @@ public final class TypstWriter {
 
     /** An entry's text with its short last word tied to the word before it ({@link FrontLists#tied}): its spans stand where they did. */
     private static InlineText tied(InlineText entry) {
-        return new InlineText(FrontLists.tied(entry.text()), entry.runs(), entry.notes(), entry.offsets());
+        return new InlineText(FrontLists.tied(entry.text()), entry.runs(), entry.notes(), entry.offsets(), entry.anchors());
     }
 
     /** The page setup and the styles every construct relies on, for a document with no front matter. */
@@ -785,12 +799,12 @@ public final class TypstWriter {
         if (header > 0) {
             out.append(indent).append("    table.header(repeat: true,\n");
             for (int r = 0; r < header; r++) {
-                row(t.rows().get(r), columns, false, true, out, indent + "      ");
+                row(t.rows().get(r), t.spansOf(r), columns, false, true, out, indent + "      ");
             }
             out.append(indent).append("    ),\n");
         }
         for (int r = header; r < t.rows().size(); r++) {
-            row(t.rows().get(r), columns, overPage(t, r, columns), false, out, indent + "    ");
+            row(t.rows().get(r), t.spansOf(r), columns, overPage(t, r, columns), false, out, indent + "    ");
         }
         out.append(indent).append("  ),\n");
         if (!t.title().isEmpty()) {
@@ -814,18 +828,31 @@ public final class TypstWriter {
      */
     private static boolean overPage(Table t, int r, int columns) {
         List<String> cells = t.rows().get(r);
+        List<Integer> weights = t.weightsOf(r);                  // a spanning cell has the room of its columns together
         int total = 0;
         for (int c = 0; c < columns; c++) {
             total += c < t.widths().size() ? t.widths().get(c) : 1;
         }
         for (int c = 0; c < Math.min(columns, cells.size()); c++) {
-            int width = c < t.widths().size() ? t.widths().get(c) : 1;
+            int width = c < weights.size() ? weights.get(c) : 1;
             if ((long) cells.get(c).length() * total / width > WHOLE_ROW_CHARACTERS) {
                 return true;
             }
         }
         return false;
     }
+
+    /**
+     * A note in a table's header row. The header is set again at the top of every page the table
+     * runs on to, and Typst sets a footnote in it again each time, with the next number: a table
+     * of three pages gave its one note three times, and moved every later note's number by two.
+     * A note is given once, on the page its row first stands on; where the header is repeated the
+     * mark stands again, pointing at the same note. The counter is the note's own, stepped each
+     * time the header is set, so the first setting is the one that finds it at nothing.
+     */
+    static final String HEAD_NOTE_HELPER = "#let ike-head-note(n, body) = context { let key = \"ike-head-note-\" + str(n); "
+            + "let again = counter(key).get().first() > 0; counter(key).step(); "
+            + "if again { footnote(label(key)) } else [#footnote(body)#label(key)] }\n";
 
     /** The alignment of a header row's cells: column heads stand on their last lines, over the column they head. */
     static final String HEAD_CELL = "table.cell(align: left + bottom)[";
@@ -837,11 +864,20 @@ public final class TypstWriter {
      * sitting just above the rule under them. That is the usual rule of the style guides
      * (Chicago: column heads align on the bottom line, the cells of a row on their first).
      */
-    private static void row(List<String> cells, int columns, boolean breakable, boolean header, StringBuilder out, String indent) {
+    private static void row(List<String> cells, List<Integer> spans, int columns, boolean breakable, boolean header, StringBuilder out, String indent) {
         out.append(indent);
-        for (int c = 0; c < columns; c++) {
-            String cell = c < cells.size() ? cells.get(c) : "";
-            out.append(header ? HEAD_CELL : breakable ? "table.cell(breakable: true)[" : "[").append(markup(cell)).append("], ");
+        int filled = 0;
+        for (int c = 0; filled < columns; c++) {
+            String cell = c < cells.size() ? cells.get(c) : "";   // a short row is padded to the table's columns
+            int span = c < spans.size() ? Math.clamp(spans.get(c), 1, columns - filled) : 1;
+            filled += span;
+            if (span > 1) {
+                // a cell over several columns, a heading within the table for one: Typst's own cell says how many
+                out.append("table.cell(colspan: ").append(span).append(header ? ", align: left + bottom" : breakable ? ", breakable: true" : "").append(")[");
+            } else {
+                out.append(header ? HEAD_CELL : breakable ? "table.cell(breakable: true)[" : "[");
+            }
+            out.append(markup(InlineText.of(cell, NOTES.get()), header)).append("], ");
         }
         out.append('\n');
     }
@@ -862,20 +898,38 @@ public final class TypstWriter {
 
     /** Printed text as markup. */
     static String markup(InlineText inline) {
+        return markup(inline, false);
+    }
+
+    /**
+     * Printed text as markup.
+     *
+     * @param head whether the text is a cell of a table's header row, where a note is given once however often the header is set
+     */
+    private static String markup(InlineText inline, boolean head) {
         String text = inline.text();
         StringBuilder out = new StringBuilder(text.length() + 32);
         int run = 0;
         int note = 0;
+        int anchor = 0;
         int at = 0;
-        while (at < text.length()) {
+        while (at < text.length() || anchor < inline.anchors().size()) {
+            if (anchor < inline.anchors().size() && inline.anchors().get(anchor).at() <= at) {
+                out.append(anchor(inline.anchors().get(anchor++).id()));
+                continue;
+            }
             Run nextRun = run < inline.runs().size() ? inline.runs().get(run) : null;
             Note nextNote = note < inline.notes().size() ? inline.notes().get(note) : null;
             int next = Math.min(nextRun == null ? text.length() : nextRun.from(), nextNote == null ? text.length() : nextNote.from());
+            if (anchor < inline.anchors().size()) {
+                next = Math.min(next, Math.max(at, inline.anchors().get(anchor).at()));
+            }
             if (next > at) {
                 out.append(plain(text.substring(at, next)));
                 at = next;
             } else if (nextNote != null && nextNote.from() == at) {
-                out.append(footnote(nextNote));
+                out.append(head && !nextNote.repeat() && nextNote.id() == null
+                        ? "#ike-head-note(" + nextNote.number() + ")[" + markup(nextNote.body()) + "];" : footnote(nextNote));
                 at = nextNote.to();
                 note++;
             } else if (nextRun != null) {
@@ -916,7 +970,65 @@ public final class TypstWriter {
         if (run.highlight()) {
             body = "#highlight(fill: rgb(\"#fff3a3\"))[" + body + "];";
         }
-        return run.href() == null ? body : "#link(" + string(run.href()) + ")[" + body + "];";
+        if (run.href() == null) {
+            return body;
+        }
+        if (run.href().startsWith(InlineText.INTERNAL) && LABEL_NAME.matcher(run.href().substring(1)).matches()) {
+            return "#ike-ref(<" + TARGET_LABEL + run.href().substring(1) + ">)[" + body + "];";
+        }
+        return "#link(" + string(run.href()) + ")[" + body + "];";
+    }
+
+    /** What a label's name may hold; an anchor or a link's target with anything else is not written as a label. */
+    private static final java.util.regex.Pattern LABEL_NAME = java.util.regex.Pattern.compile("[A-Za-z0-9_:.-]+");
+
+    /** A link into the document as its reading wrote it: {@code link:#b1234[text]}. */
+    private static final java.util.regex.Pattern INTERNAL_LINK = java.util.regex.Pattern.compile("link:#([A-Za-z0-9_:.-]+)\\[");
+
+    /** The colour of a link into the document, on paper as on the screen. */
+    public static final String LINK_COLOUR = "#2a5db0";
+
+    /**
+     * A link into the document: to the block its target names, in the link's colour, where the
+     * document has that block, and the plain text where it has not. The link is to the first
+     * place the label stands, since a file shown twice stands its anchors twice.
+     */
+    static final String REF_HELPER = "#let ike-ref(target, body) = context { let found = query(target); "
+            + "if found.len() > 0 { link(found.first().location(), text(fill: rgb(\"" + LINK_COLOUR + "\"), body)) } else { body } }\n";
+
+    /** An anchor in the text: nothing on the page, and a place a link points at. */
+    private static String anchor(String id) {
+        return LABEL_NAME.matcher(id).matches() ? "#metadata(none)<" + TARGET_LABEL + id + ">" : "";
+    }
+
+    /** Every text of a block that is read for its inline markup, its inner blocks' among them. */
+    private static void texts(Block block, java.util.function.Consumer<String> to) {
+        switch (block) {
+            case Heading h -> to.accept(h.text());
+            case Paragraph p -> to.accept(p.text());
+            case Admonition a -> a.blocks().forEach(inner -> texts(inner, to));
+            case Verbatim v -> to.accept(v.title());
+            case ListBlock l -> {
+                to.accept(l.title());
+                for (Item item : l.items()) {
+                    to.accept(item.term());
+                    to.accept(item.text());
+                    item.blocks().forEach(inner -> texts(inner, to));
+                }
+            }
+            case Table t -> {
+                to.accept(t.title());
+                t.rows().forEach(row -> row.forEach(to));
+            }
+            case Image i -> to.accept(i.title());
+            case DocumentModel.Drawn d -> to.accept(d.caption());
+            case Container c -> {
+                to.accept(c.title());
+                c.blocks().forEach(inner -> texts(inner, to));
+            }
+            case DocumentModel.Abstract a -> a.blocks().forEach(inner -> texts(inner, to));
+            case DocumentModel.FrontList f -> f.entries().forEach(entry -> to.accept(entry.text()));
+        }
     }
 
     /** A footnote; a named one labelled, so a later mark can point at it. */

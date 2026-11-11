@@ -76,8 +76,19 @@ class TableCellsTest {
     }
 
     @Test
-    void aSpanKeepsTheCellsAfterItInTheirColumns() {
-        assertEquals(List.of(List.of("wide", "", "c"), List.of("d", "e", "f")), read("cols=\"3\"", "2+| wide | c", "| d | e | f"));
+    void aCellOverSeveralColumnsIsOneCellWithItsSpan() {
+        List<List<TableCells.Cell>> rows = TableCells.rows(List.of("2+| wide | c", "| d | e | f", "3+| *A heading within the table*", "| g | h | i"), "cols=\"3\"");
+        assertEquals(List.of(List.of("wide", "c"), List.of("d", "e", "f"), List.of("*A heading within the table*"), List.of("g", "h", "i")),
+                rows.stream().map(row -> row.stream().map(TableCells.Cell::text).toList()).toList(),
+                "the places a span covers are no cells of their own, and the cells after it keep their columns");
+        assertEquals(List.of(List.of(2, 1), List.of(1, 1, 1), List.of(3), List.of(1, 1, 1)), rows.stream().map(TableCells::spans).toList());
+        assertEquals(3, TableCells.columns(rows), "the table is as wide as its columns, however few cells a row has");
+        assertEquals(List.of(5, 4), TableCells.weights(List.of(2, 1), List.of(2, 3, 4)), "a spanning cell is as wide as its columns together");
+        assertEquals(List.of(9), TableCells.weights(List.of(3), List.of(2, 3, 4)));
+    }
+
+    @Test
+    void aCellOverSeveralRowsLeavesAnEmptyCellBeneathIt() {
         assertEquals(List.of(List.of("tall", "b"), List.of("", "c"), List.of("d", "e")), read("cols=\"2\"", ".2+| tall | b", "| c", "| d | e"));
     }
 

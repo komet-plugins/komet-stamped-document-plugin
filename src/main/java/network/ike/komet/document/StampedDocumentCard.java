@@ -1322,12 +1322,16 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
         if (shown == null) {
             return Optional.empty();
         }
+        // a table's columns are fitted to the measure of the page the model is for, in its fonts
+        PrintSettings settings = documentArea.settings().get();
+        double[] dims = PagedDocumentEngine.pageDimensionsPoints(settings);
+        surface.printOn(settings.theme(), dims[0] - settings.margins().left() - settings.margins().right());
         if (assembly == null) {
             return Optional.of(StoredDocumentModel.of(shown, Map.of(), surface.printing()));
         }
-        // each include line with what it shows: the whole file, or the tagged regions it names
-        Map<Long, StoredDocumentModel.Child> includes = StoredDocumentModel.children(assembly);
-        return Optional.of(StoredDocumentModel.of(shown, includes, surface.printing()));
+        // each include line with what it shows: the whole file, or the tagged regions it names; every line as it
+        // reads, a conditional's leavings gone and an attribute reference as its value
+        return Optional.of(StoredDocumentModel.of(assembly, surface.printing()));
     }
 
     /**
@@ -1531,6 +1535,7 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
         double[] dims = PagedDocumentEngine.pageDimensionsPoints(settings);
         MarginPreset m = settings.margins();
         pageGeometry = new LayoutOracle.Geometry(dims[0], dims[1], m.left(), m.top(), dims[0] - m.left() - m.right(), dims[1] - m.top() - m.bottom());
+        surface.printOn(settings.theme(), pageGeometry.contentWidth());
         pageUnits = surface.pageUnits(settings.theme());
         GreedyFxOracle greedy = new GreedyFxOracle(DocumentFonts.SERIF, DocumentFonts.MONO);
         greedyLayout = greedy.layout(pageUnits, pageGeometry);

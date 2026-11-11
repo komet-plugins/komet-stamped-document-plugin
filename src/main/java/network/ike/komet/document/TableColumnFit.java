@@ -37,6 +37,35 @@ final class TableColumnFit {
      * @param width   the width to share
      * @return each column's width; they sum to {@code width}
      */
+    /**
+     * The relative widths a table's columns are printed with: the weights {@code cols} names when
+     * every column's share of the measure holds its widest word, and else the shares that do, as
+     * weights in hundredths of a point. Typst sets a word no line can hold out past its cell's
+     * edge, over the rule and into the cell beside it, and a page of JavaFX breaks it between
+     * two letters; a column a little wider than its weight says has neither.
+     *
+     * @param weights the relative widths {@code cols} names, one for each column
+     * @param least   the least width each column needs to keep its widest word whole, in points
+     * @param width   the measure the table is set to, in points
+     * @return the weights to print with: the same list when the columns fit as they are
+     */
+    static List<Integer> printed(List<Integer> weights, double[] least, double width) {
+        double total = Math.max(1, weights.stream().mapToInt(Integer::intValue).sum());
+        boolean fits = true;
+        for (int c = 0; c < weights.size(); c++) {
+            fits &= least[c] <= width * weights.get(c) / total + 0.01;
+        }
+        if (fits || width <= 0) {
+            return weights;
+        }
+        double[] share = shares(weights, least, width);
+        List<Integer> out = new java.util.ArrayList<>(share.length);
+        for (double one : share) {
+            out.add((int) Math.max(1, Math.round(one * 100)));
+        }
+        return List.copyOf(out);
+    }
+
     static double[] shares(List<Integer> weights, double[] least, double width) {
         int columns = weights.size();
         double[] share = new double[columns];

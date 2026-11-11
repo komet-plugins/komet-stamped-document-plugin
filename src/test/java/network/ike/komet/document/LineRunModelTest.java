@@ -147,6 +147,46 @@ class LineRunModelTest {
     }
 
     @Test
+    void aLinkIntoTheDocumentIsDrawnInItsColourAndFoundUnderThePointer() {
+        // as a line is read: a citation that found its entry is a link to the entry's block
+        String first = "The value is that of link:#b77[[HHS 2026, Standard";
+        String second = "Values]] and of https://example.org[another source].";
+        LineRunModel.Spec read = new LineRunModel.Spec(List.of(new LineRunModel.Paragraph(List.of(
+                new LineRunModel.Line(line(1, first), first), new LineRunModel.Line(line(2, second), second)), " ", PROSE)))
+                .inlined(new network.ike.komet.document.print.InlineText.Numbering()).spec();
+        LineRunModel model = read.build(LineRunModel.Decoration.NONE);
+        String text = model.getPlainText(0);
+        assertEquals("The value is that of [HHS 2026, Standard Values] and of another source.", text);
+
+        int at = text.indexOf("[HHS");
+        assertEquals("b77", model.internalLinkAt(TextPos.ofLeading(0, at)).orElseThrow(), "the block the link points at");
+        assertEquals("b77", model.internalLinkAt(TextPos.ofLeading(0, text.indexOf("Values]"))).orElseThrow(), "on the source line it runs on to as well");
+        assertTrue(model.internalLinkAt(TextPos.ofLeading(0, 4)).isEmpty(), "plain words are no link");
+        assertTrue(model.internalLinkAt(TextPos.ofLeading(0, text.indexOf("another"))).isEmpty(), "a link out of the document is not followed here");
+        assertTrue(model.internalLinkAt(TextPos.ofLeading(3, 0)).isEmpty());
+
+        RichParagraph paragraph = model.getParagraph(0);
+        Color link = null;
+        Color plain = null;
+        for (int k = 0; k < paragraph.getSegmentCount(); k++) {
+            String piece = paragraph.getSegment(k).getText();
+            Color colour = paragraph.getSegment(k).getStyleAttributeMap(null).getTextColor();
+            if (piece.contains("HHS") || piece.contains("Values]")) {
+                link = colour;
+                assertEquals(LineRunModel.LINK, colour, piece);
+            } else if (piece.contains("another")) {
+                plain = colour;
+            }
+        }
+        assertEquals(LineRunModel.LINK, link);
+        assertEquals(null, plain, "only a link into the document takes the colour");
+
+        // a page line cut from the paragraph keeps the link
+        LineRunModel line = read.slice(0, at + 5, text.length(), false, false).build(LineRunModel.Decoration.NONE);
+        assertEquals("b77", line.internalLinkAt(TextPos.ofLeading(0, 0)).orElseThrow());
+    }
+
+    @Test
     void aHyphenatedSliceDrawsTheHyphenOnItsLastRunAndAJustifiedOneFills() {
         StyleAttributeMap justified = StyleAttributeMap.builder().setFontSize(12).setTextAlignment(javafx.scene.text.TextAlignment.JUSTIFY).build();
         LineRunModel.Spec spec = new LineRunModel.Spec(List.of(new LineRunModel.Paragraph(List.of(

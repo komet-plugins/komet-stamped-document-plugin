@@ -35,16 +35,35 @@ import java.util.Objects;
  * <p>What prints: strong, emphasis and monospace, in any nesting; a link and a cross reference
  * as their text, a bare cross reference as its target's words ({@code <<anf-data-types>>}
  * prints "anf data types", as the help drawer does); a curved quotation; a visible index term
- * as its text; a footnote as its mark, its text going to the foot of the page. Anchors and
- * concealed index terms print nothing. An attribute reference stays as written. A trailing
+ * as its text; a footnote as its mark, its text going to the foot of the page. A link whose
+ * target begins with {@link #INTERNAL} points into the document: a cross reference that found
+ * its target is read as one before the text comes here. Anchors and concealed index terms
+ * print nothing; an anchor is kept as a place such a link can point at. An attribute reference stays as written. A trailing
  * {@code +} stays too: on a page it stands for the hard break, outside every line's range.
  *
  * @param text    the drawn text; a footnote's mark is its number in superscript digits
  * @param runs    the styled ranges of the text, ascending; what they leave out is plain
  * @param notes   the footnotes marked in the text, in order
  * @param offsets for each offset of the source, and its end, the offset of the drawn text it became
+ * @param anchors the anchors written in the text, in order: each prints nothing, and is a place a link can point at
  */
-public record InlineText(String text, List<Run> runs, List<Note> notes, int[] offsets) {
+public record InlineText(String text, List<Run> runs, List<Note> notes, int[] offsets, List<Anchor> anchors) {
+
+    /** The mark an internal link's target begins with: {@code #b1234} names a block of the document, by its key. */
+    public static final String INTERNAL = "#";
+
+    /** Text with no anchor in it. */
+    public InlineText(String text, List<Run> runs, List<Note> notes, int[] offsets) {
+        this(text, runs, notes, offsets, List.of());
+    }
+
+    /**
+     * An anchor written in the text.
+     *
+     * @param id the anchor's id
+     * @param at the offset of the drawn text it stands before
+     */
+    public record Anchor(String id, int at) { }
 
     private static final String SUPERSCRIPT = "⁰¹²³⁴⁵⁶⁷⁸⁹";
 
@@ -52,6 +71,7 @@ public record InlineText(String text, List<Run> runs, List<Note> notes, int[] of
         Objects.requireNonNull(text, "text is null");
         runs = List.copyOf(runs);
         notes = List.copyOf(notes);
+        anchors = List.copyOf(anchors);
     }
 
     /**
@@ -143,6 +163,27 @@ public record InlineText(String text, List<Run> runs, List<Note> notes, int[] of
     public static final class Numbering {
         private int last;
         private final Map<String, Integer> named = new HashMap<>();
+
+        /** A count from the start of a document. */
+        public Numbering() { }
+
+        /**
+         * A count that goes on from a number: for text read a second time, in parts, whose notes
+         * must carry the numbers its first reading gave them, as a table row's cells do after the row.
+         *
+         * @param last the number of the last note before the text
+         * @return the count
+         */
+        public static Numbering after(int last) {
+            Numbering numbering = new Numbering();
+            numbering.last = last;
+            return numbering;
+        }
+
+        /** @return the number of the last note counted, 0 before the first */
+        public int last() {
+            return last;
+        }
 
         private int next(String id) {
             last++;
@@ -247,6 +288,7 @@ public record InlineText(String text, List<Run> runs, List<Note> notes, int[] of
         private final StringBuilder out = new StringBuilder();
         private final List<Run> runs = new ArrayList<>();
         private final List<Note> notes = new ArrayList<>();
+        private final List<Anchor> anchors = new ArrayList<>();
         private final int[] offsets;
         private int at;
 
@@ -294,7 +336,7 @@ public record InlineText(String text, List<Run> runs, List<Note> notes, int[] of
                         emit(twice ? "”" : "’", style);
                     }
                     case INDEX_TERM -> walk(span.children(), style);      // a concealed term has none
-                    case ANCHOR -> { }
+                    case ANCHOR -> anchors.add(new Anchor(span.attributes().getOrDefault("id", ""), out.length()));
                     default -> {
                         if (span.children().isEmpty()) {
                             emit(span.text(), style);
@@ -381,7 +423,7 @@ public record InlineText(String text, List<Run> runs, List<Note> notes, int[] of
                 ceiling = Math.min(ceiling, offsets[i]);
                 offsets[i] = ceiling;
             }
-            return new InlineText(out.toString(), runs, notes, offsets);
+            return new InlineText(out.toString(), runs, notes, offsets, anchors);
         }
     }
 }

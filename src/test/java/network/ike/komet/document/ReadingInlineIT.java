@@ -234,6 +234,179 @@ class ReadingInlineIT {
         assertFalse(bold.contains("its stars"), "and nothing in a listing is weighted");
     }
 
+    private static final String CITED = """
+            :topic-id: reading-cited
+            [[reading-cited]]
+            = Reading Citations
+
+            The value is that of <<hhsvalues2026>>, as xref:sec-method[the method] and <<sec-method>> say,
+            and <<elsewhere>> does not.
+
+            [[sec-method]]
+            == Method
+
+            How it is done.
+
+            [bibliography]
+            == References
+
+            - [[[hhsvalues2026,HHS 2026, Standard Values]]] Kearsley, A. (2026). Standard values.
+            """;
+
+    @Test
+    void theReadingViewDrawsACitationAsItsLabelAndFollowsItToTheEntry() throws Exception {
+        Path dir = Files.createDirectories(root.resolve("cited"));
+        git(dir, "init", "-q", "-b", "main");
+        git(dir, "config", "user.name", "author");
+        git(dir, "config", "user.email", "author@example.test");
+        Path file = dir.resolve("cited.adoc");
+        Files.writeString(file, CITED);
+        git(dir, "add", "cited.adoc");
+        git(dir, "commit", "-q", "--no-gpg-sign", "-m", "The document");
+        PublicId anchor = GitDocumentMaterializer.materialize(dir, file).anchor();
+        StoredDocument document = GitDocumentMaterializer.load(anchor, true).orElseThrow();
+        DocumentAssembly assembly = DocumentAssembly.single(document, "cited.adoc");
+
+        DocumentSurface body = onFx(() -> new DocumentSurface(new BlockFactory(Calculators.View.Default(), 13)));
+        DocumentSurfaceView view = onFx(() -> {
+            DocumentSurfaceView made = new DocumentSurfaceView(host(), body);
+            made.show(assembly);
+            return made;
+        });
+        List<String> texts = new ArrayList<>();
+        List<String> links = new ArrayList<>();
+        onFx(() -> {
+            for (int b = 0; b < body.blockCount(); b++) {
+                StyledTextModel model = body.block(b).model();
+                if (!(model instanceof LineRunModel lines)) {
+                    continue;
+                }
+                for (int p = 0; p < model.size(); p++) {
+                    String text = model.getPlainText(p);
+                    texts.add(text);
+                    RichParagraph paragraph = model.getParagraph(p);
+                    int at = 0;
+                    for (int k = 0; k < paragraph.getSegmentCount(); k++) {
+                        StyledSegment segment = paragraph.getSegment(k);
+                        if (segment.getType() == StyledSegment.Type.TEXT && LineRunModel.LINK.equals(segment.getStyleAttributeMap(null).getTextColor())) {
+                            links.add(segment.getText() + " -> "
+                                    + lines.internalLinkAt(jfx.incubator.scene.control.richtext.TextPos.ofLeading(p, at)).orElse("?"));
+                        }
+                        at += segment.getText() == null ? 1 : segment.getText().length();
+                    }
+                }
+            }
+            return null;
+        });
+
+        assertTrue(texts.contains("The value is that of [HHS 2026, Standard Values], as the method and Method say, and elsewhere does not."),
+                "a citation reads as its entry's label in brackets, a bare reference as its section's title: " + texts);
+        assertTrue(texts.stream().anyMatch(t -> t.endsWith("[HHS 2026, Standard Values] Kearsley, A. (2026). Standard values.")), "the entry begins with its label: " + texts);
+        String entry = assembly.targets().of("hhsvalues2026").orElseThrow().key();
+        String method = assembly.targets().of("sec-method").orElseThrow().key();
+        assertEquals(List.of("[HHS 2026, Standard Values] -> " + entry, "the method -> " + method, "Method -> " + method), links,
+                "what found its target is drawn as a link to the target's block, and nothing else is");
+
+        // following a link reveals the block it names: here the last block of the document
+        int target = onFx(() -> {
+            view.follow(entry);
+            for (int b = 0; b < body.blockCount(); b++) {
+                StyledTextModel model = body.block(b).model();
+                if (model != null && model.size() > 0 && model.getPlainText(0).contains("Kearsley")) {
+                    return b;
+                }
+            }
+            return -1;
+        });
+        assertTrue(target > 0, "the entry is a block of the view");
+        assertTrue(assembly.targets().block(entry).isPresent() && assembly.targets().block("b0").isEmpty());
+    }
+
+    private static final String CONDITIONAL = """
+            :topic-id: reading-conditional
+            = Reading Conditionals
+            :fn: pass:[<sup class="mark">†</sup><span class="note">]
+            :fnend: pass:[</span>]
+            :book:
+
+            ++++
+            <style>
+            @media print {
+              sup.mark { display: none; }
+              span.note { float: footnote; }
+            }
+            </style>
+            ++++
+
+            Shown to every reader.{fn}The first note.{fnend}
+
+            ifdef::compendium[]
+            Only in the compendium.
+            endif::[]
+            ifndef::book[]
+            NOTE: Only outside the book.
+            endif::[]
+
+            .The quantities{fn}Each is an estimate.{fnend}
+            [cols="1,1", options="header"]
+            |===
+            | Quantity | Value{fn}In dollars.{fnend}
+            | Price | 100
+            |===
+
+            After the table, reply {startsb}1{endsb}.
+
+            ifdef::book[Said only in the book.]
+            """;
+
+    @Test
+    void theReadingViewLeavesOutWhatAConditionalDoesAndSaysEachNoteOnce() throws Exception {
+        Path dir = Files.createDirectories(root.resolve("conditional"));
+        git(dir, "init", "-q", "-b", "main");
+        git(dir, "config", "user.name", "author");
+        git(dir, "config", "user.email", "author@example.test");
+        Path file = dir.resolve("conditional.adoc");
+        Files.writeString(file, CONDITIONAL);
+        git(dir, "add", "conditional.adoc");
+        git(dir, "commit", "-q", "--no-gpg-sign", "-m", "The document");
+        PublicId anchor = GitDocumentMaterializer.materialize(dir, file).anchor();
+        StoredDocument document = GitDocumentMaterializer.load(anchor, true).orElseThrow();
+
+        DocumentSurface body = onFx(() -> {
+            DocumentSurface surface = new DocumentSurface(new BlockFactory(Calculators.View.Default(), 13));
+            new DocumentSurfaceView(host(), surface).show(DocumentAssembly.single(document, "conditional.adoc"));
+            return surface;
+        });
+        List<String> texts = new ArrayList<>();
+        List<String> captions = new ArrayList<>();
+        List<String> footnotes = new ArrayList<>();
+        onFx(() -> {
+            for (int b = 0; b < body.blockCount(); b++) {
+                Node block = body.block(b).node();
+                for (Node area : block.lookupAll(".rich-text-area")) {
+                    if (area.isVisible() && area instanceof jfx.incubator.scene.control.richtext.RichTextArea rta && rta.getModel() != null) {
+                        for (int p = 0; p < rta.getModel().size(); p++) {
+                            texts.add(rta.getModel().getPlainText(p));
+                        }
+                    }
+                }
+                block.lookupAll(".stamped-document-caption").forEach(caption -> captions.add(((javafx.scene.control.Label) caption).getText()));
+                block.lookupAll(".stamped-document-footnote").forEach(note -> footnotes.add(((javafx.scene.control.Label) note).getText()));
+            }
+            return null;
+        });
+
+        assertTrue(texts.contains("Shown to every reader.¹"), "a reference that opens a note and one that closes it read as a footnote: " + texts);
+        assertFalse(texts.stream().anyMatch(t -> t.contains("ifdef::") || t.contains("ifndef::") || t.contains("endif::")), "no directive is read: " + texts);
+        assertFalse(texts.stream().anyMatch(t -> t.contains("Only in the compendium") || t.contains("Only outside the book")),
+                "nor a line a conditional leaves out: " + texts);
+        assertEquals(List.of("Table 1. The quantities²"), captions, "a caption keeps the mark of its note");
+        assertTrue(texts.contains("Value³"), "a cell's note is numbered on from the caption's: " + texts);
+        assertEquals(List.of("¹The first note.", "²Each is an estimate.", "³In dollars."), footnotes, "each note's words once, beneath what it annotates");
+        assertTrue(texts.contains("After the table, reply [1]."), "a character's reference is the character: " + texts);
+        assertTrue(texts.contains("Said only in the book."), "a conditional that holds its text reads as that text, not as its source: " + texts);
+    }
+
     private static DocumentSurfaceView.Host host() {
         return new DocumentSurfaceView.Host() {
             @Override

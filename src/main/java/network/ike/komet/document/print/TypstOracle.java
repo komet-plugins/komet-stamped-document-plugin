@@ -160,7 +160,8 @@ public final class TypstOracle implements LayoutOracle {
             return new Layout(1, List.of(), false, (System.nanoTime() - started) / 1_000_000, List.of("typst did not answer: " + result.output().strip()));
         }
         Layout aligned = align(parse(result.output()), units, geometry, width);
-        return new Layout(aligned.pages(), aligned.lines(), aligned.exact(), (System.nanoTime() - started) / 1_000_000, aligned.notes(), aligned.folios());
+        return new Layout(aligned.pages(), aligned.lines(), aligned.exact(), (System.nanoTime() - started) / 1_000_000, aligned.notes(), aligned.folios(),
+                aligned.cells());
     }
 
     private static final Pattern ITEM = Pattern.compile(
@@ -301,6 +302,7 @@ public final class TypstOracle implements LayoutOracle {
         }
         List<String> notes = new ArrayList<>();
         List<Line> lines = new ArrayList<>();
+        Map<Integer, List<CellLine>> cells = new HashMap<>();
         Map<Integer, FrontLists.Place> places = FrontLists.places(units, width);   // where the front lists' entries stand
         Map<Integer, List<Unit>> unitsByBlock = new LinkedHashMap<>();
         for (Unit unit : units) {
@@ -334,7 +336,22 @@ public final class TypstOracle implements LayoutOracle {
                     lines.add(new Line(unit.index(), w.endPage(), geometry.contentLeft(), w.endY() + height, 0, unit.text().length(), false));
                     continue;
                 }
-                if (unit.kind() == Kind.TABLE_ROW || unit.kind() == Kind.OTHER) {
+                if (unit.kind() == Kind.TABLE_ROW) {
+                    Line row = rowLine(unit, own.getFirst().word(), geometry);
+                    lines.add(row);
+                    List<CellLine> ownCells = cellLines(unit, own);
+                    cells.put(unit.index(), ownCells);
+                    // a row Typst broke over a page stands on each page it reaches, at the first baseline it has there
+                    Map<Integer, Double> later = new java.util.TreeMap<>();
+                    for (CellLine line : ownCells) {
+                        if (line.page() > row.page()) {
+                            later.merge(line.page(), line.baseline(), Math::min);
+                        }
+                    }
+                    later.forEach((page, baseline) -> lines.add(new Line(unit.index(), page, row.x(), baseline, 0, unit.text().length(), false)));
+                    continue;
+                }
+                if (unit.kind() == Kind.OTHER && own.size() == 1) {
                     lines.add(rowLine(unit, own.getFirst().word(), geometry));
                     continue;
                 }
@@ -361,7 +378,54 @@ public final class TypstOracle implements LayoutOracle {
                 lines.set(i, new Line(line.unit(), line.page(), geometry.contentLeft(), line.baseline(), line.from(), line.to(), line.hyphenated()));
             }
         }
-        return new Layout(Math.max(1, pages), lines, true, 0, notes, Folios.of(units, lines));
+        return new Layout(Math.max(1, pages), lines, true, 0, notes, Folios.of(units, lines), cells);
+    }
+
+    /**
+     * The lines of a row's cells, from its placed words. In a cell every word's end label stands
+     * on the word's own baseline, the last word's too, though that one's x is the cell's left
+     * edge; so a cell's line is its run of words on one baseline of one page. A word whose end
+     * label Typst dropped stays on the line of the word before it.
+     */
+    private static List<CellLine> cellLines(Unit unit, List<Placed> placed) {
+        String text = unit.text();
+        List<Integer> ends = new ArrayList<>();                  // where each cell's text ends in the row's
+        for (int bar = text.indexOf(TableCells.BAR); bar >= 0; bar = text.indexOf(TableCells.BAR, bar + TableCells.BAR.length())) {
+            ends.add(bar);
+        }
+        ends.add(text.length());
+        List<CellLine> out = new ArrayList<>();
+        int cell = 0;
+        int lineCell = -1;
+        int page = -1;
+        double baseline = 0;
+        int from = 0;
+        int to = 0;
+        for (Placed p : placed) {
+            while (cell < ends.size() - 1 && p.from() >= ends.get(cell)) {
+                cell++;
+            }
+            Word w = p.word();
+            boolean known = !w.endless() || w.overPage();
+            int wordPage = known ? w.endPage() : lineCell == cell ? page : w.page();
+            double wordBaseline = known ? w.endY() : lineCell == cell ? baseline : w.y() + unit.fontSize() * CAP_HEIGHT;
+            if (lineCell == cell && wordPage == page && Math.abs(wordBaseline - baseline) < 0.5) {
+                to = p.to();
+                continue;
+            }
+            if (lineCell >= 0) {
+                out.add(new CellLine(lineCell, page, baseline, from, to));
+            }
+            lineCell = cell;
+            page = wordPage;
+            baseline = wordBaseline;
+            from = p.from();
+            to = p.to();
+        }
+        if (lineCell >= 0) {
+            out.add(new CellLine(lineCell, page, baseline, from, to));
+        }
+        return out;
     }
 
     /**
@@ -399,19 +463,26 @@ public final class TypstOracle implements LayoutOracle {
         header.forEach(unit -> spelled.append(ink(unit.text())));
         List<Word> out = new ArrayList<>(words.size());
         boolean seen = false;
+        int headerPage = -1;
+        java.util.Set<Integer> repeated = new java.util.HashSet<>();
         int w = 0;
         while (w < words.size()) {
-            boolean pageStart = w > 0 && words.get(w).endPage() != words.get(w - 1).endPage();
-            int spells = seen && !pageStart ? 0 : spells(words, w, spelled.toString());
+            // A page repeats the header once, and only a page after the header's own. The repeat need not follow a
+            // word of the page before: when a row is broken over the page, the rest of a cell of that row is
+            // answered before the header set above it.
+            int page = words.get(w).endPage();
+            int spells = seen && (page <= headerPage || repeated.contains(page)) ? 0 : spells(words, w, spelled.toString());
             if (spells == 0) {
                 out.add(words.get(w++));
             } else if (seen) {
                 repeats.add(List.copyOf(words.subList(w, w + spells)));
+                repeated.add(page);
                 w += spells;
             } else {
                 out.addAll(words.subList(w, w + spells));
                 w += spells;
                 seen = true;
+                headerPage = page;
             }
         }
         return out;
@@ -464,9 +535,12 @@ public final class TypstOracle implements LayoutOracle {
         StringBuilder u = new StringBuilder();
         for (int k = 0; k < units.size(); k++) {
             String text = units.get(k).text();
+            boolean row = units.get(k).kind() == Kind.TABLE_ROW;
             for (int i = 0; i < text.length(); i++) {
                 char c = text.charAt(i);
-                if (!Character.isWhitespace(c)) {
+                // the bar between a row's cells is the unit's alone: left in, a cell of fewer than four characters
+                // could not be matched past it, and its word went unplaced
+                if (!Character.isWhitespace(c) && !(row && c == '\u2502')) {
                     unitChars.add(new int[] {k, i});
                     u.append(normal(c));
                 }
@@ -627,7 +701,9 @@ public final class TypstOracle implements LayoutOracle {
                         && w.x() + wide <= right + 0.5;
                 if (inline) {
                     at[k] = at[k - 1];
-                } else if (at[k - 1][1] + pitch <= geometry.contentBottom() + 0.5) {
+                } else if (unit.kind() == Kind.FOOTNOTE || at[k - 1][1] + pitch <= geometry.contentBottom() + 0.5) {
+                    // a note's last word, alone on the note's last line, stands at the foot of its page: a note's pitch is
+                    // not the body's, and reckoned by the body's that line fell a hair past the foot and went to the next page
                     at[k] = new double[] {at[k - 1][0], at[k - 1][1] + pitch};
                 } else {
                     at[k] = new double[] {at[k - 1][0] + 1, geometry.contentTop() + cap};
@@ -651,6 +727,9 @@ public final class TypstOracle implements LayoutOracle {
             }
             if (k == placed.size() - 1 && k > 0) {
                 continue;                                         // a last word beginning a line: its start label is elsewhere
+            }
+            if (k > 0 && overPage[k - 1]) {
+                continue;                                         // the word after one that came over the page: it does not begin its line
             }
             votes.merge(Math.round(provisionalLeft(unit, placed.get(k), k == placed.size() - 1, width) * 2), 1, Integer::sum);
         }
@@ -682,6 +761,16 @@ public final class TypstOracle implements LayoutOracle {
                 String text = unit.text().substring(p.from(), p.to());
                 double whole = measure(width, unit, text, p.from());
                 boolean last = k == placed.size() - 1;
+                if (overPage[k] && w.overPage() && w.endX() - left >= whole - Math.max(HYPHEN_TOLERANCE * 2, 0.08 * whole)) {
+                    // Not broken at all: its end label, found past the running head, stands a whole word's width into
+                    // the first line of the next page. A line's first word leaves its start label at the end of the line
+                    // before, so the first word of every page a paragraph runs on to arrives like this. Taken for a
+                    // word hyphenated over the page, it was left on the page before, or cut where no hyphen was.
+                    Key own = new Key(w.endPage(), Math.round(w.endY() * 10));
+                    extend(ranges, baselines, own, w.endPage(), w.endY(), left, p.from(), p.to(), false);
+                    previous = k;
+                    continue;
+                }
                 if (overPage[k]) {
                     // The tail's width: from the next line's left edge to the next word's start, less the space between.
                     Word next = placed.get(k + 1).word();
@@ -726,7 +815,7 @@ public final class TypstOracle implements LayoutOracle {
                 // point or two wider than Typst set it, so the margin grows with the word.
                 double slack = Math.max(HYPHEN_TOLERANCE * 2, 0.08 * whole);
                 // The writer never hyphenates an entry, a heading or the title.
-                boolean hyphenated = !entry && unit.kind() != Kind.HEADING && unit.kind() != Kind.TITLE && unit.kind() != Kind.BYLINE && g == 0 && previous >= 0 && !bogus[k] && tail >= 0 && tail < whole - slack && text.length() >= 4;
+                boolean hyphenated = !entry && unit.kind() != Kind.HEADING && unit.kind() != Kind.TITLE && unit.kind() != Kind.BYLINE && unit.kind() != Kind.OTHER && g == 0 && previous >= 0 && !bogus[k] && tail >= 0 && tail < whole - slack && text.length() >= 4;
                 if (!hyphenated) {
                     double x = g != 0 ? Double.MAX_VALUE : firstLine && (!last || entry) ? w.endX() - whole : left;
                     extend(ranges, baselines, line, (int) at[k][0], at[k][1], x, p.from(), p.to(), false);
@@ -983,7 +1072,7 @@ public final class TypstOracle implements LayoutOracle {
      * in a link, after any character that is not a letter, digit or opening bracket, as Typst
      * breaks links.
      */
-    static int[] ownCuts(String text) {
+    public static int[] ownCuts(String text) {
         boolean link = text.contains("://") || text.startsWith("www.");
         List<Integer> cuts = new ArrayList<>();
         for (int c = 1; c < text.length(); c++) {

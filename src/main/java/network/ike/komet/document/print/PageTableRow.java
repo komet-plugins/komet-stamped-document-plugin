@@ -37,6 +37,9 @@ import javafx.scene.layout.StackPane;
  */
 public final class PageTableRow extends Region {
 
+    /** A cell's inset, the Typst writer's {@code inset: 5pt}. */
+    static final double INSET = TypstOracle.TABLE_INSET;
+
     /** Typst's table stroke, {@code 0.5pt + luma(150)}. */
     static final String STROKE = "#969696";
 
@@ -44,6 +47,55 @@ public final class PageTableRow extends Region {
     private final List<Integer> weights;
     private final double total;
     private final boolean header;
+    /** Each cell's lines where a layout set them, or {@code null} for a row whose cells wrap their own text. */
+    private final List<List<Set>> sets;
+    /** The height of a row drawn from set lines: the layout's, not what the texts come to. */
+    private final double setHeight;
+
+    /**
+     * One line of a cell, where a layout set it.
+     *
+     * @param text the line's text, which is not wrapped
+     * @param top  the line's top edge, from the row's top edge
+     */
+    public record Set(Node text, double top) { }
+
+    /**
+     * A row drawn line by line as a layout set it: no cell wraps its own text, so no cell comes
+     * out a line taller than the layout has it, and a row a page break divides is drawn on each
+     * page with the lines that page holds.
+     *
+     * @param lines   each cell's lines, in the row's order of cells; an empty cell has none
+     * @param weights the relative widths of the row's cells, one per cell
+     * @param first   whether this is the table's first row, which draws the table's top edge
+     * @param height  the row's height on this page, from its top rule to its bottom rule
+     */
+    public PageTableRow(List<List<Set>> lines, List<Integer> weights, boolean first, double height) {
+        this.weights = List.copyOf(weights);
+        this.header = false;
+        this.sets = List.copyOf(lines);
+        this.setHeight = height;
+        double sum = 0;
+        for (int weight : weights) {
+            sum += Math.max(1, weight);
+        }
+        this.total = Math.max(1, sum);
+        setMinWidth(0);
+        for (int c = 0; c < weights.size(); c++) {
+            StackPane cell = new StackPane();
+            cell.setMinSize(0, 0);
+            cell.setMouseTransparent(true);
+            cell.setStyle("-fx-background-color: transparent; -fx-border-color: " + STROKE + "; -fx-border-width: "
+                    + (first ? 0.5 : 0) + " 0.5 0.5 " + (c == 0 ? 0.5 : 0) + ";");
+            this.cells.add(cell);
+            getChildren().add(cell);
+        }
+        for (List<Set> cell : lines) {
+            for (Set line : cell) {
+                getChildren().add(line.text());
+            }
+        }
+    }
 
     /**
      * @param cells   each column's text, or {@code null} for an empty cell
@@ -54,6 +106,8 @@ public final class PageTableRow extends Region {
     public PageTableRow(List<Node> cells, List<Integer> weights, boolean first, boolean header) {
         this.weights = List.copyOf(weights);
         this.header = header;
+        this.sets = null;
+        this.setHeight = 0;
         double sum = 0;
         for (int weight : weights) {
             sum += Math.max(1, weight);
@@ -87,6 +141,9 @@ public final class PageTableRow extends Region {
 
     @Override
     protected double computePrefHeight(double width) {
+        if (sets != null) {
+            return setHeight;
+        }
         double w = width < 0 ? getWidth() : width;
         double tallest = 0;
         for (int c = 0; c < cells.size(); c++) {
@@ -98,6 +155,23 @@ public final class PageTableRow extends Region {
     @Override
     protected void layoutChildren() {
         double width = getWidth();
+        if (sets != null) {
+            double x = 0;
+            for (int c = 0; c < cells.size(); c++) {
+                double w = columnWidth(c, width);
+                cells.get(c).resizeRelocate(Math.round(x), 0, Math.ceil(w), setHeight);
+                if (c < sets.size()) {
+                    for (Set line : sets.get(c)) {
+                        // as wide as its words: a line the layout fitted is not broken again for a hair's difference in measure
+                        double wide = line.text().prefWidth(-1);
+                        line.text().resizeRelocate(Math.round(x) + INSET, line.top(), Math.max(wide, w - 2 * INSET), line.text().prefHeight(-1));
+                    }
+                }
+                x += w;
+            }
+            setTranslateY(0);
+            return;
+        }
         double[] heights = new double[cells.size()];
         double tallest = 0;
         for (int c = 0; c < cells.size(); c++) {

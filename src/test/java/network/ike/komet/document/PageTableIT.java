@@ -145,6 +145,158 @@ class PageTableIT {
         checkPages(surface, units, typst, rows, geometry);
     }
 
+    /** Every text a table row on a page draws, cell by cell. */
+    private static List<String> cellTexts(javafx.scene.Node row) {
+        List<String> texts = new ArrayList<>();
+        for (javafx.scene.Node cell : ((javafx.scene.layout.Region) row).getChildrenUnmodifiable()) {
+            if (cell instanceof RichTextArea line) {
+                texts.add(line.getModel().getPlainText(0));       // a row drawn from the layout's lines: each line a text of the row
+            } else if (cell instanceof javafx.scene.layout.Pane pane) {
+                pane.getChildren().stream().filter(RichTextArea.class::isInstance).map(RichTextArea.class::cast)
+                        .forEach(text -> texts.add(text.getModel().getPlainText(0)));
+            }
+        }
+        return texts;
+    }
+
+    @Test
+    void aNoteInACellCarriesTheDocumentsNumberAndAHeadersNoteIsGivenOnce() throws Exception {
+        // the notes are written as the regulatory book writes them: a passthrough that its style sheet makes a footnote in print
+        StringBuilder text = new StringBuilder("""
+                :topic-id: page-table-notes
+                = Page Table Notes
+                :fn: pass:[<sup class="mark">†</sup><span class="note">]
+                :fnend: pass:[</span>]
+
+                ++++
+                <style>
+                @media print {
+                  sup.mark { display: none; }
+                  span.note { float: footnote; }
+                }
+                </style>
+                ++++
+
+                A paragraph before the table.{fn}The first note.{fnend}
+
+                .Rows
+                [cols="1,3", options="header"]
+                |===
+                | Name | Value{fn}In dollars.{fnend}
+
+                """);
+        for (int r = 0; r < 70; r++) {
+            text.append("| Name ").append(r).append("\n| The value of row ").append(r).append(r == 1 ? ".{fn}Our estimate.{fnend}" : ".").append("\n\n");
+        }
+        text.append("|===\n\nA paragraph after it.{fn}The last note.{fnend}\n");
+        StoredDocument document = stored("page-table-notes", text.toString());
+
+        DocumentSurfaceView surface = onFx(() -> {
+            DocumentSurfaceView view = new DocumentSurfaceView(host(), new DocumentSurface(new BlockFactory(Calculators.View.Default(), 13)));
+            view.show(DocumentAssembly.single(document, "page-table-notes.adoc"));
+            return view;
+        });
+        PrintSettings settings = PrintSettings.DEFAULT;
+        List<LayoutOracle.Unit> units = onFx(() -> surface.pageUnits(settings.theme()));
+        List<LayoutOracle.Unit> notes = units.stream().filter(u -> u.kind() == LayoutOracle.Kind.FOOTNOTE).toList();
+        assertEquals(List.of("¹The first note.", "²In dollars.", "³Our estimate.", "⁴The last note."), notes.stream().map(LayoutOracle.Unit::text).toList(),
+                "each note once, numbered through the document");
+        List<LayoutOracle.Unit> rows = units.stream().filter(u -> u.kind() == LayoutOracle.Kind.TABLE_ROW).toList();
+        assertEquals("Name" + TableCells.BAR + "Value²", rows.getFirst().text());
+        List<LayoutOracle.Unit> model = network.ike.komet.document.print.ModelUnits.of(StoredDocumentModel.of(document), 11);
+        assertEquals(units.stream().filter(u -> u.kind() == LayoutOracle.Kind.TABLE_ROW || u.kind() == LayoutOracle.Kind.FOOTNOTE).map(LayoutOracle.Unit::text).toList(),
+                model.stream().filter(u -> u.kind() == LayoutOracle.Kind.TABLE_ROW || u.kind() == LayoutOracle.Kind.FOOTNOTE).map(LayoutOracle.Unit::text).toList(),
+                "the pages' rows and notes are the print model's");
+
+        Assumptions.assumeTrue(TypstCompiler.locate().isPresent(), "typst is not installed");
+        LayoutOracle.Geometry geometry = new LayoutOracle.Geometry(612, 792, 72, 72, 468, 648);
+        GreedyFxOracle greedy = onFx(() -> new GreedyFxOracle(DocumentFonts.SERIF, DocumentFonts.MONO));
+        Path folder = Files.createDirectories(root.resolve("typst-notes"));
+        Path source = folder.resolve("page-table-notes.typ");
+        Files.writeString(source, TypstWriter.write(StoredDocumentModel.of(document), TypstPdf.setup(settings), TypstWriter.Labels.WORDS), StandardCharsets.UTF_8);
+        LayoutOracle.Layout typst = new TypstOracle(folder, source, DocumentFonts.extractTo(folder.resolve("fonts")),
+                (words, unit, mono, bold, italic) -> supplyOnFx(() -> greedy.width(words, unit, mono, bold, italic))).layout(units, geometry);
+        assertEquals(List.of(), typst.notes());
+        assertTrue(typst.pages() > 2, "the table runs over pages, its header set again on each");
+        int headerPage = typst.ofUnit(rows.getFirst().index()).getFirst().page();
+        assertEquals(List.of(headerPage), typst.ofUnit(notes.get(1).index()).stream().map(LayoutOracle.Line::page).distinct().toList(),
+                "the header's note stands once, at the foot of the page its row first stands on");
+        assertEquals(headerPage, typst.ofUnit(notes.get(2).index()).getFirst().page());
+        assertTrue(typst.ofUnit(notes.get(3).index()).getFirst().page() > headerPage);
+
+        onFx(() -> {
+            surface.layoutLines(typst, units);
+            return null;
+        });
+        for (int page = headerPage; page <= headerPage + 1; page++) {
+            int on = page;
+            List<PageStackView.Placed> placed = onFx(() -> surface.linesOn(on, geometry.contentLeft(), geometry.contentWidth(), geometry.bandHeight()));
+            List<List<String>> drawn = onFx(() -> placed.stream().filter(p -> p.node() instanceof network.ike.komet.document.print.PageTableRow)
+                    .map(p -> cellTexts(p.node())).toList());
+            assertTrue(drawn.contains(List.of("Name", "Value²")), "the header on page " + page + " carries the note's own number: " + drawn);
+            if (page == headerPage) {
+                assertTrue(drawn.contains(List.of("Name 1", "The value of row 1.³")), "and so does a cell of the body: " + drawn);
+            }
+        }
+    }
+
+    @Test
+    void aColumnTooNarrowForItsLongestWordIsWidenedForThePagesAndThePdfAlikeAndACellSpansItsColumns() throws Exception {
+        StoredDocument document = stored("page-fit", """
+                :topic-id: page-fit
+                = Page Fit
+
+                .Defaults
+                [cols="3,1,3", options="header"]
+                |===
+                | Quantity | Default | Basis
+                3+| *The instruments*
+                | Chemical characterization with toxicological assessment | 70% sensitivity, 85% specificity | Against clinically meaningful effects
+                | Postmarket signal | year 2, with probability 90% | Complaints, registries
+                |===
+                """);
+        DocumentAssembly assembly = DocumentAssembly.single(document, "page-fit.adoc");
+        PrintSettings settings = PrintSettings.DEFAULT;
+        DocumentSurfaceView surface = onFx(() -> {
+            DocumentSurfaceView view = new DocumentSurfaceView(host(), new DocumentSurface(new BlockFactory(Calculators.View.Default(), 13)));
+            view.show(assembly);
+            view.printOn(settings.theme(), 468);
+            return view;
+        });
+        List<LayoutOracle.Unit> rows = onFx(() -> surface.pageUnits(settings.theme())).stream()
+                .filter(u -> u.kind() == LayoutOracle.Kind.TABLE_ROW).toList();
+        List<Integer> fitted = rows.getFirst().columns();
+        assertEquals(46800, fitted.stream().mapToInt(Integer::intValue).sum(), "the columns share the measure, in hundredths of a point: " + fitted);
+        assertTrue(fitted.get(1) > 46800 / 7, "the narrow column is wider than its seventh, to hold 'sensitivity,' whole: " + fitted);
+        assertTrue(fitted.get(0) < 46800 * 3 / 7 && fitted.get(2) < 46800 * 3 / 7, "the two beside it give up the room: " + fitted);
+        assertEquals("The instruments", rows.get(1).text());
+        assertEquals(List.of(46800), rows.get(1).columns(), "a cell over every column is as wide as the table");
+        assertEquals(fitted, rows.get(2).columns());
+
+        DocumentModel.Table table = onFx(() -> StoredDocumentModel.of(assembly, surface.printing())).blocks().stream()
+                .filter(DocumentModel.Table.class::isInstance).map(DocumentModel.Table.class::cast).findFirst().orElseThrow();
+        assertEquals(fitted, table.widths(), "the PDF is set in the widths the pages are");
+        assertEquals(List.of(3), table.spansOf(1));
+
+        // drawn from the greedy layout's lines: no cell wraps its own text
+        LayoutOracle.Geometry geometry = new LayoutOracle.Geometry(612, 792, 72, 72, 468, 648);
+        GreedyFxOracle greedy = onFx(() -> new GreedyFxOracle(DocumentFonts.SERIF, DocumentFonts.MONO));
+        List<LayoutOracle.Unit> units = onFx(() -> surface.pageUnits(settings.theme()));
+        LayoutOracle.Layout layout = onFx(() -> greedy.layout(units, geometry));
+        assertTrue(layout.cellsOf(rows.get(2).index()).size() > 3, "the layout says where each cell's lines are: " + layout.cellsOf(rows.get(2).index()));
+        onFx(() -> {
+            surface.layoutLines(layout, units);
+            return null;
+        });
+        List<PageStackView.Placed> placed = onFx(() -> surface.linesOn(0, geometry.contentLeft(), geometry.contentWidth(), geometry.bandHeight()));
+        List<List<String>> drawn = onFx(() -> placed.stream().filter(p -> p.node() instanceof network.ike.komet.document.print.PageTableRow)
+                .map(p -> cellTexts(p.node())).toList());
+        assertTrue(drawn.contains(List.of("The instruments")), "the spanning row: " + drawn);
+        List<String> wide = drawn.stream().filter(row -> row.contains("Postmarket signal")).findFirst().orElseThrow();
+        assertTrue(wide.stream().noneMatch(line -> line.contains("probabilit") && !line.contains("probability")), "no word is cut between two letters: " + wide);
+        assertEquals(layout.cellsOf(rows.get(3).index()).size(), wide.size(), "a text for each line the layout gave the row's cells");
+    }
+
     @Test
     void thePagesReadARowAsThePrintModelDoesHoweverItsSourceIsLaidOut() throws Exception {
         StoredDocument document = stored("page-cells", """

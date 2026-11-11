@@ -294,16 +294,41 @@ public record DocumentModel(String title, List<Block> blocks, Lists lists, Bylin
      * @param headerRows how many leading rows are header rows
      * @param rows       the rows, each a list of cell texts, short rows padded by the writer
      * @param key        what a front list's entry names the table by, empty for none
+     * @param spans      for each row, how many columns each of its cells takes; a row with none here, or beyond
+     *                   the list's end, has a cell to a column
      */
-    public record Table(String title, List<Integer> widths, int headerRows, List<List<String>> rows, String key) implements Block {
+    public record Table(String title, List<Integer> widths, int headerRows, List<List<String>> rows, String key, List<List<Integer>> spans)
+            implements Block {
 
         /** A table no entry names. */
         public Table(String title, List<Integer> widths, int headerRows, List<List<String>> rows) {
-            this(title, widths, headerRows, rows, "");
+            this(title, widths, headerRows, rows, "", List.of());
+        }
+
+        /** A table whose every cell takes one column. */
+        public Table(String title, List<Integer> widths, int headerRows, List<List<String>> rows, String key) {
+            this(title, widths, headerRows, rows, key, List.of());
         }
 
         public Table {
             key = keyOrNone(key);
+        }
+
+        /**
+         * How many columns each cell of a row takes.
+         *
+         * @param row the row's index
+         * @return a span for each of the row's cells, all 1 for a row with no spanning cell
+         */
+        public List<Integer> spansOf(int row) {
+            List<Integer> own = row < spans.size() ? spans.get(row) : List.of();
+            return own.size() == rows.get(row).size() ? own : java.util.Collections.nCopies(rows.get(row).size(), 1);
+        }
+
+        /** @return the relative widths of a row's cells: its columns', a spanning cell's the sum of those it takes */
+        public List<Integer> weightsOf(int row) {
+            List<Integer> own = spansOf(row);
+            return own.stream().allMatch(span -> span == 1) ? widths : TableCells.weights(own, widths);
         }
 
         /** @return the column count */

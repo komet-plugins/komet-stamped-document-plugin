@@ -425,6 +425,36 @@ class TypstWriterTest {
     }
 
     @Test
+    void aCellOverSeveralColumnsIsWrittenAsOneCellWithItsSpan() {
+        DocumentModel model = StoredDocumentModel.of(StoredFixture.parse("""
+                [cols="4,2,2,2", options="header"]
+                |===
+                | Input | Low | Default | High
+                4+| *The price of health*
+                | A year of healthy life | 50 | 100 | 150
+                2+| Two of them | x | y
+                |===
+                """));
+        Table table = (Table) model.blocks().getFirst();
+        assertEquals(List.of(List.of("Input", "Low", "Default", "High"), List.of("*The price of health*"),
+                List.of("A year of healthy life", "50", "100", "150"), List.of("Two of them", "x", "y")), table.rows());
+        assertEquals(List.of(4), table.spansOf(1));
+        assertEquals(List.of(10), table.weightsOf(1), "a cell over every column is as wide as the table");
+        assertEquals(List.of(6, 2, 2), table.weightsOf(3));
+        assertEquals(List.of(4, 2, 2, 2), table.weightsOf(2));
+
+        String typst = TypstWriter.write(model, TypstWriter.PageSetup.DEFAULT);
+        assertTrue(typst.contains("    table.cell(colspan: 4)[#strong[The price of health];], \n"), typst);
+        assertTrue(typst.contains("    table.cell(colspan: 2)[Two of them], [x], [y], \n"), "the cells after a span keep their columns: " + typst);
+        assertTrue(typst.contains("    [A year of healthy life], [50], [100], [150], \n"));
+
+        List<LayoutOracle.Unit> rows = ModelUnits.of(model, 11).stream().filter(u -> u.kind() == LayoutOracle.Kind.TABLE_ROW).toList();
+        assertEquals("The price of health", rows.get(1).text(), "the row is its one cell: no bar, no empty place");
+        assertEquals(List.of(10), rows.get(1).columns());
+        assertEquals(List.of(6, 2, 2), rows.get(3).columns());
+    }
+
+    @Test
     void tableWithoutColsOrHeaderPadsShortRows() {
         String typst = body("""
                 |===

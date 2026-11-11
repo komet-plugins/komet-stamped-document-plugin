@@ -64,6 +64,8 @@ public final class LineRunModel extends StyledTextModelViewOnlyBase {
      * bold; and the pages' mono face is loaded only once a page is laid out.
      */
     public static final StyleAttribute<Boolean> SCREEN = StyleAttribute.character("network.ike.komet.document.screen", Boolean.class);
+    /** The colour of a link into the document: a cross reference or a citation that found its target. */
+    static final Color LINK = Color.web(TypstWriter.LINK_COLOUR);
     /** The colour a highlighted phrase stands on, as a marker pen leaves it. */
     static final Color MARKED = Color.web("#fff3a3");
     /** The screen's mono face, as the Reading view's listings have it, and its size beside the body's. */
@@ -195,7 +197,25 @@ public final class LineRunModel extends StyledTextModelViewOnlyBase {
             if (run.strike()) {
                 b.setStrikeThrough(true);
             }
+            if (run.href() != null && run.href().startsWith(InlineText.INTERNAL)) {
+                b.setTextColor(LINK);                             // a link into the document, as the PDF colours it
+            }
             return b.build();
+        }
+
+        /**
+         * The link a character of the drawn text is part of.
+         *
+         * @param offset the character's offset in the paragraph's drawn text
+         * @return the link's target, or empty when the character is no link's
+         */
+        public Optional<String> linkAt(int offset) {
+            for (InlineText.Run run : runs) {
+                if (run.href() != null && run.from() <= offset && offset < run.to()) {
+                    return Optional.of(run.href());
+                }
+            }
+            return Optional.empty();
         }
     }
 
@@ -301,6 +321,20 @@ public final class LineRunModel extends StyledTextModelViewOnlyBase {
          * @return the spec as the pages draw it
          */
         public Inlined inlined(InlineText.Numbering numbering) {
+            return inlined(numbering, null);
+        }
+
+        /**
+         * Reads the inline markup of a spec's paragraphs, each line read first as its document reads
+         * it ({@link DocumentReading}): its attribute references as their values, a reference that
+         * opens a note closed by one on a later line of the paragraph, and its cross references by
+         * what they find.
+         *
+         * @param numbering the document's footnote count
+         * @param reading   how the lines are read, or {@code null} to leave every reference as written
+         * @return the spec as the pages draw it
+         */
+        public Inlined inlined(InlineText.Numbering numbering, DocumentReading reading) {
             List<Paragraph> read = new ArrayList<>();
             List<InlineText.Mark> marks = new ArrayList<>();
             List<FootNote> notes = new ArrayList<>();
@@ -308,12 +342,14 @@ public final class LineRunModel extends StyledTextModelViewOnlyBase {
             for (Paragraph p : paragraphs) {
                 StringBuilder source = new StringBuilder();
                 int[] starts = new int[p.lines().size() + 1];
+                DocumentReading.Block references = reading == null ? null : reading.block();
                 for (int i = 0; i < p.lines().size(); i++) {
                     if (i > 0) {
                         source.append('\n');
                     }
                     starts[i] = source.length();
-                    source.append(drawn(p, p.lines().get(i)));
+                    Line line = p.lines().get(i);
+                    source.append(references == null ? drawn(p, line) : references.line(line.line().nid(), drawn(p, line)));
                 }
                 starts[p.lines().size()] = source.length();
                 InlineText inline = InlineText.of(source.toString(), numbering);
@@ -679,6 +715,20 @@ public final class LineRunModel extends StyledTextModelViewOnlyBase {
             b.setUnderline(true);
         }
         return b.build();
+    }
+
+    /**
+     * The link into the document at a position: what a click there follows.
+     *
+     * @param pos the position
+     * @return the key of the block the link points at, or empty when the position is on no such link
+     */
+    public Optional<String> internalLinkAt(TextPos pos) {
+        if (pos == null || pos.index() < 0 || pos.index() >= spec.paragraphs().size()) {
+            return Optional.empty();
+        }
+        return spec.paragraphs().get(pos.index()).linkAt(pos.offset())
+                .filter(href -> href.startsWith(InlineText.INTERNAL)).map(href -> href.substring(InlineText.INTERNAL.length()));
     }
 
     /** @return the spec this model was built from */

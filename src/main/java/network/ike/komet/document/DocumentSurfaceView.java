@@ -644,6 +644,9 @@ public final class DocumentSurfaceView {
         boolean frontList;
         /** In the Page layout: the key of the block a front list's entry names ({@link network.ike.komet.document.print.StoredDocumentModel#key}); empty for any other area. */
         String entryTarget = "";
+        /** For a table row drawn from the layout's lines: its top rule above its baseline, and its height; 0 when its cells wrap. */
+        double rowAscent;
+        double rowHeight;
         /** In the Page layout: how far a front list's entry is indented, in ems of the body. */
         int entryDepth;
         /** In the Page layout: whether a front list's entry is of a list that has levels, whose page numbers have room for bold digits. */
@@ -819,6 +822,7 @@ public final class DocumentSurfaceView {
         // the structured blocks of this document read each other here: trees folded in, statements named, values computed
         blocks = new BlockContext();
         printed.clear();
+        fittedColumns.clear();                                   // the document shown may have other tables, or other words in these
         // the same document's folds are carried across the rebuild by what the blocks say; another document's are what the card remembers of it
         boolean sameDocument = foldedDocument != null && foldedDocument.equals(shown.host().document().anchor());
         List<String> foldKeys = sameDocument ? folding.keys(this::foldKey) : host.rememberedFolds();
@@ -865,7 +869,7 @@ public final class DocumentSurfaceView {
 
     /** Renders one member's blocks, or its lines as a ledger when the store holds no structure for it. */
     private void renderMember(DocumentAssembly.Member member, int depth, String section) {
-        StoredDocument document = member.shown();                 // an include that names tags shows its regions alone
+        StoredDocument document = assembly.read(member);                 // an include that names tags shows its regions alone
         if (document.root() == null) {
             for (StoredLine line : document.lines()) {
                 add(member, null, List.of(line), paragraphs(List.of(line), "", st.mono(), null), depth, false, section);
@@ -1178,7 +1182,7 @@ public final class DocumentSurfaceView {
 
     /** Renders one block of a member and its members into the Reading view's areas. */
     private void render(DocumentAssembly.Member member, StoredBlock block, int depth, int ordinal, String section) {
-        StoredDocument document = member.shown();
+        StoredDocument document = assembly.read(member);
         List<StoredLine> own = new ArrayList<>();
         List<StoredBlock> children = new ArrayList<>();
         for (long nid : block.members()) {
@@ -1342,7 +1346,7 @@ public final class DocumentSurfaceView {
                     }
                     if (!print) {
                         title(area, block);
-                        attachStructured(area, member.shown(), block);
+                        attachStructured(area, assembly.read(member), block);
                     }
                 }
             }
@@ -1580,8 +1584,8 @@ public final class DocumentSurfaceView {
                 boolean chief = levelled && entry.depth() <= 0;
                 Object[] target = targets.get(entry.target());
                 DocumentAssembly.Member member = target == null ? host : (DocumentAssembly.Member) target[0];
-                StoredBlock block = target == null ? document.root() : member.shown().blocks().get((Long) target[1]);
-                List<StoredLine> carrier = block == null ? hostTitle : titleLine(member.shown(), block, hostTitle);
+                StoredBlock block = target == null ? document.root() : assembly.read(member).blocks().get((Long) target[1]);
+                List<StoredLine> carrier = block == null ? hostTitle : titleLine(assembly.read(member), block, hostTitle);
                 Area area = addArea(member, block == null ? document.root() : block, carrier,
                         paragraphs(carrier, " ", chief ? StyleAttributeMap.builder().merge(st.ragged()).setBold(true).build() : st.ragged(), t -> entry.text()),
                         0, false, list.title(), true);
@@ -1642,6 +1646,20 @@ public final class DocumentSurfaceView {
         }
     }
 
+    /**
+     * Follows a link into the document to the block it names: on the pages to the page the block
+     * begins on, in the Reading view to the block.
+     *
+     * @param key the block's key, as the link is written with it
+     */
+    void follow(String key) {
+        if (view == View.PAGE_LAYOUT) {
+            revealTarget(key);
+        } else if (assembly != null) {
+            assembly.targets().block(key).ifPresent(this::revealBlock);
+        }
+    }
+
     /** Scrolls the Reading view to a block's area, opening any fold that hides it. */
     private void revealBlock(long blockNid) {
         for (int i = 0; i < areas.size(); i++) {
@@ -1649,8 +1667,23 @@ public final class DocumentSurfaceView {
             if (area.block != null && area.block.nid() == blockNid) {
                 unfoldToShow(i);
                 surface.revealBlock(i);
+                settleOn(i, 3);
                 return;
             }
+        }
+    }
+
+    /**
+     * Scrolls to a block again once the layout has settled, and again after that. Far from where
+     * the reader was, the blocks around a target are built only when it is scrolled to, and their
+     * heights then move it down the stack: one scroll lands short, on what stood there before.
+     *
+     * @param index the block's index among the Reading view's blocks
+     * @param times how many more times to scroll
+     */
+    private void settleOn(int index, int times) {
+        if (times > 0) {
+            surface.restoreViewpoint(new DocumentSurface.Viewpoint(index, 0, null), () -> settleOn(index, times - 1));
         }
     }
 
@@ -1692,7 +1725,103 @@ public final class DocumentSurfaceView {
                                                                                               network.ike.komet.document.print.DocumentModel.Lists lists) {
                 return captions.frontLists(lists);
             }
+
+            @Override
+            public List<Integer> columns(StoredBlock table, List<List<String>> rows, List<List<Integer>> spans, int headerRows, List<Integer> widths) {
+                return fittedColumns(table, rows, spans, headerRows, widths);
+            }
         };
+    }
+
+    /** The theme and the measure the tables' columns are fitted for; none until a page is to be set. */
+    private network.ike.komet.document.surface.print.settings.DocumentTheme fitTheme;
+    private double fitWidth;
+    /** Each table's printed column widths, by the table's block: the model and the pages set a table in the same ones. */
+    private final Map<Long, List<Integer>> fittedColumns = new HashMap<>();
+
+    /**
+     * Says what the document is printed on, before its print model or its pages are asked for: a
+     * table's columns are fitted to that measure in that theme's fonts.
+     *
+     * @param theme        the print theme
+     * @param contentWidth the measure, in points
+     */
+    public void printOn(network.ike.komet.document.surface.print.settings.DocumentTheme theme, double contentWidth) {
+        if (theme != fitTheme || contentWidth != fitWidth) {
+            fittedColumns.clear();
+            fitTheme = theme;
+            fitWidth = contentWidth;
+        }
+    }
+
+    /**
+     * The widths a table's columns are printed with ({@link TableColumnFit#printed}): each column
+     * at least as wide as its longest word that no line can break, measured in the page's fonts,
+     * a header's bold. A word breaks where Typst breaks one, after a hyphen or a slash, so each
+     * piece between is measured. A cell over several columns has their room together and widens
+     * none of them.
+     */
+    private List<Integer> fittedColumns(StoredBlock table, List<List<String>> rows, List<List<Integer>> spans, int headerRows, List<Integer> widths) {
+        if (fitTheme == null || fitWidth <= 0 || widths.size() < 2) {
+            return widths;
+        }
+        return fittedColumns.computeIfAbsent(table.nid(), nid -> {
+            network.ike.komet.document.print.DocumentFonts.loadForJavaFx();
+            Styles page = Styles.page(fitTheme);
+            double[] least = new double[widths.size()];
+            for (int r = 0; r < rows.size(); r++) {
+                List<Integer> own = r < spans.size() && spans.get(r).size() == rows.get(r).size() ? spans.get(r) : null;
+                StyleAttributeMap style = r < headerRows ? page.headerCell() : page.cell();
+                int column = 0;
+                for (int k = 0; k < rows.get(r).size() && column < least.length; k++) {
+                    int span = own == null ? 1 : Math.max(1, own.get(k));
+                    if (span == 1) {
+                        network.ike.komet.document.print.InlineText read = network.ike.komet.document.print.InlineText.of(rows.get(r).get(k));
+                        least[column] = Math.max(least[column], widestWord(read, style, r < headerRows));
+                    }
+                    column += span;
+                }
+            }
+            return TableColumnFit.printed(widths, least, fitWidth);
+        });
+    }
+
+    /** The room a cell's widest unbreakable piece of a word needs: its width, the cell's inset either side, and a point to spare. */
+    private double widestWord(network.ike.komet.document.print.InlineText read, StyleAttributeMap style, boolean header) {
+        String text = read.text();
+        double widest = 0;
+        int at = 0;
+        while (at < text.length()) {
+            while (at < text.length() && Character.isWhitespace(text.charAt(at))) {
+                at++;
+            }
+            int end = at;
+            while (end < text.length() && !Character.isWhitespace(text.charAt(end))) {
+                end++;
+            }
+            if (end > at) {
+                int start = at;
+                boolean bold = header;
+                boolean mono = false;
+                for (network.ike.komet.document.print.InlineText.Run run : read.runs()) {
+                    if (run.from() < end && run.to() > start) {
+                        bold |= run.bold();
+                        mono |= run.mono();
+                    }
+                }
+                StyleAttributeMap in = mono ? StyleAttributeMap.builder().merge(style).setFontFamily(network.ike.komet.document.print.DocumentFonts.MONO)
+                        .setFontSize(style.getFontSize() * network.ike.komet.document.print.TypstWriter.RAW_SCALE).build() : style;
+                String word = text.substring(at, end);
+                int from = 0;
+                for (int cut : network.ike.komet.document.print.TypstOracle.ownCuts(word)) {
+                    widest = Math.max(widest, textWidth(in, word.substring(from, cut), bold));
+                    from = cut;
+                }
+                widest = Math.max(widest, textWidth(in, word.substring(from), bold));
+            }
+            at = end;
+        }
+        return widest == 0 ? 0 : widest + 2 * network.ike.komet.document.print.TypstOracle.TABLE_INSET + 1;
     }
 
     /**
@@ -1849,7 +1978,7 @@ public final class DocumentSurfaceView {
         Map<Long, StoredBlock> blockOf = new HashMap<>();
         for (StoredBlock row : children) {
             for (long nid : row.members()) {
-                member.shown().line(nid).ifPresent(line -> {
+                assembly.read(member).line(nid).ifPresent(line -> {
                     body.add(line);
                     blockOf.put(line.nid(), row);
                 });
@@ -1857,8 +1986,16 @@ public final class DocumentSurfaceView {
         }
         List<List<network.ike.komet.document.print.TableCells.Cell>> rows =
                 network.ike.komet.document.print.TableCells.rows(body.stream().map(StoredLine::text).toList(), table.parameters());
-        List<Integer> widths = network.ike.komet.document.print.StoredDocumentModel.widths(table.parameters(),
-                network.ike.komet.document.print.TableCells.columns(rows));
+        // set in the widths the print model sets it in: a column too narrow for its longest word is widened once, for both
+        DocumentAttributes in = assembly.attributes(member, table);
+        List<List<String>> texts = rows.stream().map(row -> {
+            DocumentReading.Block references = assembly.reading(member).block();
+            return row.stream().map(cell -> references.line(cell.text(), in)).toList();
+        }).toList();
+        List<List<Integer>> spans = rows.stream().anyMatch(row -> row.stream().anyMatch(cell -> cell.span() > 1))
+                ? rows.stream().map(network.ike.komet.document.print.TableCells::spans).toList() : List.of();
+        List<Integer> widths = fittedColumns(table, texts, spans, header && !rows.isEmpty() ? 1 : 0,
+                network.ike.komet.document.print.StoredDocumentModel.widths(table.parameters(), network.ike.komet.document.print.TableCells.columns(rows)));
         int r = 0;
         for (List<network.ike.komet.document.print.TableCells.Cell> row : rows) {
             boolean head = header && r++ == 0;
@@ -1869,11 +2006,14 @@ public final class DocumentSurfaceView {
             }
             List<StoredLine> lines = drawn.stream().map(LineRunModel.Line::line).toList();
             LineRunModel.Spec spec = new LineRunModel.Spec(List.of(new LineRunModel.Paragraph(drawn, " ", head ? st.headerCell() : st.cell())));
+            int notesBefore = printNotes.last();
             Area area = add(member, blockOf.get(lines.getFirst().nid()), lines, spec, depth, false, section);
             if (area != null) {
-                area.columns = widths;
+                // a row's cells are as wide as the columns they take: a cell over every column is the table's width
+                area.columns = network.ike.komet.document.print.TableCells.weights(network.ike.komet.document.print.TableCells.spans(row), widths);
                 area.tableFirst = r == 1;
-                area.cellSpecs = cellSpecs(row, body, widths.size(), head ? st.headerCell() : st.cell());
+                area.cellSpecs = cellSpecs(row, body, row.size(), head ? st.headerCell() : st.cell(), assembly.reading(member),
+                        network.ike.komet.document.print.InlineText.Numbering.after(notesBefore));
             }
         }
     }
@@ -1883,7 +2023,9 @@ public final class DocumentSurfaceView {
      * column of the table, {@code null} where the row's cell is empty or the row has fewer cells
      * than the table.
      */
-    private static List<LineRunModel.Spec> cellSpecs(List<network.ike.komet.document.print.TableCells.Cell> row, List<StoredLine> body, int columns, StyleAttributeMap style) {
+    private static List<LineRunModel.Spec> cellSpecs(List<network.ike.komet.document.print.TableCells.Cell> row, List<StoredLine> body, int columns, StyleAttributeMap style,
+                                                    DocumentReading reading,
+                                                    network.ike.komet.document.print.InlineText.Numbering notes) {
         List<LineRunModel.Spec> specs = new ArrayList<>();
         for (int c = 0; c < columns; c++) {
             List<LineRunModel.Line> own = c >= row.size() ? List.<LineRunModel.Line>of() : row.get(c).pieces().stream()
@@ -1894,9 +2036,9 @@ public final class DocumentSurfaceView {
                 continue;
             }
             // read as the page prints it, markup gone, so a cell wraps as Typst wrapped it; a footnote in a cell
-            // keeps the row's number, so the cells' own numbering is thrown away
+            // keeps the number the row gave it: the cells are counted on from where the row began, in the row's order
             LineRunModel.Spec raw = new LineRunModel.Spec(List.of(new LineRunModel.Paragraph(own, " ", style)));
-            specs.add(raw.inlined(new network.ike.komet.document.print.InlineText.Numbering()).spec());
+            specs.add(raw.inlined(notes, reading).spec());
         }
         return specs;
     }
@@ -1914,7 +2056,7 @@ public final class DocumentSurfaceView {
         Map<Long, StoredBlock> blockOf = new HashMap<>();
         for (StoredBlock row : children) {
             for (long nid : row.members()) {
-                member.shown().line(nid).ifPresent(line -> {
+                assembly.read(member).line(nid).ifPresent(line -> {
                     body.add(line);
                     blockOf.put(line.nid(), row);
                 });
@@ -1937,6 +2079,7 @@ public final class DocumentSurfaceView {
             }
             List<StoredLine> lines = drawn.stream().map(LineRunModel.Line::line).toList();
             StyleAttributeMap style = head ? st.headerCell() : st.cell();
+            List<LineRunModel.FootNote> rowNotes = new ArrayList<>();
             Area area = add(member, blockOf.get(lines.getFirst().nid()), lines,
                     new LineRunModel.Spec(List.of(new LineRunModel.Paragraph(drawn, " ", style))), depth, false, section);
             if (area == null) {
@@ -1957,33 +2100,51 @@ public final class DocumentSurfaceView {
                 column.setPercentWidth(100.0 * widths.get(c) / total);
                 column.setFillWidth(true);
                 grid.getColumnConstraints().add(column);
+            }
+            int at = 0;                                          // the column the next cell begins in
+            for (int k = 0; at < widths.size(); k++) {
+                // a cell takes the columns it spans; a row short of cells is filled out with empty ones
+                network.ike.komet.document.print.TableCells.Cell written = k < row.size() ? row.get(k) : null;
+                int span = written == null ? 1 : Math.clamp(written.span(), 1, widths.size() - at);
+                int c = at;
                 VBox box = new VBox();
                 box.getStyleClass().add("doc-table-cell");
-                if (c == widths.size() - 1) {
+                if (c + span == widths.size()) {
                     box.getStyleClass().add("doc-table-last-cell");
                 }
                 box.setFillWidth(true);
                 box.setMinWidth(0);
-                List<LineRunModel.Line> own = c >= row.size() ? List.<LineRunModel.Line>of() : row.get(c).pieces().stream()
+                List<LineRunModel.Line> own = written == null ? List.<LineRunModel.Line>of() : written.pieces().stream()
                         .filter(piece -> !piece.text().isEmpty())
                         .map(piece -> new LineRunModel.Line(body.get(piece.line()), piece.text())).toList();
                 if (!own.isEmpty()) {
                     // a cell is prose: its marks read as a paragraph's are, and a concept it names drawn as a chip that folds to the column
-                    LineRunModel.Spec read = onScreen(new LineRunModel.Spec(List.of(new LineRunModel.Paragraph(own, " ", style))))
-                            .inlined(readingNotes).spec();
+                    LineRunModel.Inlined inlined = onScreen(new LineRunModel.Spec(List.of(new LineRunModel.Paragraph(own, " ", style))))
+                            .inlined(readingNotes, assembly.reading(member));
+                    LineRunModel.Spec read = inlined.spec();
+                    rowNotes.addAll(inlined.notes());
                     CellText cell = new CellText(area, read.withInlines(text -> conceptChips(text, true)));
                     cells.add(cell);
                     box.getChildren().add(cell.rta);
-                    for (LineRunModel.Line line : read.paragraphs().getFirst().lines()) {
-                        fit.words(c, line.text(), head);
+                    if (span == 1) {
+                        // a cell over several columns has their room together: its words widen no one column
+                        for (LineRunModel.Line line : read.paragraphs().getFirst().lines()) {
+                            fit.words(c, line.text(), head);
+                        }
                     }
                 }
-                grid.add(box, c, 0);
+                grid.add(box, c, 0, span, 1);
+                at += span;
             }
             area.cells = List.copyOf(cells);
             area.area.setVisible(false);
             area.area.setManaged(false);
             area.holder.getChildren().add(area.holder.getChildren().indexOf(area.area) + 1, grid);
+            // a cell's note stands beneath its row, as a paragraph's stands beneath the paragraph
+            int beneath = area.holder.getChildren().indexOf(grid) + 1;
+            for (LineRunModel.FootNote foot : rowNotes) {
+                area.holder.getChildren().add(beneath++, noteLabel(foot.note()));
+            }
             if (!fit.rows.isEmpty()) {
                 // the rows are blocks of the surface, which stands its blocks apart: a row after the first closes that space
                 VBox.setMargin(grid, new Insets(-DocumentSurface.BLOCK_SPACING, 0, 0, 0));
@@ -2089,9 +2250,11 @@ public final class DocumentSurfaceView {
      */
     private void title(Area area, StoredBlock block) {
         if (!block.title().isEmpty()) {
-            // a caption is a label, in one weight: its words without their markup, and without a note's macro
-            Label title = new Label(network.ike.komet.document.print.InlineText.of(
-                    network.ike.komet.document.print.InlineText.withoutNotes(captions.text(block))).text());
+            // a caption is a label, in one weight: its words without their markup. A note keeps its mark in the
+            // caption and its words beneath it, numbered with the document's notes as the page numbers it.
+            network.ike.komet.document.print.InlineText read = network.ike.komet.document.print.InlineText.of(
+                    assembly.reading(area.member).text(captions.text(block), assembly.attributes(area.member, block)), readingNotes);
+            Label title = new Label(read.text());
             title.setFont(Font.font("System", javafx.scene.text.FontWeight.BOLD, 13));
             title.setWrapText(true);                                     // a figure's title is read whole, not cut to the column
             title.setMaxWidth(Double.MAX_VALUE);
@@ -2102,7 +2265,24 @@ public final class DocumentSurfaceView {
             } else {
                 area.holder.getChildren().addFirst(title);
             }
+            int beneath = area.holder.getChildren().indexOf(title) + 1;
+            for (network.ike.komet.document.print.InlineText.Note note : read.notes()) {
+                if (!note.repeat()) {
+                    area.holder.getChildren().add(beneath++, noteLabel(note));
+                }
+            }
         }
+    }
+
+    /** A footnote's words as the Reading view shows them beneath what they annotate: the number, then the text. */
+    private static Label noteLabel(network.ike.komet.document.print.InlineText.Note foot) {
+        Label note = new Label(foot.drawn().text());
+        note.setFont(SMALL);
+        note.setWrapText(true);
+        note.setMaxWidth(Double.MAX_VALUE);
+        note.setStyle("-fx-text-fill: #4b5563;");
+        note.getStyleClass().add("stamped-document-footnote");
+        return note;
     }
 
     /**
@@ -2114,7 +2294,7 @@ public final class DocumentSurfaceView {
      * @param scale its size, in ems of the body
      */
     private void caption(DocumentAssembly.Member member, StoredBlock block, double scale, int depth, String section) {
-        List<StoredLine> lines = StructuredBlocks.lines(member.shown(), block);
+        List<StoredLine> lines = StructuredBlocks.lines(assembly.read(member), block);
         if (block.title().isEmpty() || lines.isEmpty()) {
             return;
         }
@@ -2213,12 +2393,12 @@ public final class DocumentSurfaceView {
 
     private Area addArea(DocumentAssembly.Member member, StoredBlock block, List<StoredLine> lines, LineRunModel.Spec read, int depth, boolean editable, String section,
                          boolean inline) {
-        LineRunModel.Inlined inlined = inline ? (print ? read.inlined(printNotes) : onScreen(read).inlined(readingNotes)) : null;
+        LineRunModel.Inlined inlined = inline ? (print ? read.inlined(printNotes, assembly.reading(member)) : onScreen(read).inlined(readingNotes, assembly.reading(member))) : null;
         // on screen a concept the prose names is drawn as its chip; a page prints the reference as written
         LineRunModel.Spec spec = inlined == null ? read : print ? inlined.spec() : inlined.spec().withInlines(text -> conceptChips(text, false));
         // a unit of the Page layout is bare: the oracles place it by its text and style, and its lines are built from it
         // a block that a tagged region cuts is read there and edited where its file is shown whole: an edit is of the whole block
-        Area area = new Area(member, block, lines, spec, editable && !past && member.holds(block), section, print);
+        Area area = new Area(member, block, lines, spec, editable && !past && assembly.holds(member, block), section, print);
         area.inline = inlined != null;
         target.add(area);
         if (print) {
@@ -2239,13 +2419,7 @@ public final class DocumentSurfaceView {
         if (inlined != null) {
             // a footnote's mark stands in the text; its words stand beneath the block, where the page has them at its foot
             for (LineRunModel.FootNote foot : inlined.notes()) {
-                Label note = new Label(foot.note().drawn().text());
-                note.setFont(SMALL);
-                note.setWrapText(true);
-                note.setMaxWidth(Double.MAX_VALUE);
-                note.setStyle("-fx-text-fill: #4b5563;");
-                note.getStyleClass().add("stamped-document-footnote");
-                area.holder.getChildren().add(note);
+                area.holder.getChildren().add(noteLabel(foot.note()));
             }
         }
         // a footnote read into the text stands beneath it with its number, so the references line need not say it again
@@ -2777,6 +2951,7 @@ public final class DocumentSurfaceView {
         }
         // the pages the front lists' entries print: wherever this layout put their targets
         entryPages = network.ike.komet.document.print.FrontLists.pages(layout, entryTargets());
+        rowCells = layout.cells();
         for (int u = 0; u < units.size() && u < this.units.size(); u++) {
             Area unitArea = this.units.get(u);
             network.ike.komet.document.print.LayoutOracle.Unit unit = units.get(u);
@@ -2976,6 +3151,89 @@ public final class DocumentSurfaceView {
         return out;
     }
 
+    /** The lines of each row's cells in the layout last laid, by the row's unit. */
+    private Map<Integer, List<network.ike.komet.document.print.LayoutOracle.CellLine>> rowCells = Map.of();
+
+    /**
+     * Draws a row from the lines the layout gave its cells: each line a text of its own, not
+     * wrapped, at the baseline the layout set it on. JavaFX measures a word a hair wider than
+     * Typst sets it, so a cell left to wrap its own text breaks some lines earlier, comes out a
+     * line taller, and runs into the row beneath; drawn from the layout's lines it cannot. On a
+     * page a row is broken over, the row is the lines that page holds. A header set again on a
+     * later page has the lines of its first setting, moved to where it stands.
+     *
+     * @return whether the row was drawn; false when the layout gave no lines for it, or its cells do not spell its text
+     */
+    private boolean setRow(Area area, Area unitArea, List<network.ike.komet.document.print.LayoutOracle.CellLine> all) {
+        if (all.isEmpty() || area.cellSpecs == null) {
+            return false;
+        }
+        // where each cell's text begins in the row's: the cells stand in it joined by bars
+        String text = unitArea.spec.plainText();
+        int[] starts = new int[area.cellSpecs.size()];
+        int at = 0;
+        for (int c = 0; c < starts.length; c++) {
+            LineRunModel.Spec spec = area.cellSpecs.get(c);
+            String cell = spec == null ? "" : LineRunModel.Spec.text(spec.paragraphs().getFirst());
+            if (spec == null && c == starts.length - 1 && at > text.length()) {
+                at = text.length();
+            }
+            if (!text.startsWith(cell.isBlank() ? "" : cell, Math.min(at, text.length()))) {
+                return false;
+            }
+            starts[c] = at;
+            at += cell.length() + network.ike.komet.document.print.TableCells.BAR.length();
+        }
+        List<network.ike.komet.document.print.LayoutOracle.CellLine> here = all.stream().filter(line -> line.page() == area.page).toList();
+        double shift = 0;
+        if (here.isEmpty()) {
+            int first = all.getFirst().page();
+            here = all.stream().filter(line -> line.page() == first).toList();
+            shift = area.baseline - all.getFirst().baseline();
+        }
+        double top = Double.MAX_VALUE;
+        double bottom = -Double.MAX_VALUE;
+        for (network.ike.komet.document.print.LayoutOracle.CellLine line : here) {
+            top = Math.min(top, line.baseline() + shift);
+            bottom = Math.max(bottom, line.baseline() + shift);
+        }
+        StyleAttributeMap style = unitArea.spec.paragraphs().getFirst().style();
+        double size = style.getFontSize() == null ? st.base() : style.getFontSize();
+        double cap = size * network.ike.komet.document.print.LayoutOracle.CAP_HEIGHT;
+        double inset = network.ike.komet.document.print.TypstOracle.TABLE_INSET;
+        // as Typst rules a row: its top a cap's height and the inset above its first baseline, its foot the inset beneath its last
+        double rowTop = top - cap - inset;
+        List<CellText> cells = new ArrayList<>();
+        List<List<network.ike.komet.document.print.PageTableRow.Set>> sets = new ArrayList<>();
+        for (int c = 0; c < area.cellSpecs.size(); c++) {
+            sets.add(new ArrayList<>());
+        }
+        for (network.ike.komet.document.print.LayoutOracle.CellLine line : here) {
+            LineRunModel.Spec spec = line.cell() < area.cellSpecs.size() ? area.cellSpecs.get(line.cell()) : null;
+            if (spec == null) {
+                continue;
+            }
+            LineRunModel.Spec slice = spec.slice(0, line.from() - starts[line.cell()], line.to() - starts[line.cell()], false, false);
+            if (slice.paragraphs().isEmpty()) {
+                continue;
+            }
+            CellText cell = new CellText(area, slice);
+            cell.rta.setWrapText(false);
+            cell.rta.setContentPadding(Insets.EMPTY);
+            cell.rta.setStyle("-fx-background-color: transparent; -fx-background-insets: 0; -fx-background-radius: 0; -fx-border-width: 0; -fx-padding: 0;");
+            cell.rta.getStyleClass().add("stamped-page-line");
+            cells.add(cell);
+            double ascent = metrics(slice.paragraphs().getFirst().style())[0] + 1;
+            sets.get(line.cell()).add(new network.ike.komet.document.print.PageTableRow.Set(cell.rta, line.baseline() + shift - ascent - rowTop));
+        }
+        area.cells = List.copyOf(cells);
+        area.rowAscent = area.baseline - rowTop;
+        area.rowHeight = bottom - top + cap + 2 * inset;
+        area.drawing = new network.ike.komet.document.print.PageTableRow(sets, area.columns, area.tableFirst, area.rowHeight);
+        areaByNode.put(area.drawing, area);
+        return true;
+    }
+
     /** The inset of a listing's block on a page, in points, what the Typst writer gives {@code raw}. */
     private static final double LISTING_INSET = 8;
 
@@ -2989,6 +3247,9 @@ public final class DocumentSurfaceView {
         area.columns = unitArea.columns;
         area.tableFirst = unitArea.tableFirst;
         area.cellSpecs = unitArea.cellSpecs;
+        if (setRow(area, unitArea, rowCells.getOrDefault(area.unit, List.of()))) {
+            return;
+        }
         List<CellText> cells = new ArrayList<>();
         List<Node> texts = new ArrayList<>();
         for (LineRunModel.Spec spec : area.cellSpecs) {
@@ -3042,9 +3303,10 @@ public final class DocumentSurfaceView {
             double[] m = metrics(style);
             if (area.drawing != null) {
                 // A table row: its cells across the content width, the first cell's first line on the row's baseline.
-                double rowAscent = m[0] + network.ike.komet.document.print.TypstOracle.TABLE_INSET + 1;
+                // a row drawn from the layout's lines knows its own top and height; one whose cells wrap is as tall as they come to
+                double rowAscent = area.rowHeight > 0 ? area.rowAscent : m[0] + network.ike.komet.document.print.TypstOracle.TABLE_INSET + 1;
                 out.add(new PageStackView.Placed(area.drawing, contentLeft, area.baseline, rowAscent, contentWidth,
-                        m[1] + 2 * network.ike.komet.document.print.TypstOracle.TABLE_INSET, false));
+                        area.rowHeight > 0 ? area.rowHeight : m[1] + 2 * network.ike.komet.document.print.TypstOracle.TABLE_INSET, false));
                 continue;
             }
             double ascent = m[0] + 2 + 1;                            // the area's content padding above the first line, and a point of air
@@ -3888,6 +4150,20 @@ public final class DocumentSurfaceView {
         });
         rta.addEventHandler(MouseEvent.MOUSE_EXITED, e -> hidePopover());
         rta.addEventHandler(MouseEvent.MOUSE_PRESSED, e -> hidePopover());
+        // a cross reference or a citation that found its target is a link: the pointer says so, and a click goes there
+        rta.addEventHandler(MouseEvent.MOUSE_MOVED, e -> {
+            boolean link = area != editing && model.get().internalLinkAt(rta.getTextPosition(e.getScreenX(), e.getScreenY())).isPresent();
+            rta.setCursor(link ? Cursor.HAND : null);
+        });
+        rta.addEventHandler(MouseEvent.MOUSE_CLICKED, e -> {
+            if (area == editing || e.getButton() != MouseButton.PRIMARY || e.isShiftDown() || !e.isStillSincePress() || e.getClickCount() != 1) {
+                return;
+            }
+            model.get().internalLinkAt(rta.getTextPosition(e.getScreenX(), e.getScreenY())).ifPresent(key -> {
+                follow(key);
+                e.consume();
+            });
+        });
         rta.selectionProperty().addListener((obs, was, is) -> snap(area, rta, model, is));
         rta.addEventFilter(MouseEvent.MOUSE_PRESSED, e -> {
             if (area == editing) {

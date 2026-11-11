@@ -17,6 +17,9 @@ package network.ike.komet.document.print;
 
 import design.knowledge.stamp.adoc.dialect.Block;
 import network.ike.komet.document.DecisionFigure;
+import network.ike.komet.document.DocumentAssembly;
+import network.ike.komet.document.DocumentAttributes;
+import network.ike.komet.document.DocumentReading;
 import network.ike.komet.document.GitDocumentMaterializer.StoredBlock;
 import network.ike.komet.document.GitDocumentMaterializer.StoredDocument;
 import network.ike.komet.document.GitDocumentMaterializer.StoredLine;
@@ -48,6 +51,14 @@ import java.util.regex.Pattern;
  * titles and attribute lines are dropped from verbatim and container blocks, and a table's
  * rows are split into cells on their bars with the {@code cols} and {@code header} options
  * read from the block's parameters.
+ *
+ * <p>What is read is what the document reads as ({@link DocumentAssembly#read}): a line that a
+ * conditional directive leaves out is not there, and nor is the directive. An attribute
+ * reference in prose, in a title or in a table's cell prints as its value
+ * ({@link DocumentAttributes}); in a listing it stays as written, since a listing is its source.
+ * A cross reference that finds its target in the assembly prints as a link to the target's
+ * block, and a bibliography entry begins with the label its citations print
+ * ({@link network.ike.komet.document.DocumentTargets}).
  *
  * <p>An assembly is read as one document: where a host's include line names a document the
  * store holds, that child flows in place — its title a heading at the include's
@@ -82,8 +93,14 @@ public final class StoredDocumentModel {
      *                    ({@link network.ike.komet.document.DocumentAssembly.Member#shown})
      * @param levelOffset the include's {@code leveloffset}, added to the including document's own; the child's
      *                    title becomes a heading at that level, at least 1
+     * @param reading     how the child's lines are read before their inline markup
      */
-    public record Child(StoredDocument document, int levelOffset) {
+    public record Child(StoredDocument document, int levelOffset, DocumentReading reading) {
+
+        /** A child read with the attributes every document starts with, its references as written. */
+        public Child(StoredDocument document, int levelOffset) {
+            this(document, levelOffset, DocumentReading.plain());
+        }
 
         /** The level offset an include's parameters name, or 0. */
         public static int levelOffset(String includeParameters) {
@@ -150,6 +167,22 @@ public final class StoredDocumentModel {
         }
 
         /**
+         * The relative widths a table's columns are printed with: those {@code cols} names by
+         * default. A surface that knows the page's measure and its fonts widens a column too
+         * narrow for its longest word, so the PDF and the pages set the table in the same widths.
+         *
+         * @param table      the table's block
+         * @param rows       its rows, each cell's text as the model has it
+         * @param spans      for each row, how many columns each cell takes; empty when no cell spans
+         * @param headerRows how many leading rows are header rows, set bold
+         * @param widths     the widths {@code cols} names
+         * @return the widths to print with
+         */
+        default List<Integer> columns(StoredBlock table, List<List<String>> rows, List<List<Integer>> spans, int headerRows, List<Integer> widths) {
+            return widths;
+        }
+
+        /**
          * A reading that numbers headings and captions as an assembly's captions have them, and
          * lists them at the front, drawing nothing: what a document is read with where no surface
          * draws its blocks.
@@ -210,8 +243,12 @@ public final class StoredDocumentModel {
      * when its file is included twice, and a key names one place, so the first showing carries it.
      */
     private final java.util.Set<Long> keyed;
+    /** How the document's lines are read before their inline markup. */
+    private final DocumentReading reading;
 
-    private StoredDocumentModel(StoredDocument document, int levelOffset, Map<Long, Child> includes, Figures figures, java.util.Set<Long> keyed) {
+    private StoredDocumentModel(StoredDocument document, int levelOffset, Map<Long, Child> includes, Figures figures, java.util.Set<Long> keyed,
+                                DocumentReading reading) {
+        this.reading = reading;
         this.document = document;
         this.figures = figures;
         this.levelOffset = levelOffset;
@@ -261,8 +298,9 @@ public final class StoredDocumentModel {
             }
             int offset = offsets.getOrDefault(include.in(), 0) + Child.levelOffset(include.line().text());
             offsets.put(include.child(), offset);
+            network.ike.komet.document.DocumentAssembly.Member child = include.child();
             // a file shown twice follows its own includes in each showing; the line's first showing is the one the model reads
-            includes.putIfAbsent(include.line().nid(), new Child(include.child().shown(), offset));
+            includes.putIfAbsent(include.line().nid(), new Child(assembly.read(child), offset, assembly.reading(child)));
         }
         return includes;
     }
@@ -276,8 +314,27 @@ public final class StoredDocumentModel {
      * @return the model
      */
     public static DocumentModel of(StoredDocument document, Map<Long, Child> includes, Figures figures) {
+        // the host's own attributes and conditionals, read as a document alone has them
+        DocumentAssembly alone = DocumentAssembly.single(document, "");
+        return of(alone.read(alone.host()), alone.reading(alone.host()), includes, figures);
+    }
+
+    /**
+     * Reads an assembly, drawing the blocks that have figures: the host and every child as they
+     * read, each line's attribute references given the values in force at it.
+     *
+     * @param assembly the assembly
+     * @param figures  what a block is drawn as
+     * @return the model
+     */
+    public static DocumentModel of(DocumentAssembly assembly, Figures figures) {
+        DocumentAssembly.Member host = assembly.host();
+        return of(assembly.read(host), assembly.reading(host), children(assembly), figures);
+    }
+
+    private static DocumentModel of(StoredDocument document, DocumentReading reading, Map<Long, Child> includes, Figures figures) {
         DocumentModel.Lists lists = lists(document);
-        StoredDocumentModel reader = new StoredDocumentModel(document, 0, Map.copyOf(includes), figures, new java.util.HashSet<>());
+        StoredDocumentModel reader = new StoredDocumentModel(document, 0, Map.copyOf(includes), figures, new java.util.HashSet<>(), reading);
         // the abstract stands first, on the title page; the lists follow it, after the title, as the printed document and the pages have them
         List<DocumentModel.Block> blocks = new ArrayList<>();
         abstractOf(document).ifPresent(block -> {
@@ -544,6 +601,9 @@ public final class StoredDocumentModel {
     /** Reads this document's blocks onto the list; returns its title. A child's title is a heading; the host's is the model's title. */
     private String read(List<DocumentModel.Block> out, boolean isRoot) {
         String title = document.attributes().isEmpty() ? "" : document.attributes().getFirst();
+        if (document.root() != null && !title.isEmpty()) {
+            title = valued(title, document.root());
+        }
         if (document.root() == null) {
             // No structure in the store: every line is a paragraph of its own, as the Reading view shows it.
             for (StoredLine line : document.lines()) {
@@ -552,7 +612,7 @@ public final class StoredDocumentModel {
             return title;
         }
         if (title.isEmpty()) {
-            title = document.root().title();
+            title = title(document.root());
         }
         if (!isRoot && !title.isEmpty()) {
             out.add(new Heading(levelOffset, figures.heading(document, document.root(), title), keyOf(document.root())));
@@ -594,11 +654,38 @@ public final class StoredDocumentModel {
         return members(block).stream().map(Member::block).filter(b -> b != null).toList();
     }
 
+    /** The first line a block holds, its child blocks' among them, or null. */
+    private StoredLine firstLine(StoredBlock block) {
+        for (StoredBlock in = block; in != null; ) {
+            if (in.members().isEmpty()) {
+                return null;
+            }
+            long first = in.members().getFirst();
+            StoredLine line = linesByNid.get(first);
+            if (line != null) {
+                return line;
+            }
+            in = document.blocks().get(first);
+        }
+        return null;
+    }
+
+    /** Text that stands for a block, its title or its caption, read where the block begins: its attribute references as their values, its cross references by what they find. */
+    private String valued(String text, StoredBlock block) {
+        StoredLine first = text.indexOf('{') < 0 && text.indexOf('<') < 0 && text.indexOf("xref:") < 0 ? null : firstLine(block);
+        return first == null ? text : reading.text(text, first.nid());
+    }
+
+    /** A block's title as it reads. */
+    private String title(StoredBlock block) {
+        return valued(block.title(), block);
+    }
+
     private void block(StoredBlock block, List<DocumentModel.Block> out) {
         List<DecisionFigure> drawn = figures.of(document, block);
         if (!drawn.isEmpty()) {
             // the first figure carries the block's caption, which the figures source has drawn beneath it
-            String caption = figures.caption(document, block);
+            String caption = valued(figures.caption(document, block), block);
             for (int i = 0; i < drawn.size(); i++) {
                 out.add(new DocumentModel.Drawn(drawn.get(i), i == 0 ? caption : "", i == 0 ? keyOf(block) : ""));
             }
@@ -606,7 +693,7 @@ public final class StoredDocumentModel {
         }
         if (block.kind() == Block.Kind.OPEN && StructuredBlocks.kindOf(block).isPresent()) {
             // one block of source, as a listing is: the parser's paragraphs of it are not paragraphs
-            out.add(new Verbatim(block.title(), String.join("\n",
+            out.add(new Verbatim(title(block), String.join("\n",
                     StructuredBlocks.content(document, block).stream().map(StoredLine::text).toList()), keyOf(block)));
             return;
         }
@@ -615,8 +702,9 @@ public final class StoredDocumentModel {
         switch (block.kind()) {
             case DOCUMENT -> children(children, out);
             case SECTION -> {
-                String heading = own.stream().map(StoredLine::text).filter(t -> t.matches("^=+\\s.*")).findFirst()
-                        .map(t -> t.replaceFirst("^=+\\s*", "").strip()).orElse(block.title());
+                String heading = own.stream().filter(line -> line.text().matches("^=+\\s.*")).findFirst()
+                        .map(line -> reading.text(line.text().replaceFirst("^=+\\s*", "").strip(), line.nid()))
+                        .orElse(title(block));
                 out.add(new Heading(block.level() + levelOffset, figures.heading(document, block, heading), keyOf(block)));
                 children(children, out);
             }
@@ -636,7 +724,7 @@ public final class StoredDocumentModel {
                 children(children, body);
                 out.add(new Admonition(label, body));
             }
-            case LISTING, LITERAL, DIAGRAM -> out.add(new Verbatim(block.title(), String.join("\n", verbatimLines(own).stream().map(StoredLine::text).toList()),
+            case LISTING, LITERAL, DIAGRAM -> out.add(new Verbatim(title(block), String.join("\n", verbatimLines(own).stream().map(StoredLine::text).toList()),
                     keyOf(block)));
             case EXAMPLE, QUOTE, SIDEBAR, OPEN -> {
                 List<DocumentModel.Block> body = new ArrayList<>();
@@ -646,7 +734,7 @@ public final class StoredDocumentModel {
                     case QUOTE -> Container.Kind.QUOTE;
                     case SIDEBAR -> Container.Kind.SIDEBAR;
                     default -> Container.Kind.OPEN;
-                }, block.title(), body));
+                }, title(block), body));
             }
             case LIST -> out.add(list(block, children));
             case LIST_ITEM, BIBLIOGRAPHY_ENTRY -> { } // only inside a LIST
@@ -655,7 +743,7 @@ public final class StoredDocumentModel {
             case IMAGE -> {
                 String target = own.stream().map(StoredLine::text).map(IMAGE_MACRO::matcher).filter(Matcher::matches)
                         .map(m -> m.group(1)).findFirst().orElse("");
-                out.add(new Image(target, block.title(), keyOf(block)));
+                out.add(new Image(target, title(block), keyOf(block)));
             }
             case OPAQUE -> {
                 // Comments, attribute entries and passthrough print nothing; an include line whose child
@@ -663,7 +751,8 @@ public final class StoredDocumentModel {
                 for (StoredLine line : own) {
                     Child child = includes.get(line.nid());
                     if (child != null) {
-                        new StoredDocumentModel(child.document(), Math.max(1, levelOffset + child.levelOffset()), includes, figures, keyed).read(out, false);
+                        new StoredDocumentModel(child.document(), Math.max(1, levelOffset + child.levelOffset()), includes, figures, keyed, child.reading())
+                                .read(out, false);
                     }
                 }
             }
@@ -710,6 +799,7 @@ public final class StoredDocumentModel {
             }
             String term = "";
             List<String> texts = new ArrayList<>();
+            DocumentReading.Block references = reading.block();
             for (int i = 0; i < own.size(); i++) {
                 String text = own.get(i).text();
                 if (text.strip().equals("+")) {
@@ -719,22 +809,23 @@ public final class StoredDocumentModel {
                     if (kind == ListBlock.Kind.DESCRIPTION) {
                         Matcher d = DESCRIPTION_TERM.matcher(text);
                         if (d.matches()) {
-                            term = d.group(1).strip();
+                            term = reading.text(d.group(1).strip(), own.get(i).nid());
                             text = d.group(3) == null ? "" : d.group(3);
                         }
                     } else if (kind == ListBlock.Kind.BIBLIOGRAPHY) {
-                        text = text.replaceFirst("^\\s*(\\*+|-)\\s+", "").replaceFirst("^\\[\\[\\[[^\\]]+\\]\\]\\]\\s*", "");
+                        // the entry's anchor is read with the line: it gives the entry the label its citations print
+                        text = text.replaceFirst("^\\s*(\\*+|-)\\s+", "");
                     } else {
                         text = MARKER.matcher(text).replaceFirst("");
                     }
                 }
-                texts.add(text);
+                texts.add(references.line(own.get(i).nid(), text));
             }
             List<DocumentModel.Block> nested = new ArrayList<>();
             children(childBlocks(item), nested);
             items.add(new Item(term, prose(texts), nested));
         }
-        return new ListBlock(kind, block.title(), items);
+        return new ListBlock(kind, title(block), items);
     }
 
     private Table table(StoredBlock block, List<StoredBlock> children) {
@@ -745,10 +836,19 @@ public final class StoredDocumentModel {
             }
         }
         List<List<TableCells.Cell>> cells = TableCells.rows(lines, block.parameters());
-        List<List<String>> rows = cells.stream().map(row -> row.stream().map(TableCells.Cell::text).toList()).toList();
+        // a cell's references are read once the row is cut into cells: a value that holds a bar is not a cell's edge
+        StoredLine first = firstLine(block);
+        DocumentAttributes in = first == null ? DocumentAttributes.intrinsic() : reading.at(first.nid());
+        List<List<String>> rows = cells.stream().map(row -> {
+            DocumentReading.Block references = reading.block();
+            return row.stream().map(cell -> references.line(cell.text(), in)).toList();
+        }).toList();
         List<Integer> widths = widths(block.parameters(), TableCells.columns(cells));
         boolean header = block.parameters().contains("header") && !rows.isEmpty();
-        return new Table(figures.caption(document, block), widths, header ? 1 : 0, rows, keyOf(block));
+        List<List<Integer>> spans = cells.stream().anyMatch(row -> row.stream().anyMatch(cell -> cell.span() > 1))
+                ? cells.stream().map(TableCells::spans).toList() : List.of();
+        return new Table(valued(figures.caption(document, block), block), figures.columns(block, rows, spans, header ? 1 : 0, widths), header ? 1 : 0,
+                rows, keyOf(block), spans);
     }
 
     /** @return how many columns {@code cols} names, 0 when the table has none */
@@ -785,16 +885,20 @@ public final class StoredDocumentModel {
         return widths;
     }
 
-    /** The lines of a paragraph-like block that are content: not an anchor, title, attribute or delimiter line. */
-    private static List<String> contentLines(List<StoredLine> own) {
+    /**
+     * The lines of a paragraph-like block that are content: not an anchor, title, attribute or
+     * delimiter line. Each is given as it reads, its attribute references as their values.
+     */
+    private List<String> contentLines(List<StoredLine> own) {
         List<String> lines = new ArrayList<>();
+        DocumentReading.Block references = reading.block();
         for (StoredLine line : own) {
             String text = line.text();
             if (ANCHOR_LINE.matcher(text).matches() || ATTRIBUTE_LINE.matcher(text).matches() || DELIMITER.matcher(text).matches()
                     || (BLOCK_TITLE.matcher(text).matches() && lines.isEmpty()) || LINE_COMMENT.matcher(text.strip()).matches()) {
                 continue;                                         // a comment among a paragraph's lines prints nothing, a tag line included
             }
-            lines.add(text);
+            lines.add(references.line(line.nid(), text));
         }
         return lines;
     }

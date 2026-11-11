@@ -102,6 +102,39 @@ class TypstCompilerTest {
     }
 
     @Test
+    void aHeaderRowsNoteIsGivenOnceHoweverManyPagesTheTableRunsTo(@TempDir Path folder) throws IOException {
+        assumeTrue(TypstCompiler.locate().isPresent(), "typst is not installed");
+        StringBuilder text = new StringBuilder("""
+                = A Long Table
+
+                Before the table.footnote:[The first note.]
+
+                .Values
+                [cols="1,1", options="header"]
+                |===
+                | Quantity | Valuefootnote:[In dollars.]
+                """);
+        for (int row = 1; row <= 120; row++) {
+            text.append("| Quantity ").append(row).append(" | ").append(row * 100).append('\n');
+        }
+        text.append("|===\n\nAfter the table.footnote:[The last note.]\n");
+        DocumentModel model = StoredDocumentModel.of(StoredFixture.parse(text.toString()));
+        TypstPdf.Printed printed = TypstPdf.print(model, PrintSettings.DEFAULT, folder, "head-note");
+        assertTrue(printed.ok(), printed.report());
+        assertTrue(printed.result().output().isBlank(), "typst warned: " + printed.result().output());
+        // typst sets the header again on every page: before the note was given once, each setting gave it again, renumbered
+        TypstCompiler.Result counted = TypstCompiler.evaluate(folder, printed.source(),
+                "(notes: query(footnote.entry).len(), marks: query(footnote).len(), pages: query(footnote).map(it => it.location().page()).dedup().len())",
+                folder.resolve("fonts"));
+        assertTrue(counted.ok(), counted.output());
+        String answer = counted.output().replaceAll("\\s", "");
+        java.util.regex.Matcher pages = java.util.regex.Pattern.compile("\"pages\":(\\d+)").matcher(answer);
+        assertTrue(pages.find() && Integer.parseInt(pages.group(1)) >= 3, "the table runs over pages: " + answer);
+        assertTrue(answer.contains("\"notes\":3"), "three notes at the feet of the pages, the header's given once: " + answer);
+        assertTrue(answer.contains("\"marks\":" + (2 + Integer.parseInt(pages.group(1)))), "and its mark stands in the header on every page: " + answer);
+    }
+
+    @Test
     void everyConstructCompilesToAPdf(@TempDir Path folder) throws IOException {
         assumeTrue(TypstCompiler.locate().isPresent(), "typst is not installed");
         DocumentModel model = StoredDocumentModel.of(StoredFixture.parse(EVERYTHING));

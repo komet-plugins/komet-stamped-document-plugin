@@ -351,6 +351,56 @@ class TypstOracleTest {
         }
     }
 
+    /**
+     * The labels of a paragraph that runs on to a second page: the first word of that page left
+     * its start label at the end of the last line of the page before, and its end label follows
+     * the folio of that page and the running head of the next.
+     */
+    private static Layout overAPage(Unit prose, String first, double firstEndX) {
+        List<Item> items = new ArrayList<>();
+        items.add(new Item(1, 0, 72, 690));
+        word(items, "It", 0, 72, 706, 84);
+        word(items, "is", 0, 90, 706, 102);
+        word(items, "a", 0, 108, 706, 114);
+        word(items, "reason", 0, 120, 706, 156);
+        word(items, "to", 0, 162, 706, 174);
+        word(items, "enforce", 0, 498, 706, 540);
+        items.add(new Item(first, 0, 540, 706));                  // left at the end of the line before
+        word(items, "59", 0, 300, 742, 312);                      // the folio of the page it leaves
+        word(items, "Head", 1, 72, 37, 96);                       // the running head of the page it stands on
+        items.add(new Item(Boolean.FALSE, 1, firstEndX, 81));     // its own end label, after them
+        word(items, "rule", 1, firstEndX + 6, 81, firstEndX + 30);
+        word(items, "by", 1, firstEndX + 36, 81, firstEndX + 48);
+        word(items, "control.", 1, 540, 97, 120);
+        items.add(new Item(null, 1, 72, 110));
+        return TypstOracle.align(items, List.of(prose), LETTER, WIDTH);
+    }
+
+    @Test
+    void theFirstWordOfAPageAParagraphRunsOnToStandsOnThatPage() {
+        // "the" cannot be broken; before, its end label past the running head was taken for a hyphenated tail's, and the word left on the page before
+        Unit prose = new Unit(0, 1, Kind.PARAGRAPH, "It is a reason to enforce the rule by control.", 12, false, 0, 13, 0, false);
+        Layout layout = overAPage(prose, "the", 72 + 18);
+        assertEquals(List.of("It is a reason to enforce", "the rule by", "control."), layout.ofUnit(0).stream().map(line -> line.text(prose)).toList());
+        assertEquals(List.of(0, 1, 1), layout.ofUnit(0).stream().map(Line::page).toList());
+        assertFalse(layout.ofUnit(0).getFirst().hyphenated());
+
+        // "magnetic" can be broken, and was: "mag-" at the foot of the page, though all of it stands on the next
+        Unit other = new Unit(0, 1, Kind.PARAGRAPH, "It is a reason to enforce magnetic rule by control.", 12, false, 0, 13, 0, false);
+        layout = overAPage(other, "magnetic", 72 + 48);
+        assertEquals(List.of("It is a reason to enforce", "magnetic rule by", "control."), layout.ofUnit(0).stream().map(line -> line.text(other)).toList());
+        assertFalse(layout.ofUnit(0).getFirst().hyphenated());
+    }
+
+    @Test
+    void aWordHyphenatedOverAPageKeepsItsHeadOnThePageBefore() {
+        // the end label stands only the tail's width into the next page's first line: "netic", 30 points
+        Unit prose = new Unit(0, 1, Kind.PARAGRAPH, "It is a reason to enforce magnetic rule by control.", 12, false, 0, 13, 0, false);
+        Layout layout = overAPage(prose, "magnetic", 72 + 30);
+        assertEquals(List.of("It is a reason to enforce mag-", "netic rule by", "control."), layout.ofUnit(0).stream().map(line -> line.text(prose)).toList());
+        assertTrue(layout.ofUnit(0).getFirst().hyphenated());
+    }
+
     /** The labels of a row that leads a page: its first word's start label stays on the row before, its end label follows the running head. */
     @Test
     void aRowThatLeadsAPageKeepsItsFirstWord() {
@@ -668,6 +718,97 @@ class TypstOracleTest {
 
             assertEquals(layout.pageOf(first.index()), layout.pageOf(caption.index()), "at " + lines + " lines above it");
         }
+    }
+
+    @Test
+    void aRowsCellsHaveTheirOwnLinesAndAShortCellIsNotLost() {
+        // "1.5" is a cell of three characters: matched four characters at a time past the bar, it was not placed at all
+        Unit row = new Unit(0, 0, Kind.TABLE_ROW, "Lost per reaction  \u2502  1.5  \u2502  Treatment and revision; order of magnitude", 11, false, 0, 0, 0, false)
+                .withColumns(List.of(3, 1, 3));
+        List<Item> items = new ArrayList<>();
+        items.add(new Item(0, 0, 72, 90));
+        word(items, "Lost", 0, 77, 104, 100);
+        word(items, "per", 0, 103, 104, 120);
+        items.add(new Item("reaction", 0, 124, 104));
+        items.add(new Item(Boolean.FALSE, 0, 77, 104));            // a cell's last word: its end label at the cell's left edge, on its own baseline
+        items.add(new Item("1.5", 0, 274, 96));
+        items.add(new Item(Boolean.FALSE, 0, 274, 104));
+        word(items, "Treatment", 0, 349, 104, 400);
+        word(items, "and", 0, 404, 104, 420);
+        word(items, "revision;", 0, 424, 104, 470);
+        word(items, "order", 0, 474, 104, 500);
+        word(items, "of", 0, 504, 104, 514);
+        items.add(new Item("magnitude", 0, 349, 120));
+        items.add(new Item(Boolean.FALSE, 0, 349, 120.4));
+        items.add(new Item(null, 0, 72, 130));
+
+        Layout layout = TypstOracle.align(items, List.of(row), LETTER, WIDTH);
+
+        assertEquals(1, layout.ofUnit(0).size(), "the row is one line of the page");
+        assertEquals(List.of("0:Lost per reaction@104.0", "1:1.5@104.0", "2:Treatment and revision; order of@104.0", "2:magnitude@120.4"),
+                layout.cellsOf(0).stream().map(c -> c.cell() + ":" + row.text().substring(c.from(), c.to()) + "@" + c.baseline()).toList(),
+                "each cell's lines, where its words' end labels stand");
+    }
+
+    @Test
+    void aRowBrokenOverAPageStandsOnBothAndTheHeaderAboveItsRestIsFound() {
+        Unit header = new Unit(0, 0, Kind.TABLE_ROW, "Name  \u2502  Value", 11, true, 0, 0, 0, false).withColumns(List.of(1, 1));
+        Unit row = new Unit(1, 0, Kind.TABLE_ROW, "One two  \u2502  three four", 11, false, 0, 0, 0, false).withColumns(List.of(1, 1));
+        List<Item> items = new ArrayList<>();
+        items.add(new Item(0, 0, 72, 690));
+        word(items, "Name", 0, 77, 700, 100);
+        word(items, "Value", 0, 311, 700, 340);
+        // the row's first cell, both its lines, is answered before the header set again above its second
+        word(items, "One", 0, 77, 716, 95);
+        items.add(new Item("two", 0, 99, 716));                   // left at the end of the line before
+        word(items, "59", 0, 300, 742, 312);                      // the folio and the running head between
+        word(items, "Head", 1, 72, 37, 96);
+        items.add(new Item(Boolean.FALSE, 1, 77, 96));
+        word(items, "Name", 1, 77, 80, 100);                      // the header again, after a word of its own page
+        word(items, "Value", 1, 311, 80, 340);
+        word(items, "three", 0, 311, 716, 335);
+        items.add(new Item("four", 0, 339, 716));
+        items.add(new Item(Boolean.FALSE, 1, 311, 96));
+        items.add(new Item(null, 1, 72, 110));
+
+        Layout layout = TypstOracle.align(items, List.of(header, row), LETTER, WIDTH);
+
+        assertEquals(List.of(0, 1), layout.ofUnit(0).stream().map(Line::page).toList(), "the header on its page and again on the next: " + layout.lines());
+        assertEquals(List.of(0, 1), layout.ofUnit(1).stream().map(Line::page).toList(), "the row on each page it reaches");
+        assertEquals(96, layout.ofUnit(1).get(1).baseline(), 0.01, "at the first baseline it has there");
+        assertEquals(List.of("0:One@p0", "0:two@p1", "1:three@p0", "1:four@p1"),
+                layout.cellsOf(1).stream().map(c -> c.cell() + ":" + row.text().substring(c.from(), c.to()) + "@p" + c.page()).toList());
+    }
+
+    @Test
+    void aNotesLastWordAloneOnItsLastLineStaysAtTheFootOfItsPage() {
+        Unit prose = new Unit(0, 0, Kind.PARAGRAPH, "A claim.\u00b9", 11, false, 0, 0, 0, false)
+                .withInline(List.of(), List.of(new InlineText.Mark(8, 1)), 0);
+        Unit note = new Unit(1, 0, Kind.FOOTNOTE, "\u00b9An estimate, open to revision from the team.", 11 * LayoutOracle.FOOTNOTE_SCALE, false, 0, 0, 0, false)
+                .withInline(List.of(), List.of(), 1);
+        List<Item> items = new ArrayList<>();
+        items.add(new Item(0, 0, 72, 72));
+        word(items, "A", 0, 72, 80, 80);
+        word(items, "claim.", 0, 84, 80, 110);
+        items.add(new Item(TypstOracle.NOTE_START, 0, 72, 700));
+        word(items, "1", 0, 82, 708, 86);
+        word(items, "An", 0, 86, 708, 98);
+        word(items, "estimate,", 0, 101, 708, 140);
+        word(items, "open", 0, 143, 708, 165);
+        word(items, "to", 0, 168, 708, 178);
+        word(items, "revision", 0, 181, 708, 215);
+        word(items, "from", 0, 218, 708, 240);
+        word(items, "the", 0, 243, 708, 258);
+        items.add(new Item("team.", 0, 540, 708));                // alone on the last line, the last baseline of the page
+        items.add(new Item(Boolean.FALSE, 0, 72, 720));
+        items.add(new Item(TypstOracle.NOTE_END, 0, 72, 720));
+        word(items, "1", 0, 110, 76, 114);
+        items.add(new Item(null, 0, 72, 90));
+
+        Layout layout = TypstOracle.align(items, List.of(prose, note), LETTER, WIDTH);
+
+        assertEquals(List.of(0, 0), layout.ofUnit(1).stream().map(Line::page).toList(), "both lines of the note at the foot of its page: " + layout.lines());
+        assertEquals("team.", layout.ofUnit(1).getLast().text(note));
     }
 
     @Test

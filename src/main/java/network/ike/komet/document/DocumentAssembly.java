@@ -57,6 +57,14 @@ import java.util.function.Function;
  * has an ordinal in each showing, so a place on the surface is a member and a line:
  * {@link #ordinal(Member, long)}.
  *
+ * <p>The lines are walked once in that order for their attributes ({@link DocumentAttributes}):
+ * an attribute entry holds from its line on, through every include after it, and a conditional
+ * directive, {@code ifdef} to its {@code endif}, says whether the lines between are read. Every
+ * line stays a line of the assembly, since each is source a person may come to change; what a
+ * member's lines read as, with the lines a conditional leaves out gone and the directives with
+ * them, is {@link #read(Member)}, which is what the Reading view, the pages and the PDF show. An
+ * include that a conditional leaves out is not followed.
+ *
  * <p>Resolution follows the materializer ({@link IncludeResolver}): the text's own attribute
  * entries, the AsciiDoc roots the caller lists, then the including file's directory, against
  * the paths the store records. The assembly reads nothing itself; it is a pure function of the host, the
@@ -184,6 +192,16 @@ public final class DocumentAssembly {
     /** The include on a line in each showing: a file shown twice follows its own includes twice. */
     private final Map<Member, Map<Long, Include>> includesByPlace = new IdentityHashMap<>();
     private final Map<Long, List<StoredReference>> references = new HashMap<>();
+    /** The attributes carried through the lines in surface order. */
+    private final DocumentAttributes.Walk attributes = new DocumentAttributes.Walk();
+    /** The attributes each line of a showing was read in. */
+    private final Map<Member, Map<Long, DocumentAttributes>> attributesByPlace = new IdentityHashMap<>();
+    /** What each showing reads as: its document without the lines a conditional leaves out. */
+    private final Map<Member, StoredDocument> read = new IdentityHashMap<>();
+    /** What a cross reference can find, gathered when first asked for. */
+    private DocumentTargets targets;
+    /** How each showing's lines are read, made when first asked for. */
+    private final Map<Member, DocumentReading> readings = new IdentityHashMap<>();
     private final Function<String, Optional<StoredDocument>> store;
     private final Function<String, List<Path>> underRoots;
     private final Map<String, Optional<StoredDocument>> looked = new HashMap<>();
@@ -263,6 +281,11 @@ public final class DocumentAssembly {
                 }
             }
         }
+        Map<Long, DocumentAttributes> states = new HashMap<>();
+        attributesByPlace.put(member, states);
+        Set<Long> kept = new HashSet<>();
+        Set<Long> prose = new HashSet<>();                        // the conditionals that hold their text, and are read
+        boolean cut = false;
         for (int i = 0; i < document.lines().size(); i++) {
             StoredLine line = document.lines().get(i);
             if (region != null && !region.contains(line.nid())) {
@@ -273,6 +296,16 @@ public final class DocumentAssembly {
             ordinals.putIfAbsent(line.nid(), lines.size() - 1);
             places.put(line.nid(), lines.size() - 1);
             linesByNid.putIfAbsent(line.nid(), line);
+            boolean reads = attributes.line(line.text());
+            states.put(line.nid(), attributes.state());
+            if (!reads) {
+                cut = true;                                       // a directive, or a line its conditional leaves out
+                continue;
+            }
+            kept.add(line.nid());
+            if (DocumentAttributes.holdsText(line.text())) {
+                prose.add(line.nid());
+            }
             IncludeResolver.Resolution resolution = byLine.get(i + 1);
             if (resolution == null) {
                 continue;
@@ -285,6 +318,32 @@ public final class DocumentAssembly {
                 flatten(include.child());
             }
         }
+        StoredDocument reads = cut ? project(document, kept) : member.shown();
+        read.put(member, prose.isEmpty() ? reads : withProse(reads, prose));
+    }
+
+    /**
+     * A document in which a conditional that holds its text, and is read, is a paragraph. The
+     * parser stores a directive on a line of its own as a block that prints nothing, as an
+     * include line or an attribute entry is; one whose condition is met is its text, which the
+     * views draw and print as any paragraph's ({@link DocumentAttributes.Reading#line}).
+     */
+    private static StoredDocument withProse(StoredDocument document, Set<Long> prose) {
+        Map<Long, StoredBlock> blocks = new LinkedHashMap<>(document.blocks());
+        boolean any = false;
+        for (StoredBlock block : document.blocks().values()) {
+            if (block.kind() == Block.Kind.OPAQUE && !block.members().isEmpty() && prose.containsAll(block.members())) {
+                blocks.put(block.nid(), new StoredBlock(block.nid(), Block.Kind.PARAGRAPH, block.level(), block.title(), block.parameters(),
+                        block.members(), block.stamp(), block.tree()));
+                any = true;
+            }
+        }
+        if (!any) {
+            return document;                                      // each is a line of a paragraph already
+        }
+        StoredBlock root = document.root() == null ? null : blocks.get(document.root().nid());
+        return new StoredDocument(document.anchor(), document.commit(), document.lines(), document.manifestVersions(), document.attributes(),
+                root, blocks, document.references(), document.sentences());
     }
 
     /** Where one include leads: a child flowed in place, or a line with a note. */
@@ -456,6 +515,97 @@ public final class DocumentAssembly {
     /** @return the members shown in place of an include line, in include order */
     public List<Member> children() {
         return members.stream().filter(m -> !m.host()).toList();
+    }
+
+    /**
+     * What a showing reads as: the lines it shows without the conditional directives among them
+     * and without the lines a conditional leaves out, and the blocks that still hold a line. It
+     * is the showing's own document, {@link Member#shown}, when no conditional cuts it.
+     *
+     * @param member the showing
+     * @return the document the Reading view, the pages and the PDF read
+     */
+    public StoredDocument read(Member member) {
+        return read.getOrDefault(member, member.shown());
+    }
+
+    /**
+     * Whether a showing reads every line of a block: a block cut by a tagged region's edge or by
+     * a conditional is read there, and edited where its lines are all shown.
+     *
+     * @param member the showing
+     * @param block  the block, as {@link #read(Member)} holds it
+     * @return whether the block stands whole
+     */
+    public boolean holds(Member member, StoredBlock block) {
+        if (block == null) {
+            return true;
+        }
+        StoredDocument reads = read(member);
+        StoredBlock stored = member.document().blocks().get(block.nid());
+        return reads == member.document() || stored != null && lineCount(member.document(), stored) == lineCount(reads, block);
+    }
+
+    /**
+     * What a cross reference of the assembly can point at: every anchor its showings read, with
+     * the block it names.
+     *
+     * @return the targets
+     */
+    public DocumentTargets targets() {
+        if (targets == null) {
+            targets = DocumentTargets.of(this);
+        }
+        return targets;
+    }
+
+    /**
+     * How the lines of a showing are read before their inline markup: each line's attribute
+     * references as the values in force at it, and its cross references by what they find.
+     *
+     * @param member the showing
+     * @return the reading
+     */
+    public DocumentReading reading(Member member) {
+        return readings.computeIfAbsent(member, m -> new DocumentReading(nid -> attributes(m, nid), targets()));
+    }
+
+    /**
+     * The attributes a line of a showing is read in: what {@code {name}} on it stands for.
+     *
+     * @param member the showing
+     * @param nid    the line
+     * @return the attributes in force there; those every document starts with for a line the showing does not hold
+     */
+    public DocumentAttributes attributes(Member member, long nid) {
+        Map<Long, DocumentAttributes> states = attributesByPlace.get(member);
+        DocumentAttributes at = states == null ? null : states.get(nid);
+        return at == null ? DocumentAttributes.intrinsic() : at;
+    }
+
+    /** @return the attributes a line is read in where it is first shown */
+    public DocumentAttributes attributes(long nid) {
+        return memberOf(nid).map(member -> attributes(member, nid)).orElse(DocumentAttributes.intrinsic());
+    }
+
+    /**
+     * The attributes a block is read in: those of its first line.
+     *
+     * @param member the showing
+     * @param block  the block
+     * @return the attributes in force where the block begins
+     */
+    public DocumentAttributes attributes(Member member, StoredBlock block) {
+        StoredDocument document = member.document();
+        StoredBlock at = block;
+        while (at != null && !at.members().isEmpty()) {
+            long first = at.members().getFirst();
+            if (document.blocks().get(first) == null) {
+                return attributes(member, first);
+            }
+            at = document.blocks().get(first);
+        }
+        return DocumentAttributes.intrinsic();
     }
 
     /** @return every include directive met, in surface order, resolved or not */

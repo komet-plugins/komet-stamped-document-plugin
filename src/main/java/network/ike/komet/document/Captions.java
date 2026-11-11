@@ -39,6 +39,10 @@ import java.util.function.Predicate;
  * entries. A figure's caption stands under it and a table's above it, as the convention has it;
  * a block with no title has no caption, and is not counted, so a small working table stays out
  * of the list. The headings are gathered on the same walk, for the table of contents.
+ *
+ * <p>The walk is over what each showing reads ({@link DocumentAssembly#read}): a section or a
+ * table that a conditional leaves out is not numbered and not listed. A title is kept as it
+ * reads, its attribute references given their values ({@link DocumentAttributes}).
  */
 public final class Captions {
 
@@ -270,23 +274,28 @@ public final class Captions {
         }
 
         void member(DocumentAssembly.Member member) {
-            if (member == null || member.shown() == null || member.shown().root() == null || !walked.add(member)) {
+            if (member == null || assembly.read(member) == null || assembly.read(member).root() == null || !walked.add(member)) {
                 return;
             }
-            block(member, member.shown().root());
+            block(member, assembly.read(member).root());
+        }
+
+        /** A block's title as it reads: its attribute references given the values in force where the block begins, its cross references what they find. */
+        private String title(DocumentAssembly.Member member, StoredBlock block) {
+            return assembly.reading(member).text(block.title(), assembly.attributes(member, block));
         }
 
         private void block(DocumentAssembly.Member member, StoredBlock block) {
-            StoredDocument document = member.shown();
+            StoredDocument document = assembly.read(member);
             if (block.kind() == Block.Kind.SECTION && !block.title().isEmpty()) {
                 if (listed.add(block.nid())) {
                     int level = block.level() + member.depth();
-                    headings.add(new Heading(level, block.title(), block.nid(), member, number(level)));
+                    headings.add(new Heading(level, title(member, block), block.nid(), member, number(level)));
                 }
             } else if (block.kind() == Block.Kind.DOCUMENT && !member.host() && !block.title().isEmpty()) {
                 if (listed.add(block.nid())) {
                     int level = Math.max(1, member.depth());
-                    headings.add(new Heading(level, block.title(), block.nid(), member, number(level)));
+                    headings.add(new Heading(level, title(member, block), block.nid(), member, number(level)));
                 }
             }
             if (!block.title().isEmpty() && block.kind() != Block.Kind.SECTION && block.kind() != Block.Kind.DOCUMENT) {
@@ -294,7 +303,7 @@ public final class Captions {
                 if (kind != null) {
                     if (!byBlock.containsKey(block.nid())) {
                         // a figure or a table its file shows twice is one: counted and listed where it is first shown
-                        Caption caption = new Caption(kind, kind == Kind.FIGURE ? ++figures : ++tables, block.title(), block.nid(), member);
+                        Caption caption = new Caption(kind, kind == Kind.FIGURE ? ++figures : ++tables, title(member, block), block.nid(), member);
                         byBlock.put(block.nid(), caption);
                         all.add(caption);
                     }

@@ -27,8 +27,10 @@ import java.util.regex.Pattern;
  * neither a source line nor a blank line ends a row. The count comes from {@code cols}, or else from
  * the cells on the table's first line.
  *
- * <p>The print model has no spanned cells, so a {@code 2+|} or {@code .2+|} cell takes its one place
- * and leaves the places it spans empty, which keeps every later cell in its column.
+ * <p>A cell that spans columns, {@code 2+|}, is one cell with its span: a row is its cells, each as
+ * wide as the columns it takes, and the places a span covers are no cells of their own. A cell
+ * that spans rows, {@code .2+|}, takes its one place, and the places beneath it are empty cells,
+ * which keeps every later cell in its column.
  */
 public final class TableCells {
 
@@ -58,11 +60,17 @@ public final class TableCells {
     /**
      * One cell.
      *
-     * @param pieces its text, a piece for each source line it reaches; none for a place a span leaves empty
+     * @param pieces its text, a piece for each source line it reaches; none for a place a row span leaves empty
+     * @param span   how many columns it takes, 1 for a cell of one column
      */
-    public record Cell(List<Piece> pieces) {
+    public record Cell(List<Piece> pieces, int span) {
 
-        /** The empty cell a span leaves. */
+        /** A cell of one column. */
+        public Cell(List<Piece> pieces) {
+            this(pieces, 1);
+        }
+
+        /** The empty cell under a cell that spans rows. */
         private static final Cell EMPTY = new Cell(List.of());
 
         /** @return the cell's text, its lines joined by a space */
@@ -93,9 +101,9 @@ public final class TableCells {
             }
         }
 
-        /** @return the cell, opening on its line even when empty */
-        Cell cell() {
-            return new Cell(pieces.isEmpty() ? List.of(new Piece(line, "")) : List.copyOf(pieces));
+        /** @return the cell over a number of columns, opening on its line even when empty */
+        Cell cell(int span) {
+            return new Cell(pieces.isEmpty() ? List.of(new Piece(line, "")) : List.copyOf(pieces), Math.max(1, span));
         }
 
         /** @return how many columns it fills, its copies counted */
@@ -121,31 +129,31 @@ public final class TableCells {
         columns = Math.max(1, columns);
         List<List<Cell>> rows = new ArrayList<>();
         List<Cell> row = new ArrayList<>();
+        int filled = 0;                                          // how many of the row's columns its cells take so far
         int[] held = new int[columns];                           // how many more rows a row span keeps each column
         for (Written cell : written) {
             for (int copy = 0; copy < cell.repeat; copy++) {
-                while (row.size() < columns && held[row.size()] > 0) {
-                    held[row.size()]--;
+                while (filled < columns && held[filled] > 0) {
+                    held[filled++]--;
                     row.add(Cell.EMPTY);
                 }
-                if (row.size() == columns) {
+                if (filled == columns) {
                     rows.add(row);
                     row = new ArrayList<>();
-                    while (row.size() < columns && held[row.size()] > 0) {
-                        held[row.size()]--;
+                    filled = 0;
+                    while (filled < columns && held[filled] > 0) {
+                        held[filled++]--;
                         row.add(Cell.EMPTY);
                     }
                 }
-                int at = row.size();
-                int end = Math.min(columns, at + cell.columnSpan);
-                row.add(cell.cell());
-                Arrays.fill(held, at, end, cell.rowSpan - 1);
-                while (row.size() < end) {
-                    row.add(Cell.EMPTY);
-                }
-                if (row.size() == columns) {
+                int end = Math.min(columns, filled + cell.columnSpan);
+                row.add(cell.cell(end - filled));
+                Arrays.fill(held, filled, end, cell.rowSpan - 1);
+                filled = end;
+                if (filled == columns) {
                     rows.add(row);
                     row = new ArrayList<>();
+                    filled = 0;
                 }
             }
         }
@@ -240,8 +248,34 @@ public final class TableCells {
         return end > 0 && text.charAt(end - 1) == ' ' ? text.substring(0, end - 1) : text.toString();
     }
 
-    /** @return the rows' width, the longest row's */
+    /** @return the rows' width in columns, the widest row's */
     public static int columns(List<List<Cell>> rows) {
-        return rows.stream().mapToInt(List::size).max().orElse(1);
+        return rows.stream().mapToInt(row -> row.stream().mapToInt(Cell::span).sum()).max().orElse(1);
+    }
+
+    /** @return how many columns each cell of a row takes */
+    public static List<Integer> spans(List<Cell> row) {
+        return row.stream().map(Cell::span).toList();
+    }
+
+    /**
+     * The relative widths of a row's cells: a cell that spans columns is as wide as they are together.
+     *
+     * @param spans  how many columns each cell takes, in order
+     * @param widths the table's relative column widths
+     * @return a width for each cell
+     */
+    public static List<Integer> weights(List<Integer> spans, List<Integer> widths) {
+        List<Integer> out = new ArrayList<>(spans.size());
+        int column = 0;
+        for (int span : spans) {
+            int weight = 0;
+            for (int c = column; c < column + Math.max(1, span); c++) {
+                weight += c < widths.size() ? widths.get(c) : 1;
+            }
+            out.add(weight);
+            column += Math.max(1, span);
+        }
+        return out;
     }
 }
