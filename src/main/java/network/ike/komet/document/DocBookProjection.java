@@ -82,6 +82,16 @@ import java.util.regex.Pattern;
  * place from the lines that showing reads, and every node spans the ordinals of its own showing. A
  * line's role is read from its whole file in either place, so a line of a region is what it is in
  * the file. A stored sentence is bound once in each showing that reads its block whole.
+ *
+ * <p>The projection is the document as it reads ({@link DocumentAssembly#read}): the lines a
+ * conditional directive leaves out are no part of it, nor are the directives, as they are no part
+ * of the Reading view, the pages or the PDF. A DocBook document is made after the conditionals are
+ * decided, so it holds no trace of them. The text a one-line conditional carries in its brackets
+ * is content where its condition is met. The graph as the store holds it, with every line, is the
+ * Latest and History modes'.
+ *
+ * <p>A person meets this projection as the Graph view's Elements mode. It borrows DocBook's way
+ * of reading a document and makes no DocBook file.
  */
 final class DocBookProjection {
 
@@ -90,6 +100,8 @@ final class DocBookProjection {
     private static final Pattern DESCRIPTION = Pattern.compile("^(?!\\s)(?![a-z]+::)(.+?)(::+)(?:\\s+(.*))?$");
     private static final Pattern ADMONITION = Pattern.compile("^(NOTE|TIP|WARNING|IMPORTANT|CAUTION):\\s+");
     private static final Pattern BLOCK_MACRO = Pattern.compile("^([a-z]+)::([^\\[]*)\\[(.*)\\]$");
+    /** {@code ifdef::name[text]}: a conditional that holds its text on its own line, and opens nothing. */
+    private static final Pattern ONE_LINE_CONDITIONAL = Pattern.compile("^(?:ifdef|ifndef)::[^\\[]*\\[(.+)\\]$");
     private static final Pattern CELL = Pattern.compile("(?:^|(?<=\\s))((?:\\d+(?:\\.\\d+)?[+*])?[<^>]?(?:\\.[<^>])?[aehlmdsv]?)\\|");
     private static final Set<Block.Kind> VERBATIM = Set.of(Block.Kind.LISTING, Block.Kind.LITERAL, Block.Kind.DIAGRAM);
     /** The lines that say something of the block they precede: its attributes, its id, its title. */
@@ -140,7 +152,7 @@ final class DocBookProjection {
 
     /** A member's document element; included by {@code include}, it spans that line too. */
     private Node document(DocumentAssembly.Member member, StoredLine include, String href) {
-        StoredDocument document = member.shown();
+        StoredDocument document = assembly.read(member);
         String fallback = document.attributes().isEmpty() || document.attributes().getFirst().isBlank()
                 ? (member.path().isEmpty() ? "Document" : member.fileName()) : document.attributes().getFirst();
         List<StoredLine> own = new ArrayList<>();
@@ -261,7 +273,7 @@ final class DocBookProjection {
             long nid = members.get(i);
             StoredLine line = line(member, nid);
             if (line == null) {
-                StoredBlock child = member.shown().blocks().get(nid);
+                StoredBlock child = assembly.read(member).blocks().get(nid);
                 if (child == null) {
                     continue;
                 }
@@ -332,6 +344,12 @@ final class DocBookProjection {
                 flow.flush(element.children);
                 element.children.add(include(member, line, String.valueOf(role.properties().get(IkeConcept.ASCIIDOC_REFERENCE_TARGET))));
             } else if (meaning == IkeConcept.ASCIIDOC_CONDITIONAL) {
+                Matcher held = ONE_LINE_CONDITIONAL.matcher(text);
+                if (held.matches()) {
+                    // the one conditional line a document reads: its condition is met, and the text in its brackets is content
+                    flow.add(line, held.start(1), held.end(1));
+                    continue;
+                }
                 flow.flush(element.children);
                 if (!text.startsWith("endif::")) {               // the end of a conditional is its closing delimiter
                     Map<String, String> attributes = new LinkedHashMap<>();
@@ -391,7 +409,7 @@ final class DocBookProjection {
         for (int i = index + 1; i < members.size(); i++) {
             StoredLine line = line(member, members.get(i));
             if (line == null) {
-                return member.shown().blocks().containsKey(members.get(i));
+                return assembly.read(member).blocks().containsKey(members.get(i));
             }
             if (role(member, line).meaning() != IkeConcept.BLANK_LINE) {
                 return false;
@@ -528,7 +546,7 @@ final class DocBookProjection {
     /** The list's style from its first item's marker: unordered, ordered or description. */
     private Optional<String> listStyle(DocumentAssembly.Member member, StoredBlock list) {
         for (long nid : list.tree()) {
-            StoredBlock item = member.shown().blocks().get(nid);
+            StoredBlock item = assembly.read(member).blocks().get(nid);
             if (item == null) {
                 continue;
             }
@@ -855,7 +873,7 @@ final class DocBookProjection {
                 return;
             }
             spans = InlineMarkup.parse(text.toString());
-            List<StoredSentence> stored = member.shown().sentences().getOrDefault(blockNid, List.of());
+            List<StoredSentence> stored = assembly.read(member).sentences().getOrDefault(blockNid, List.of());
             if (stored.isEmpty()) {
                 for (Span span : spans) {
                     Node node = node(span);
@@ -1146,7 +1164,7 @@ final class DocBookProjection {
     private StoredLine line(DocumentAssembly.Member member, long nid) {
         return lines.computeIfAbsent(member, m -> {
             Map<Long, StoredLine> byNid = new HashMap<>();
-            for (StoredLine line : m.shown().lines()) {
+            for (StoredLine line : assembly.read(m).lines()) {
                 byNid.put(line.nid(), line);
             }
             return byNid;

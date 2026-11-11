@@ -654,4 +654,46 @@ class DocumentGraphViewTest {
             assertEquals(new LineSelection(inAbstract, inAbstract + 1), card.selection, "the two lines of the paragraph the region reads, in the abstract");
         });
     }
+
+    // ── conditional directives: Elements mode is the document as it reads ──
+
+    @Test
+    void aLineAConditionalLeavesOutHasItsRowInLatestModeAndNoneInElementsMode() throws Exception {
+        StoredDocument document = DocumentGraphTest.stored("""
+                = A Topic
+
+                Before.
+
+                ifdef::compendium[]
+                Only in the compendium.
+                endif::[]
+
+                After.
+                """);
+        DocumentAssembly assembly = DocumentAssembly.of(document, "docs/topic.adoc", path -> Optional.empty());
+        long left = document.lines().get(5).nid();                  // "Only in the compendium."
+        long read = document.lines().get(8).nid();                  // "After."
+        int leftAt = assembly.ordinal(assembly.host(), left);
+        int readAt = assembly.ordinal(assembly.host(), read);
+        Card card = new Card();
+        onFx(() -> {
+            DocumentGraphView graph = new DocumentGraphView(card);
+            card.selection = new LineSelection(leftAt, leftAt);
+            graph.show(assembly);
+            List<TreeItem<Row>> selected = List.copyOf(graph.tree().getSelectionModel().getSelectedItems());
+            assertEquals(1, selected.size(), "as the store holds it, the line a conditional leaves out has its row");
+            assertEquals(left, selected.getFirst().getValue().node().nid());
+
+            graph.setMode(DocumentGraphView.Mode.DOCBOOK);
+            assertTrue(graph.tree().getSelectionModel().getSelectedItems().isEmpty(),
+                    "as the document reads, the line is no part of it: there is no row to show the selection on");
+
+            card.selection = new LineSelection(readAt, readAt);
+            graph.showSelection();
+            List<TreeItem<Row>> shown = List.copyOf(graph.tree().getSelectionModel().getSelectedItems());
+            assertEquals(1, shown.size(), "a line that is read still has its row");
+            assertEquals(new LineSelection(readAt, readAt), shown.getFirst().getValue().node().selection().orElseThrow());
+            assertTrue(card.acts.isEmpty(), "showing a selection makes none");
+        });
+    }
 }

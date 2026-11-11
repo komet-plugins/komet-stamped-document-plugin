@@ -99,7 +99,7 @@ import java.util.Optional;
  * and copies a node's public id; a double click on a block or a line opens the block for
  * editing in the Reading view. In {@link Mode#HISTORY History mode} a line's versions and the
  * lines later commits retired join the tree as nodes, and a block's marginalia carries the
- * strip of commits that touched it. In {@link Mode#DOCBOOK DocBook mode} the tree is
+ * strip of commits that touched it. In {@link Mode#DOCBOOK Elements mode} the tree is
  * {@link DocumentGraph#docbook the DocBook projection}: elements and their attributes as a
  * DocBook editor's structure view shows them, a paragraph's lines joined into text and inline
  * elements; a node with no entity of its own selects the lines it came from.
@@ -108,7 +108,9 @@ final class DocumentGraphView {
 
     /**
      * Latest: the document as it stands. History: with its versions, retired lines and commits
-     * folded in. DocBook: as it stands, as elements, markup folded into them and lines into text.
+     * folded in. {@code DOCBOOK} is the mode a person reads as Elements: the document as it reads,
+     * as elements, markup folded into them and lines into text, by {@link DocBookProjection}. The
+     * constant keeps its name because the card's preference stores it.
      */
     enum Mode { LATEST, HISTORY, DOCBOOK }
 
@@ -208,7 +210,7 @@ final class DocumentGraphView {
     private final PauseTransition hoverDelay = new PauseTransition(Duration.millis(350));
     /** Every node row in document order, the lines' by their surface ordinal. */
     private final List<TreeItem<Row>> nodeItems = new ArrayList<>();
-    /** For each surface ordinal, the deepest node rows that span it: the lines' rows, or in DocBook mode the text and elements made of it. */
+    /** For each surface ordinal, the deepest node rows that span it: the lines' rows, or in Elements mode the text and elements made of it. */
     private final Map<Integer, List<TreeItem<Row>>> lineItems = new HashMap<>();
     private final Map<String, Image> identicons = new HashMap<>();
     private DocumentGraph.Node root;
@@ -259,11 +261,11 @@ final class DocumentGraphView {
         return mode;
     }
 
-    /** Whether DocBook mode shows stored sentences as nodes. */
+    /** Whether Elements mode shows stored sentences as nodes. */
     private boolean sentences = true;
 
     /**
-     * Shows stored sentences as nodes of their own in DocBook mode, or flattens them into their
+     * Shows stored sentences as nodes of their own in Elements mode, or flattens them into their
      * paragraph's mixed content (IKE-Network/ike-issues#1313).
      *
      * @param shown whether a sentence is a node
@@ -439,7 +441,7 @@ final class DocumentGraphView {
 
     /**
      * Shows the document's selection: the one node spanning exactly its lines where there is
-     * one, else the deepest rows of every line it spans (in DocBook mode the text and inline
+     * one, else the deepest rows of every line it spans (in Elements mode the text and inline
      * elements on a line, or the block a folded markup line belongs to), ancestors expanded, the
      * first scrolled into view.
      */
@@ -567,7 +569,7 @@ final class DocumentGraphView {
     }
 
     /** The selected node a block edit can start from: a line of a block, or a block, with lines. */
-    /** The selected node when it is a stored sentence of DocBook mode. */
+    /** The selected node when it is a stored sentence of Elements mode. */
     Optional<DocumentGraph.Node> selectedSentence() {
         TreeItem<Row> item = tree.getSelectionModel().getSelectedItem();
         if (item == null || !(item.getValue() instanceof NodeRow row)) {

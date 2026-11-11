@@ -164,10 +164,10 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
     /** Whether the Repository panel stands open on this card. */
     private static final String PREF_REPOSITORY_OPEN = "network.ike.komet.document.repositoryOpen";
     private static final String PREF_GRAPH_MODE = "network.ike.komet.document.graphMode";
-    /** Whether the Graph view's DocBook mode shows stored sentences as nodes (IKE-Network/ike-issues#1313). */
+    /** Whether the Graph view's Elements mode shows stored sentences as nodes (IKE-Network/ike-issues#1313). */
     private static final String PREF_GRAPH_SENTENCES = "network.ike.komet.document.graphSentences";
-    /** In the Layer menu: sentences as nodes in DocBook mode, or flattened into mixed content. */
-    private final CheckMenuItem sentencesItem = new CheckMenuItem("Sentences in DocBook mode");
+    /** In the Layer menu: sentences as nodes in Elements mode, or flattened into mixed content. */
+    private final CheckMenuItem sentencesItem = new CheckMenuItem("Sentences in Elements mode");
     private static final String PREF_LAYER = "network.ike.komet.document.layer.";
     /** What the reader folded in a document, by the document's identity: the view's keys, one per fold. */
     private static final String PREF_FOLDS = "network.ike.komet.document.folds.";
@@ -270,17 +270,17 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
             m -> switch (m) {
                 case LATEST -> "Latest";
                 case HISTORY -> "History";
-                case DOCBOOK -> "DocBook";
+                case DOCBOOK -> "Elements";
             },
             m -> switch (m) {
                 case LATEST -> "The document as it stands";
                 case HISTORY -> "With its history: a line's versions beneath it, the lines later commits retired where they stood, the commits that touched each block";
-                case DOCBOOK -> "As DocBook elements: markup lines folded into the blocks they title and attribute, a paragraph's lines joined into text and inline elements";
+                case DOCBOOK -> "As elements, the way a structure editor shows a document: markup lines folded into the blocks they title and attribute, a paragraph's lines joined into text and inline elements";
             },
             m -> switch (m) {
                 case LATEST -> "stampedDocumentGraphLatest";
                 case HISTORY -> "stampedDocumentGraphHistory";
-                case DOCBOOK -> "stampedDocumentGraphDocBook";
+                case DOCBOOK -> "stampedDocumentGraphElements";
             },
             m -> switch (m) {
                 case LATEST -> "mdi2c-clock-check-outline";
@@ -2816,7 +2816,7 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
             }
         }
         Path memberFile = loaded == null || loaded.path() == null ? null : Path.of(loaded.path());
-        // a sentence chosen in the Graph view's DocBook mode is annotated as that sentence (#1313)
+        // a sentence chosen in the Graph view's Elements mode is annotated as that sentence (#1313)
         Optional<DocumentGraph.Node> sentence = graph != null && surface.view() == DocumentSurfaceView.View.GRAPH
                 ? graph.selectedSentence() : Optional.empty();
         try {

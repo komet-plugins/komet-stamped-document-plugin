@@ -189,7 +189,8 @@ public final class DocumentGraph {
     /**
      * The DocBook projection of an assembly as it stands (IKE-Network/ike-issues#1313): blocks as
      * elements with their markup lines folded into their titles and attributes, a paragraph's lines
-     * joined into text runs and inline elements, no line a node; see {@link DocBookProjection}.
+     * joined into text runs and inline elements, no line a node; see {@link DocBookProjection}. It
+     * is the document as it reads: what a conditional directive leaves out is no part of it.
      *
      * @param assembly the assembly
      * @return the root: the host's document element

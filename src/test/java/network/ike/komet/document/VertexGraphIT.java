@@ -190,7 +190,7 @@ class VertexGraphIT {
     /**
      * A sentence two people wrote parts of (refinement (b) of design-2026-10-21-stored-text-segments):
      * its node carries its own STAMP, the version that wrote its words, and the STAMPs of the lines it
-     * spans, so who wrote which clause shows in DocBook mode.
+     * spans, so who wrote which clause shows in Elements mode.
      */
     @Test
     void aSentenceShowsTheStampsOfTheLinesItSpans() throws Exception {
