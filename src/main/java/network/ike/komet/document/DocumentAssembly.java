@@ -354,7 +354,79 @@ public final class DocumentAssembly {
             }
         }
         StoredDocument reads = cut ? project(document, kept) : member.shown();
-        read.put(member, prose.isEmpty() ? reads : withProse(reads, prose));
+        reads = prose.isEmpty() ? reads : withProse(reads, prose);
+        read.put(member, member.host() ? withHeader(reads) : reads);
+    }
+
+    /**
+     * A document whose header holds its author line. AsciiDoc's header is the title, an author
+     * line and a revision line directly under it, and attribute entries, to the first blank
+     * line; the parser's is the title and the entries directly under it, so it stores an author
+     * line as the first line of a paragraph, with every header line beneath it
+     * ({@link network.ike.komet.document.print.StoredDocumentModel#headerLines}). Here those lines
+     * are the document's own, as the entries under a title are: the title's block names the
+     * author and the date from them, and no view sets them as text. A paragraph left with no
+     * line is no block here. This is for the host alone: an included document's title is a
+     * section's heading, and a line under a heading is a paragraph.
+     */
+    static StoredDocument withHeader(StoredDocument document) {
+        if (document.root() == null) {
+            return document;
+        }
+        List<Long> header = network.ike.komet.document.print.StoredDocumentModel.headerLines(document).stream().map(StoredLine::nid).toList();
+        if (header.isEmpty()) {
+            return document;
+        }
+        Set<Long> moved = new HashSet<>(header);
+        Map<Long, StoredBlock> blocks = new LinkedHashMap<>(document.blocks());
+        Set<Long> emptied = new HashSet<>();
+        Set<Long> cut = new HashSet<>();
+        for (StoredBlock block : document.blocks().values()) {
+            if (block.nid() == document.root().nid() || block.members().stream().noneMatch(moved::contains)) {
+                continue;
+            }
+            List<Long> members = block.members().stream().filter(nid -> !moved.contains(nid)).toList();
+            List<Long> tree = block.tree().stream().filter(nid -> !moved.contains(nid)).toList();
+            cut.add(block.nid());
+            if (members.isEmpty()) {
+                blocks.remove(block.nid());
+                emptied.add(block.nid());
+            } else {
+                blocks.put(block.nid(), new StoredBlock(block.nid(), block.kind(), block.level(), block.title(), block.parameters(), members,
+                        block.stamp(), tree));
+            }
+        }
+        if (cut.isEmpty()) {
+            return document;                                      // the lines are the document's own already
+        }
+        // the header's lines stand in the document where the first block that held them stood
+        StoredBlock root = document.root();
+        root = new StoredBlock(root.nid(), root.kind(), root.level(), root.title(), root.parameters(),
+                headed(root.members(), header, cut, emptied), root.stamp(), headed(root.tree(), header, cut, emptied));
+        blocks.put(root.nid(), root);
+        Map<Long, List<GitDocumentMaterializer.StoredSentence>> sentences = new HashMap<>(document.sentences());
+        sentences.keySet().removeAll(cut);                        // a block that gave lines up is read from the lines it keeps
+        return new StoredDocument(document.anchor(), document.commit(), document.lines(), document.manifestVersions(), document.attributes(),
+                root, blocks, document.references(), sentences);
+    }
+
+    /** A document's list of what it holds, with the header's lines before the first block that held them, and without a block they emptied. */
+    private static List<Long> headed(List<Long> listed, List<Long> header, Set<Long> cut, Set<Long> emptied) {
+        List<Long> out = new ArrayList<>();
+        boolean placed = false;
+        for (long nid : listed) {
+            if (!placed && cut.contains(nid)) {
+                out.addAll(header);
+                placed = true;
+            }
+            if (!emptied.contains(nid)) {
+                out.add(nid);
+            }
+        }
+        if (!placed) {
+            out.addAll(header);                                   // held by a block the document does not list: after what it lists
+        }
+        return out;
     }
 
     /**

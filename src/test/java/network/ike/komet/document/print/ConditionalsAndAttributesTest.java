@@ -144,6 +144,70 @@ class ConditionalsAndAttributesTest {
     }
 
     @Test
+    void anAuthorLineUnderTheTitleIsTheHeadersAndNoParagraph() {
+        StoredDocument host = RegionFixture.parse("""
+                = Regulatory Decisions
+                Keith E. Campbell, MD, PhD <kec@example.test>
+                v1.0, 2026-11-10: first draft
+                :title-page-authors-margin-top: 4em
+                :sectnums:
+
+                The first paragraph of the body.
+
+                == A Section
+
+                Its text.
+                """, 0);
+        assertTrue(host.blocks().values().stream().anyMatch(block -> block.kind() == design.knowledge.stamp.adoc.dialect.Block.Kind.PARAGRAPH
+                        && host.line(block.members().getFirst()).map(line -> line.text().startsWith("Keith")).orElse(false)),
+                "the parser stores the author line as a paragraph's first line, the header's lines beneath it its others");
+
+        DocumentAssembly assembly = DocumentAssembly.single(host, "docs/book.adoc");
+        StoredDocument read = assembly.read(assembly.host());
+        assertEquals(texts(host), texts(read), "every line is still a line of the document: the Source view shows each");
+        List<String> paragraphs = read.blocks().values().stream().filter(block -> block.kind() == design.knowledge.stamp.adoc.dialect.Block.Kind.PARAGRAPH)
+                .map(block -> read.line(block.members().getFirst()).orElseThrow().text()).toList();
+        assertEquals(List.of("The first paragraph of the body.", "Its text."), paragraphs, "the header's lines are in no paragraph as the document reads");
+        List<String> own = read.root().members().stream().map(read::line).flatMap(Optional::stream).map(StoredLine::text).toList();
+        assertEquals(List.of("= Regulatory Decisions", "Keith E. Campbell, MD, PhD <kec@example.test>", "v1.0, 2026-11-10: first draft",
+                ":title-page-authors-margin-top: 4em", ":sectnums:"), own, "they are the document's own, as entries directly under a title are");
+
+        DocumentModel model = StoredDocumentModel.of(assembly, StoredDocumentModel.Figures.NONE);
+        assertEquals(3, model.blocks().size(), "a paragraph, a heading and a paragraph: " + model.blocks());
+        assertEquals(new Paragraph("The first paragraph of the body."), model.blocks().getFirst(), "nothing of the header is set in the body");
+        assertTrue(model.blocks().get(1) instanceof Heading heading && heading.text().endsWith("A Section"));
+        assertEquals(new Paragraph("Its text."), model.blocks().get(2));
+        assertEquals("Keith E. Campbell, MD, PhD", model.byline().author(), "the title's block names the author, without the address");
+        assertFalse(model.byline().date().isEmpty(), "and the revision line's date");
+        assertEquals(network.ike.komet.document.surface.print.settings.TitleSpacing.Measure.ems(4), model.spacing().authors(),
+                "an entry under the author line is the header's as one under the title is");
+    }
+
+    @Test
+    void anAuthorLineAloneLeavesNoBlockAndAnIncludedTitlesLineStaysAParagraph() {
+        StoredDocument host = RegionFixture.parse("""
+                = Book
+                A. Author
+
+                include::topics/tests.adoc[leveloffset=+1]
+                """, 0);
+        StoredDocument topic = RegionFixture.parse("""
+                = A Topic
+                A line directly under an included title.
+
+                More.
+                """, 10_000);
+        DocumentAssembly assembly = DocumentAssembly.of(host, "docs/book.adoc",
+                path -> path.equals("docs/topics/tests.adoc") ? Optional.of(topic) : Optional.empty());
+        assertTrue(assembly.unresolved().isEmpty(), "the include is followed");
+        DocumentModel model = StoredDocumentModel.of(assembly, StoredDocumentModel.Figures.NONE);
+        assertEquals("A. Author", model.byline().author());
+        assertEquals(List.of("A line directly under an included title.", "More."),
+                model.blocks().stream().filter(Paragraph.class::isInstance).map(block -> ((Paragraph) block).text()).toList(),
+                "an included document's title is a section's heading here, and the line under a heading is a paragraph");
+    }
+
+    @Test
     void aTopicReadAloneReadsWhatTheBookLeftOut() {
         StoredDocument topic = RegionFixture.parse(TOPIC, 0);
         DocumentAssembly alone = DocumentAssembly.single(topic, "docs/topics/tests.adoc");

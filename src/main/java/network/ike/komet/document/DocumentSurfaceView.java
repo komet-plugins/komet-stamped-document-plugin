@@ -936,7 +936,8 @@ public final class DocumentSurfaceView {
                     kept.add(line.nid());
                 }
             }
-            return heldTextAsProse(DocumentAssembly.project(m.document(), kept));
+            StoredDocument drawn = heldTextAsProse(DocumentAssembly.project(m.document(), kept));
+            return m.host() ? DocumentAssembly.withHeader(drawn) : drawn;   // an author line under the title is the header's, in this too
         });
     }
 

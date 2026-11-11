@@ -438,6 +438,43 @@ public final class StoredDocumentModel {
         return new Header(authorLine, author, dateLine, date);
     }
 
+    private static final Pattern ATTRIBUTE_ENTRY = Pattern.compile("^:!?[A-Za-z0-9_][A-Za-z0-9_-]*!?:.*$");
+
+    /**
+     * The lines of a header that the parser reads as a paragraph: the author line and the
+     * revision line directly under the title, and the attribute entries directly under those.
+     * AsciiDoc has them in the header, which ends at the first blank line, and sets none of them
+     * in the body. The parser's header is the title and the attribute entries directly under it,
+     * so an author line starts a paragraph there, and the entries beneath it are that
+     * paragraph's lines.
+     *
+     * @param document the host document
+     * @return those lines in order, empty for a header with no author line under its title
+     */
+    public static List<StoredLine> headerLines(StoredDocument document) {
+        List<StoredLine> lines = document.lines();
+        for (int i = 0; i < lines.size(); i++) {
+            if (!lines.get(i).text().startsWith("= ")) {
+                continue;
+            }
+            List<StoredLine> header = new ArrayList<>();
+            int at = i + 1;
+            while (at < lines.size() && header.size() < 2 && implicit(lines.get(at).text())) {
+                header.add(lines.get(at++));                      // the author line, then the revision line
+            }
+            if (header.isEmpty()) {
+                break;                                            // entries directly under the title are the parser's header already
+            }
+            boolean continued = false;
+            while (at < lines.size() && (continued || ATTRIBUTE_ENTRY.matcher(lines.get(at).text().strip()).matches())) {
+                continued = lines.get(at).text().stripTrailing().endsWith("\\");   // a value carried on to the next line
+                header.add(lines.get(at++));
+            }
+            return List.copyOf(header);
+        }
+        return List.of();
+    }
+
     /** Whether a header line is an implicit one, an author or a revision line: not blank, not an attribute entry, a comment or a block. */
     private static boolean implicit(String text) {
         String t = text.strip();
