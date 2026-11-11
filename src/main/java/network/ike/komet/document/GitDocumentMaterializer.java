@@ -324,8 +324,25 @@ public final class GitDocumentMaterializer {
      *
      * @param documents  the assembly's result, then the included files' in include order
      * @param unresolved the includes that could not be followed, in document order
+     * @param notWritten the files a stopped run did not reach, absolute, in include order; empty
+     *                   when the run wrote every file
      */
-    public record AssemblyResult(List<Result> documents, List<Unresolved> unresolved) {
+    public record AssemblyResult(List<Result> documents, List<Unresolved> unresolved, List<Path> notWritten) {
+
+        /**
+         * What a run that wrote every file wrote.
+         *
+         * @param documents  the assembly's result, then the included files' in include order
+         * @param unresolved the includes that could not be followed, in document order
+         */
+        public AssemblyResult(List<Result> documents, List<Unresolved> unresolved) {
+            this(documents, unresolved, List.of());
+        }
+
+        /** @return whether the run was stopped before it wrote every file */
+        public boolean stopped() {
+            return !notWritten.isEmpty();
+        }
 
         /** @return the assembly file's own result */
         public Result assembly() {
@@ -350,7 +367,8 @@ public final class GitDocumentMaterializer {
         /** @return the one-line summary the card reports */
         public String summary() {
             return documents.size() + " document(s), " + commits() + " commit(s) written, " + lines() + " line(s), " + blocks() + " block version(s)"
-                    + (unresolved.isEmpty() ? "" : "; " + unresolved.size() + " include(s) not resolved");
+                    + (unresolved.isEmpty() ? "" : "; " + unresolved.size() + " include(s) not resolved")
+                    + (notWritten.isEmpty() ? "" : "; stopped with " + notWritten.size() + " file(s) not materialized");
         }
     }
 
@@ -385,18 +403,50 @@ public final class GitDocumentMaterializer {
      * @throws IOException if the repository or the assembly file cannot be read
      */
     public static AssemblyResult materializeAssembly(Path repoRoot, Path file) throws IOException {
+        return materializeAssembly(repoRoot, file, AssemblyRun.unattended());
+    }
+
+    /**
+     * Materialize an assembly as {@link #materializeAssembly(Path, Path)} does, in a run a person
+     * can watch, pause, resume and stop. Every include is found first, so the run knows how many
+     * files it has before it writes one; then the files are written in include order, and the run
+     * is checked between them. A stopped run keeps every file it wrote and names the rest in
+     * {@link AssemblyResult#notWritten()}; a later run writes only what the store still lacks.
+     *
+     * @param repoRoot working-tree root
+     * @param file     the assembly file within it, absolute or root-relative
+     * @param run      the run to report to and to check between files
+     * @return what was written, what could not be followed, and what a stop left out
+     * @throws IOException if the repository or the assembly file cannot be read
+     */
+    public static AssemblyResult materializeAssembly(Path repoRoot, Path file, AssemblyRun run) throws IOException {
         Path root = repoRoot.toAbsolutePath().normalize();
         Path relative = (file.isAbsolute() ? root.relativize(file.toAbsolutePath().normalize()) : file).normalize();
-        List<Result> documents = new ArrayList<>();
+        List<Path> planned = new ArrayList<>();
         List<Unresolved> unresolved = new ArrayList<>();
         try (Trees trees = new Trees(root)) {
             List<String> lines = trees.repo(root).headLines(relative);
-            trees.visited.add(root.resolve(relative));
-            documents.add(materialize(root, root.resolve(relative)));
-            follow(trees, root, relative, lines, documents, unresolved);
+            Path host = root.resolve(relative);
+            trees.visited.add(host);
+            planned.add(host);
+            follow(trees, root, relative, lines, planned, unresolved);
+            run.listener().planned(List.copyOf(planned), List.copyOf(unresolved));
+            List<Result> documents = new ArrayList<>();
+            int total = planned.size();
+            for (int i = 0; i < total; i++) {
+                if (!run.proceed()) {
+                    break;
+                }
+                Path next = planned.get(i);
+                run.listener().writing(i + 1, total, next);
+                Result result = materialize(trees.treeOf(next), next);
+                documents.add(result);
+                run.listener().written(i + 1, total, result);
+            }
+            AssemblyResult result = new AssemblyResult(documents, unresolved, List.copyOf(planned.subList(documents.size(), total)));
+            LOG.info("Materialized assembly {}: {}", relative, result.summary());
+            return result;
         }
-        LOG.info("Materialized assembly {}: {}", relative, new AssemblyResult(documents, unresolved).summary());
-        return new AssemblyResult(documents, unresolved);
     }
 
     /**
@@ -407,8 +457,10 @@ public final class GitDocumentMaterializer {
     private static final class Trees implements AutoCloseable {
 
         final Path root;
-        /** Every file the batch has materialized, absolute, so a file named twice or a cycle is followed once. */
+        /** Every file the batch takes, absolute, so a file named twice or a cycle is followed once. */
         final Set<Path> visited = new LinkedHashSet<>();
+        /** The working tree each file the batch takes was found under. */
+        private final Map<Path, Path> treeOf = new HashMap<>();
         private final Map<Path, GitRepo> repos = new LinkedHashMap<>();
         private final Map<Path, List<String>> paths = new HashMap<>();
         private final Map<Path, Map<Path, List<String>>> lines = new HashMap<>();
@@ -425,6 +477,24 @@ public final class GitDocumentMaterializer {
                 repos.put(tree, repo);
             }
             return repo;
+        }
+
+        /**
+         * Takes a file into the batch under the tree it was found in.
+         *
+         * @return {@code false} when the batch already takes it: a cycle, or a file named twice
+         */
+        boolean take(Path tree, Path absolute) {
+            if (!visited.add(absolute)) {
+                return false;
+            }
+            treeOf.put(absolute, tree);
+            return true;
+        }
+
+        /** The tree a file of the batch is written under: its own, or the assembly's. */
+        Path treeOf(Path absolute) {
+            return treeOf.getOrDefault(absolute, root);
         }
 
         /** The working trees beside the assembly's, found once and only when an include misses. */
@@ -469,8 +539,13 @@ public final class GitDocumentMaterializer {
         }
     }
 
-    private static void follow(Trees trees, Path root, Path including, List<String> lines, List<Result> documents,
-                               List<Unresolved> unresolved) throws IOException {
+    /**
+     * Finds the files an including file names, in include order and depth first, each once, and
+     * adds them to the plan; nothing is written here. Writing waits for the whole plan, so a run
+     * knows its total before the first file.
+     */
+    private static void follow(Trees trees, Path root, Path including, List<String> lines, List<Path> planned,
+                               List<Unresolved> unresolved) {
         Map<String, String> attributes = IncludeResolver.attributeEntries(lines);
         java.util.function.Predicate<Path> exists = candidate -> trees.committedLines(root, candidate).isPresent();
         java.util.function.Function<String, List<Path>> underRoots = rest -> IncludeResolver.endingWith(trees.committedPaths(root), rest);
@@ -503,7 +578,7 @@ public final class GitDocumentMaterializer {
                 continue;
             }
             Path absolute = tree.resolve(target).normalize();
-            if (!trees.visited.add(absolute)) {
+            if (!trees.take(tree, absolute)) {
                 continue;                                        // already in this batch: a cycle, or named twice
             }
             String name = target.getFileName().toString();
@@ -512,9 +587,9 @@ public final class GitDocumentMaterializer {
                 continue;
             }
             List<String> targetLines = trees.committedLines(tree, target).orElseThrow();
-            documents.add(materialize(tree, absolute));
+            planned.add(absolute);
             if (!IncludeResolver.includes(targetLines).isEmpty()) {
-                follow(trees, tree, target, targetLines, documents, unresolved);
+                follow(trees, tree, target, targetLines, planned, unresolved);
             }
         }
     }

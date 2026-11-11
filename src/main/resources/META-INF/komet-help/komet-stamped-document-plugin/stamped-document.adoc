@@ -24,8 +24,7 @@ Open file…:: Chooses a committed `.adoc` file and shows it, materializing it f
 Refresh:: Reads the list of documents and the shown document again.
 Export…:: Writes the document from the knowledge base back into a working tree at its recorded path, and compares it with HEAD.
 Print to PDF…:: Typesets the document, with the documents it includes, through your installed Typst.
-Materialize:: Writes the commits of the shown file that the knowledge base lacks.
-Materialize All:: Does the same for the file and every file it includes.
+Materialize:: Writes the commits that the knowledge base lacks, of the shown file and of every file it includes.
 Rebuild from Git:: Drops the document from the knowledge base and materializes it again. Only ephemeral documents can be rebuilt; see xref:kinds-of-data.adoc[Kinds of data].
 Remove Superseded Documents:: Deletes older copies of documents that were materialized again in the current form.
 Show history:: Lists the STAMPs of the selected lines, or of the whole document, in order.

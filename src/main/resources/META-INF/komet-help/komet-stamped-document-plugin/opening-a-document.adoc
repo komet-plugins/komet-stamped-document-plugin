@@ -12,9 +12,18 @@ Opening a file materializes its history: each commit that touched the file is wr
 
 . In the card's toolbar, open the *More* menu and choose *Open file…*.
 . Choose the `.adoc` file. The chooser starts in the working tree you used last.
-. If the file includes other files, the card asks what to materialize. *Materialize All* writes this file and every file it includes, each as its own document, in include order. *This File Only* writes just this file, and its include lines stay lines.
-. Wait while the status line at the bottom of the card says _Materializing_. A long history takes a while the first time; opening the file again writes only the commits the knowledge base lacks.
+. Wait while the card materializes the file. A file that includes other files is materialized with every file it includes, each as its own document, in include order. A bar at the top of the card counts the files, for example _Materializing 12 of 51_, and names the file being written. A long history takes a while the first time. Opening the file again writes only the commits the knowledge base lacks.
 . The document appears in the document chooser and on the card.
+
+=== Pause or stop a long run
+
+While the bar shows, *Pause* waits after the file being written, and *Resume* goes on with the next one.
+*Stop* keeps the files already written and leaves the rest as they are.
+The card then opens the document. An included file the knowledge base does not hold yet shows as its include line.
+The link under the report, for example _Show the 46 files_, lists the files the run did not reach. Open the file again to materialize the rest.
+
+An include that names a file the card cannot find is listed in the same place, with its line and the reason.
+The run goes on without it.
 
 The first time a working tree is materialized, the card names a module for it.
 That module is a kind of _Ephemeral module_, so the document is ephemeral data: git holds all of it, and the knowledge base holds a copy that can be dropped and rebuilt.

@@ -30,6 +30,8 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -150,6 +152,175 @@ class GitDocumentAssemblyIT {
         assertEquals(List.of("docs/book.adoc", "nested-part", "nested-leaf"),
                 result.documents().stream().map(GitDocumentMaterializer.Result::name).toList());
         assertTrue(result.unresolved().isEmpty(), "the cycle back to the book is neither followed nor an error");
+    }
+
+    /**
+     * A book of a host and three chapters, the host named for the test and each chapter with its
+     * own topic id, on a commit day of its own, so the runs of one test leave the documents of
+     * another alone.
+     *
+     * @return the host file, root-relative
+     */
+    private Path book(Path repo, String id, int day) throws Exception {
+        gitIn(repo, "init", "-q", "-b", "main");
+        Files.createDirectories(repo.resolve("book/chapters"));
+        Files.writeString(repo.resolve("book/" + id + ".adoc"), "= " + id + " book\n\n"
+                + "include::chapters/one.adoc[]\n\ninclude::chapters/two.adoc[]\n\ninclude::chapters/absent.adoc[]\n\ninclude::chapters/three.adoc[]\n");
+        for (String chapter : List.of("one", "two", "three")) {
+            Files.writeString(repo.resolve("book/chapters/" + chapter + ".adoc"),
+                    ":topic-id: " + id + "-" + chapter + "\n= Chapter " + chapter + "\n\nA claim of chapter " + chapter + ".\n");
+        }
+        gitIn(repo, "add", "book/" + id + ".adoc", "book/chapters/one.adoc", "book/chapters/two.adoc", "book/chapters/three.adoc");
+        gitIn(repo, "-c", "user.name=alice", "-c", "user.email=alice@example.test", "commit", "-q", "--no-gpg-sign",
+                "--date=2026-05-" + String.format("%02d", day) + "T00:00:00Z", "-m", "a book of three chapters");
+        return Path.of("book/" + id + ".adoc");
+    }
+
+    /**
+     * A watched run knows every file before it writes one, so a card can say "2 of 4", and it
+     * reports each file as it starts and ends it, in include order; the include that is not
+     * there is known from the start and does not stop the run.
+     */
+    @Test
+    void aWatchedRunKnowsEveryFileFirstAndReportsEachInIncludeOrder() throws Exception {
+        Path repo = Files.createDirectories(root.resolve("watched"));
+        Path host = book(repo, "watched", 1);
+        List<String> events = new java.util.ArrayList<>();
+        AssemblyRun run = new AssemblyRun(new AssemblyRun.Listener() {
+            @Override
+            public void planned(List<Path> files, List<GitDocumentMaterializer.Unresolved> unresolved) {
+                events.add("planned " + files.stream().map(f -> f.getFileName().toString()).toList() + " missing " + unresolved.size());
+            }
+
+            @Override
+            public void writing(int number, int total, Path file) {
+                events.add("writing " + number + "/" + total + " " + file.getFileName());
+            }
+
+            @Override
+            public void written(int number, int total, GitDocumentMaterializer.Result result) {
+                events.add("written " + number + "/" + total + " " + result.name());
+            }
+        });
+
+        GitDocumentMaterializer.AssemblyResult result = GitDocumentMaterializer.materializeAssembly(repo, host, run);
+
+        assertEquals(List.of(
+                "planned [watched.adoc, one.adoc, two.adoc, three.adoc] missing 1",
+                "writing 1/4 watched.adoc", "written 1/4 book/watched.adoc",
+                "writing 2/4 one.adoc", "written 2/4 watched-one",
+                "writing 3/4 two.adoc", "written 3/4 watched-two",
+                "writing 4/4 three.adoc", "written 4/4 watched-three"), events);
+        assertEquals(4, result.documents().size());
+        assertFalse(result.stopped(), "a run nobody stopped writes every file");
+        assertTrue(result.notWritten().isEmpty());
+        assertEquals(1, result.unresolved().size(), "the absent chapter is reported, not fatal");
+        assertEquals("chapters/absent.adoc", result.unresolved().getFirst().target());
+        assertEquals(AssemblyRun.State.RUNNING, run.state());
+    }
+
+    /**
+     * Stop keeps the files already written and leaves the rest out of the store, named in the
+     * result; opening the file again writes only what is missing.
+     */
+    @Test
+    void aStoppedRunKeepsWhatItWroteAndALaterRunWritesTheRest() throws Exception {
+        Path repo = Files.createDirectories(root.resolve("stopped"));
+        Path host = book(repo, "stopped", 2);
+        AssemblyRun[] holder = new AssemblyRun[1];
+        holder[0] = new AssemblyRun(new AssemblyRun.Listener() {
+            @Override
+            public void written(int number, int total, GitDocumentMaterializer.Result result) {
+                if (number == 2) {
+                    holder[0].stop();                              // as the strip's Stop does, once the second file is written
+                }
+            }
+        });
+
+        GitDocumentMaterializer.AssemblyResult stopped = GitDocumentMaterializer.materializeAssembly(repo, host, holder[0]);
+
+        assertEquals(AssemblyRun.State.STOPPED, holder[0].state());
+        assertTrue(stopped.stopped());
+        assertEquals(List.of("book/stopped.adoc", "stopped-one"), stopped.documents().stream().map(GitDocumentMaterializer.Result::name).toList(),
+                "the files written before the stop are kept");
+        Path tree = repo.toAbsolutePath().normalize();
+        assertEquals(List.of(tree.resolve("book/chapters/two.adoc"), tree.resolve("book/chapters/three.adoc")), stopped.notWritten(),
+                "the files the run did not reach, in include order");
+        assertTrue(stopped.summary().contains("stopped with 2 file(s) not materialized"), stopped.summary());
+        Map<String, ?> stored = GitDocumentMaterializer.storedDocuments();
+        assertTrue(stored.containsKey("stopped-one"), "a file written before the stop is in the store");
+        assertFalse(stored.containsKey("stopped-two") || stored.containsKey("stopped-three"),
+                "a file the run did not reach is not in the store: " + stored.keySet());
+
+        GitDocumentMaterializer.AssemblyResult rest = GitDocumentMaterializer.materializeAssembly(repo, host);
+
+        assertFalse(rest.stopped());
+        assertEquals(List.of(0, 0, 1, 1), rest.documents().stream().map(GitDocumentMaterializer.Result::commits).toList(),
+                "the second run writes only the files the first did not reach");
+        assertTrue(GitDocumentMaterializer.storedDocuments().keySet().containsAll(List.of("stopped-two", "stopped-three")));
+    }
+
+    /** A paused run waits between files until it is resumed, and then writes the rest. */
+    @Test
+    void aPausedRunWaitsBetweenFilesUntilResumed() throws Exception {
+        Path repo = Files.createDirectories(root.resolve("paused"));
+        Path host = book(repo, "paused", 3);
+        java.util.concurrent.CountDownLatch pausedAfterFirst = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicInteger written = new java.util.concurrent.atomic.AtomicInteger();
+        AssemblyRun[] holder = new AssemblyRun[1];
+        holder[0] = new AssemblyRun(new AssemblyRun.Listener() {
+            @Override
+            public void written(int number, int total, GitDocumentMaterializer.Result result) {
+                written.set(number);
+                if (number == 1) {
+                    holder[0].pause();
+                    pausedAfterFirst.countDown();
+                }
+            }
+        });
+        java.util.concurrent.CompletableFuture<GitDocumentMaterializer.AssemblyResult> running = java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+            try {
+                return GitDocumentMaterializer.materializeAssembly(repo, host, holder[0]);
+            } catch (java.io.IOException e) {
+                throw new java.io.UncheckedIOException(e);
+            }
+        });
+
+        assertTrue(pausedAfterFirst.await(60, java.util.concurrent.TimeUnit.SECONDS), "the first file is written");
+        assertEquals(AssemblyRun.State.PAUSED, holder[0].state());
+        assertThrows(java.util.concurrent.TimeoutException.class, () -> running.get(500, java.util.concurrent.TimeUnit.MILLISECONDS),
+                "a paused run does not finish");
+        assertEquals(1, written.get(), "a paused run writes no further file");
+
+        holder[0].resume();
+        GitDocumentMaterializer.AssemblyResult result = running.get(60, java.util.concurrent.TimeUnit.SECONDS);
+
+        assertEquals(AssemblyRun.State.RUNNING, holder[0].state());
+        assertEquals(4, result.documents().size(), "after Resume the run writes the rest");
+        assertFalse(result.stopped());
+    }
+
+    /** Stop also ends a paused run, which then writes nothing further. */
+    @Test
+    void stopEndsAPausedRun() throws Exception {
+        Path repo = Files.createDirectories(root.resolve("paused-stopped"));
+        Path host = book(repo, "pausedstop", 4);
+        AssemblyRun run = AssemblyRun.unattended();
+        run.pause();
+        java.util.concurrent.CompletableFuture<GitDocumentMaterializer.AssemblyResult> running = java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+            try {
+                return GitDocumentMaterializer.materializeAssembly(repo, host, run);
+            } catch (java.io.IOException e) {
+                throw new java.io.UncheckedIOException(e);
+            }
+        });
+        assertThrows(java.util.concurrent.TimeoutException.class, () -> running.get(500, java.util.concurrent.TimeUnit.MILLISECONDS));
+
+        run.stop();
+        GitDocumentMaterializer.AssemblyResult result = running.get(60, java.util.concurrent.TimeUnit.SECONDS);
+
+        assertTrue(result.documents().isEmpty(), "a run stopped before its first file writes none");
+        assertEquals(4, result.notWritten().size());
     }
 
     private static void gitIn(Path dir, String... args) throws Exception {

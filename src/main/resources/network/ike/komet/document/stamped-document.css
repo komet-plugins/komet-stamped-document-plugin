@@ -250,3 +250,14 @@
     -fx-border-radius: 4;
     -fx-border-insets: -1;
 }
+
+/* The materializing strip's report reads as text, not as a field to type in. */
+.stamped-materializing .stamped-materializing-text,
+.stamped-materializing .stamped-materializing-text > .scroll-pane,
+.stamped-materializing .stamped-materializing-text .viewport,
+.stamped-materializing .stamped-materializing-text .content {
+    -fx-background-color: transparent;
+    -fx-border-color: transparent;
+    -fx-background-insets: 0;
+    -fx-padding: 0;
+}

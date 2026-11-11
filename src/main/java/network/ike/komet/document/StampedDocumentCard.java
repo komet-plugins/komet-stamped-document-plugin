@@ -342,6 +342,8 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
     private String footerSha = "";
     private VBox footer;
     private RepositoryPanel repositoryPanel;
+    /** The strip that shows a file and its includes being materialized, with Pause, Resume and Stop. */
+    private final MaterializeProgress materializing = new MaterializeProgress();
     private boolean pendingEdit;
     private DocumentSurfaceArea documentArea;
     private DocumentSurfaceView surface;
@@ -700,8 +702,7 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
                 item("Export…", "stampedDocumentExport", "Write the document from the store back into a repository's working tree at its recorded path, and compare it with HEAD", this::chooseExportTarget),
                 item("Print to PDF…", "stampedDocumentPrintPdf", "Save the document, with the documents it includes, as a PDF where you choose, compiled by your installed typst, and open it", this::chooseAndPrint),
                 new SeparatorMenuItem(),
-                item("Materialize", "stampedDocumentMaterialize", "Write the commits of this file the knowledge base lacks", () -> materialize(false)),
-                item("Materialize All", "stampedDocumentMaterializeAll", "Write this file and every file it includes, each as its own document", () -> materialize(true)),
+                item("Materialize", "stampedDocumentMaterialize", "Write the commits the knowledge base lacks of this file and of every file it includes, each as its own document", this::materialize),
                 item("Rebuild from Git", "stampedDocumentRebuild", "Drop this document from the knowledge base and materialize it again from git, which holds all an ephemeral document is", this::rebuildFromGit),
                 item("Remove Superseded Documents", "stampedDocumentRemoveSuperseded", "Delete the prose-element documents that vertex documents of the same working tree and path replace", this::removeSuperseded),
                 new SeparatorMenuItem(),
@@ -834,7 +835,7 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
             preferences().putBoolean(PREF_REPOSITORY_OPEN, is);
             syncPreferences();
         });
-        host.setTop(repositoryPanel);
+        host.setTop(new VBox(repositoryPanel, materializing));
         center.getChildren().setAll(documentArea.fxObject());
         host.setCenter(center);
         host.setBottom(null);
@@ -856,7 +857,7 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
         if (openWhenBuilt != null) {
             Path file = openWhenBuilt;
             openWhenBuilt = null;
-            Platform.runLater(() -> open(file));                   // it may ask, and a dialog cannot wait in a layout pass
+            Platform.runLater(() -> open(file));                   // it may ask for a repository, and a dialog cannot wait in a layout pass
             return;
         }
         refresh();
@@ -1975,7 +1976,7 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
 
     /**
      * Opens an AsciiDoc file: resolves its repository, materializes the commits the store lacks
-     * (asking whether to take the included files too when the file is an assembly), remembers
+     * (of every file it includes too, with progress, Pause, Resume and Stop on the card), remembers
      * the working tree and shows the store's document. A document is stored from its history, so
      * a file with no commit is first offered one: a location for a repository when it is in
      * none, a first commit when it is in one uncommitted. Public so the assistant's tools and UI
@@ -2000,36 +2001,31 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
             statusLine.setText("git could not be run: " + e.getMessage());
             return;
         }
-        int includes = 0;
-        try (GitRepo repo = GitRepo.open(root.get())) {
-            includes = GitDocumentMaterializer.includeCount(repo.headLines(relative));
-        } catch (IOException | RuntimeException e) {
-            statusLine.setText("Cannot read " + relative + " at HEAD: " + e.getMessage());
+        int includes = includeCount(root.get(), relative);
+        if (includes < 0) {
             return;
-        }
-        boolean assembly = false;
-        if (includes > 0) {
-            Alert choice = new Alert(Alert.AlertType.CONFIRMATION);
-            choice.setTitle("Materialize an assembly");
-            choice.setHeaderText(relative.getFileName() + " includes " + includes + " file" + (includes == 1 ? "" : "s") + ".");
-            choice.setContentText("Materialize this file and every file it includes, each as its own document, in include order? "
-                    + "An include that cannot be resolved is reported by name; the rest proceed.");
-            ButtonType all = new ButtonType("Materialize All");
-            ButtonType only = new ButtonType("This File Only");
-            choice.getButtonTypes().setAll(all, only, ButtonType.CANCEL);
-            choice.initOwner(window());
-            Optional<ButtonType> chosen = choice.showAndWait();
-            if (chosen.isEmpty() || chosen.get() == ButtonType.CANCEL) {
-                return;
-            }
-            assembly = chosen.get() == all;
         }
         repoRoot = root.get();
         DocumentNarratives.workingTreeOpened(repoRoot);
         preferences().put(PREF_WORKING_TREE, repoRoot.toString());
         syncPreferences();
         repositoryPanel.refresh();
-        materialize(repoRoot, relative, assembly);
+        materialize(repoRoot, relative, includes > 0);
+    }
+
+    /**
+     * How many include directives a committed file holds, so a file that includes others is
+     * materialized with them.
+     *
+     * @return the count, or {@code -1} after saying on the status line why HEAD could not be read
+     */
+    private int includeCount(Path root, Path relative) {
+        try (GitRepo repo = GitRepo.open(root)) {
+            return GitDocumentMaterializer.includeCount(repo.headLines(relative));
+        } catch (IOException | RuntimeException e) {
+            statusLine.setText("Cannot read " + relative + " at HEAD: " + e.getMessage());
+            return -1;
+        }
     }
 
     /** Asks where a file in no repository should live, with its own folder offered, and places it there. */
@@ -2111,42 +2107,48 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
                 }));
     }
 
-    /** Materializes the shown document's file, or asks for a file when no working tree holds it. */
-    private void materialize(boolean assembly) {
+    /**
+     * Materializes the shown document's file and every file it includes, or asks for a file when
+     * no working tree holds it.
+     */
+    private void materialize() {
         Optional<Path> file = currentFile();
         if (file.isEmpty() || !Files.isRegularFile(repoRoot.resolve(file.get()))) {
             statusLine.setText("No working tree holds the shown document's file; Open file… names one.");
             chooseFile();
             return;
         }
-        materialize(repoRoot, file.get(), assembly);
+        materializeFile(repoRoot, file.get());
     }
 
-    /** Writes the file's history into the store off the FX thread and shows the resulting document. */
+    /** Materializes a file, with every file it includes when it includes any. */
+    private void materializeFile(Path root, Path relative) {
+        int includes = includeCount(root, relative);
+        if (includes >= 0) {
+            materialize(root, relative, includes > 0);
+        }
+    }
+
+    /** What a materialization wrote, for the card to show: the document opened and the report on it. */
+    private record Materialized(String name, PublicId anchor, String report) { }
+
+    /** Writes assemblies on a thread of their own, which may wait while a person has paused the run. */
+    private static final java.util.concurrent.Executor ASSEMBLY_WRITER =
+            task -> Thread.ofPlatform().daemon().name("materialize-assembly").start(task);
+
+    /**
+     * Writes the file's history into the store off the FX thread and shows the resulting document.
+     * A file that includes others is written with them, each as its own document, while the card's
+     * strip shows the progress and offers Pause, Resume and Stop.
+     */
     private void materialize(Path root, Path relative, boolean assembly) {
-        statusLine.setText("Materializing " + relative + (assembly ? " and its includes" : "") + " into the knowledge base …");
-        record Materialized(String name, PublicId anchor, String report) { }
+        if (assembly) {
+            materializeAssembly(root, relative);
+            return;
+        }
+        statusLine.setText("Materializing " + relative + " into the knowledge base …");
         CompletableFuture.supplyAsync(() -> {
             try {
-                if (assembly) {
-                    GitDocumentMaterializer.AssemblyResult result = GitDocumentMaterializer.materializeAssembly(root, root.resolve(relative));
-                    int settled = 0;
-                    for (GitDocumentMaterializer.Result document : result.documents()) {
-                        DocumentEditor.Settlement settlement = DocumentEditor.settle(document.anchor());
-                        if (settlement.settled() || settlement.rebased()) {
-                            settled++;
-                        }
-                    }
-                    StringBuilder report = new StringBuilder("Materialized assembly '" + result.assembly().name() + "': " + result.summary() + ".");
-                    if (settled > 0) {
-                        report.append(" Edits pending in Komet were settled in ").append(settled).append(" document(s).");
-                    }
-                    for (GitDocumentMaterializer.Unresolved u : result.unresolved()) {
-                        report.append("\nNot resolved: ").append(u);
-                    }
-                    report.append(VertexMaterializer.fallbackNote());
-                    return new Materialized(result.assembly().name(), result.assembly().anchor(), report.toString());
-                }
                 GitDocumentMaterializer.Result result = GitDocumentMaterializer.materialize(root, root.resolve(relative), true);
                 DocumentEditor.Settlement settlement = DocumentEditor.settle(result.anchor());
                 return new Materialized(result.name(), result.anchor(), "Materialized '" + result.name() + "': " + result.commits() + " commit(s) written, " + result.lines()
@@ -2157,35 +2159,112 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
             } catch (IOException e) {
                 throw new UncheckedIOException(e);
             }
-        }).whenComplete((materialized, failure) -> Platform.runLater(() -> {
-            if (failure != null) {
-                Throwable cause = failure.getCause() != null ? failure.getCause() : failure;
-                statusLine.setText("Materialization failed: " + cause.getMessage());
-                LOG.warn("Materializing {} failed", relative, cause);
+        }).whenComplete((materialized, failure) -> Platform.runLater(() -> showMaterialized(relative, materialized, failure)));
+    }
+
+    /**
+     * Writes a file and every file it includes, in include order, under a run the card's strip
+     * shows and a person can pause, resume or stop. A stopped run keeps what it wrote and opens
+     * the file's document, whose include lines stand in for the files it did not reach.
+     */
+    private void materializeAssembly(Path root, Path relative) {
+        if (materializing.running()) {
+            statusLine.setText("Files are already being materialized on this card. Stop that run first, or wait for it to end.");
+            return;
+        }
+        statusLine.setText("Materializing " + relative + " and the files it includes …");
+        AssemblyRun run = materializing.start(root, relative);
+        record Written(GitDocumentMaterializer.AssemblyResult result, Materialized materialized) { }
+        CompletableFuture.supplyAsync(() -> {
+            try {
+                GitDocumentMaterializer.AssemblyResult result = GitDocumentMaterializer.materializeAssembly(root, root.resolve(relative), run);
+                if (result.documents().isEmpty()) {
+                    return new Written(result, null);
+                }
+                int settled = 0;
+                for (GitDocumentMaterializer.Result document : result.documents()) {
+                    DocumentEditor.Settlement settlement = DocumentEditor.settle(document.anchor());
+                    if (settlement.settled() || settlement.rebased()) {
+                        settled++;
+                    }
+                }
+                StringBuilder report = new StringBuilder();
+                if (result.stopped()) {
+                    report.append("Stopped after ").append(result.documents().size()).append(" of ")
+                            .append(result.documents().size() + result.notWritten().size()).append(" files. ")
+                            .append(result.notWritten().size()).append(" file(s) are not materialized. ");
+                }
+                report.append("Materialized assembly '").append(result.assembly().name()).append("': ").append(result.summary()).append('.');
+                if (settled > 0) {
+                    report.append(" Edits pending in Komet were settled in ").append(settled).append(" document(s).");
+                }
+                for (GitDocumentMaterializer.Unresolved u : result.unresolved()) {
+                    report.append("\nNot resolved: ").append(u);
+                }
+                report.append(VertexMaterializer.fallbackNote());
+                return new Written(result, new Materialized(result.assembly().name(), result.assembly().anchor(), report.toString()));
+            } catch (IOException e) {
+                throw new UncheckedIOException(e);
+            }
+        }, ASSEMBLY_WRITER).whenComplete((written, failure) -> Platform.runLater(() -> {
+            materializing.finished(written == null ? null : written.result(), failure);
+            if (failure == null && written.materialized() == null) {
+                statusLine.setText("Stopped before any file was materialized.");
                 return;
             }
-            preferences().put(PREF_DOCUMENT, materialized.name());
-            syncPreferences();
-            String report = (repositoryReport == null ? "" : repositoryReport + " ") + materialized.report();
-            repositoryReport = null;
-            CompletableFuture.supplyAsync(GitDocumentMaterializer::storedDocuments).whenComplete((found, listFailure) -> Platform.runLater(() -> {
-                if (listFailure != null) {
-                    statusLine.setText(report);
-                    return;
-                }
-                anchors = new LinkedHashMap<>(found);
-                // Two repositories can hold a document of one name (a clone beside its origin): the
-                // one just materialized is the one this name opens from now on.
-                anchors.put(materialized.name(), materialized.anchor());
-                documents.getItems().setAll(anchors.keySet());
-                if (materialized.name().equals(documents.getValue())) {
-                    open(materialized.anchor(), report, null);
-                } else {
-                    reportAfterOpen = report;
-                    documents.setValue(materialized.name());         // the chooser's listener opens it with the report
-                }
-            }));
+            showMaterialized(relative, written == null ? null : written.materialized(), failure);
         }));
+    }
+
+    /** Shows what a materialization wrote, or why it failed. Called on the JavaFX application thread. */
+    private void showMaterialized(Path relative, Materialized materialized, Throwable failure) {
+        if (failure != null) {
+            Throwable cause = failure.getCause() != null ? failure.getCause() : failure;
+            statusLine.setText("Materialization failed: " + cause.getMessage());
+            LOG.warn("Materializing {} failed", relative, cause);
+            return;
+        }
+        preferences().put(PREF_DOCUMENT, materialized.name());
+        syncPreferences();
+        String report = (repositoryReport == null ? "" : repositoryReport + " ") + materialized.report();
+        repositoryReport = null;
+        CompletableFuture.supplyAsync(GitDocumentMaterializer::storedDocuments).whenComplete((found, listFailure) -> Platform.runLater(() -> {
+            if (listFailure != null) {
+                statusLine.setText(report);
+                return;
+            }
+            anchors = new LinkedHashMap<>(found);
+            // Two repositories can hold a document of one name (a clone beside its origin): the
+            // one just materialized is the one this name opens from now on.
+            anchors.put(materialized.name(), materialized.anchor());
+            documents.getItems().setAll(anchors.keySet());
+            if (materialized.name().equals(documents.getValue())) {
+                open(materialized.anchor(), report, null);
+            } else {
+                reportAfterOpen = report;
+                documents.setValue(materialized.name());         // the chooser's listener opens it with the report
+            }
+        }));
+    }
+
+    /**
+     * The run of the last materialization of a file with includes, for automation and tests: its
+     * state, and Pause, Resume and Stop as the strip's buttons work them.
+     *
+     * @return the run, or empty before the card has materialized an assembly
+     */
+    public Optional<AssemblyRun> materializationRun() {
+        return Optional.ofNullable(materializing.run());
+    }
+
+    /** @return whether the card is materializing a file and its includes now, for automation and tests */
+    public boolean materializing() {
+        return materializing.running();
+    }
+
+    /** @return the progress strip's text as Markdown, for automation and tests */
+    public String materializationReport() {
+        return materializing.markdown();
     }
 
     // ── ephemeral documents: rebuilt from git (IKE-Network/ike-issues#1313) ─────
@@ -3124,7 +3203,7 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
             Optional<String> after = uncheck(() -> GitOperations.head(root));
             if (run.ok() && !before.equals(after) && file.isPresent() && Files.isRegularFile(root.resolve(file.get()))) {
                 // The pull moved HEAD: the commits it brought reach the store the way Open file… does.
-                materialize(root, file.get(), false);
+                materializeFile(root, file.get());
             }
         });
     }
