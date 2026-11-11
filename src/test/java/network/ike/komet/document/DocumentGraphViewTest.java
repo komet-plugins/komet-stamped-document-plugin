@@ -536,4 +536,122 @@ class DocumentGraphViewTest {
             assertEquals(List.of(one), List.copyOf(graph.tree().getSelectionModel().getSelectedItems()));
         });
     }
+
+    // ── one passage shown in two places (dev-document-front-matter, the third step) ──
+
+    private static final String SUMMARY = """
+            = The Proposal in Brief
+
+            // tag::brief[]
+            We propose a way for a reviewer to decide,
+            and a record of that decision.
+
+            // end::brief[]
+
+            == The problem
+
+            A reviewer decides alone.
+            """;
+
+    private static final String BOOK = """
+            = Applying Decision Theory
+
+            [abstract]
+            --
+            include::topics/summary.adoc[tag=brief]
+            --
+
+            include::topics/summary.adoc[leveloffset=+1]
+            """;
+
+    private static DocumentAssembly shownTwice(StoredDocument summary) {
+        return DocumentAssembly.of(DocumentGraphTest.stored(BOOK), "docs/book.adoc",
+                path -> path.equals("docs/topics/summary.adoc") ? Optional.of(summary) : Optional.empty());
+    }
+
+    private static void collect(TreeItem<Row> item, List<TreeItem<Row>> into) {
+        into.add(item);
+        for (TreeItem<Row> child : item.getChildren()) {
+            collect(child, into);
+        }
+    }
+
+    /** The node rows of a line, in tree order: one for each place the line is shown. */
+    private static List<TreeItem<Row>> rowsOf(DocumentGraphView graph, long line) {
+        List<TreeItem<Row>> every = new ArrayList<>();
+        collect(graph.tree().getRoot(), every);
+        return every.stream().filter(i -> i.getValue() instanceof NodeRow row && row.node().kind() == Kind.LINE && row.node().nid() == line).toList();
+    }
+
+    @Test
+    void aSelectionInOneShowingOfAPassageIsShownOnThatShowingsRow() throws Exception {
+        StoredDocument summary = DocumentGraphTest.stored(SUMMARY);
+        DocumentAssembly assembly = shownTwice(summary);
+        DocumentAssembly.Member abstractShowing = assembly.children().get(0);
+        DocumentAssembly.Member bodyShowing = assembly.children().get(1);
+        long line = summary.lines().get(3).nid();                   // "We propose a way for a reviewer to decide,"
+        int inAbstract = assembly.ordinal(abstractShowing, line);
+        int inBody = assembly.ordinal(bodyShowing, line);
+        Card card = new Card();
+        onFx(() -> {
+            DocumentGraphView graph = new DocumentGraphView(card);
+            card.selection = new LineSelection(inBody, inBody);
+            graph.show(assembly);
+            List<TreeItem<Row>> rows = rowsOf(graph, line);
+            assertEquals(2, rows.size(), "the line has a row in the abstract's tree and a row in the body's");
+            assertSame(abstractShowing, rows.get(0).getValue().node().member());
+            assertSame(bodyShowing, rows.get(1).getValue().node().member());
+            assertEquals(List.of(rows.get(1)), List.copyOf(graph.tree().getSelectionModel().getSelectedItems()),
+                    "a selection made in the body is shown on the body's row, not the abstract's");
+
+            card.selection = new LineSelection(inAbstract, inAbstract);
+            graph.showSelection();
+            assertEquals(List.of(rows.get(0)), List.copyOf(graph.tree().getSelectionModel().getSelectedItems()),
+                    "and one made in the abstract on the abstract's row");
+            assertTrue(card.acts.isEmpty(), "showing a selection makes none");
+
+            graph.setMode(DocumentGraphView.Mode.DOCBOOK);
+            List<DocumentAssembly.Member> selected = graph.tree().getSelectionModel().getSelectedItems().stream()
+                    .map(i -> i.getValue().node().member()).distinct().toList();
+            assertEquals(List.of(abstractShowing), selected, "as elements too, the rows selected are the abstract's");
+        });
+    }
+
+    @Test
+    void selectingARowOfAPassageShownTwiceSelectsThePlaceThatRowStandsIn() throws Exception {
+        StoredDocument summary = DocumentGraphTest.stored(SUMMARY);
+        DocumentAssembly assembly = shownTwice(summary);
+        DocumentAssembly.Member abstractShowing = assembly.children().get(0);
+        DocumentAssembly.Member bodyShowing = assembly.children().get(1);
+        long line = summary.lines().get(3).nid();
+        int inAbstract = assembly.ordinal(abstractShowing, line);
+        int inBody = assembly.ordinal(bodyShowing, line);
+        Card card = new Card();
+        onFx(() -> {
+            DocumentGraphView graph = new DocumentGraphView(card);
+            graph.show(assembly);
+            List<TreeItem<Row>> rows = rowsOf(graph, line);
+            for (TreeItem<Row> row : rows) {
+                for (TreeItem<Row> parent = row.getParent(); parent != null; parent = parent.getParent()) {
+                    parent.setExpanded(true);
+                }
+            }
+            graph.tree().getSelectionModel().clearAndSelect(graph.tree().getRow(rows.get(0)));
+            assertEquals(new LineSelection(inAbstract, inAbstract), card.selection, "the abstract's row selects the line in the abstract");
+            assertSame(abstractShowing, card.shown.getLast());
+
+            graph.tree().getSelectionModel().clearAndSelect(graph.tree().getRow(rows.get(1)));
+            assertEquals(new LineSelection(inBody, inBody), card.selection, "the body's row selects it in the body");
+            assertSame(bodyShowing, card.shown.getLast());
+
+            // the document shown by region: its row selects the region's lines where the abstract shows them
+            TreeItem<Row> region = rows.get(0);
+            while (region.getValue().node().kind() != Kind.DOCUMENT) {
+                region = region.getParent();
+            }
+            assertEquals("tag=brief", region.getValue().node().member().tags());
+            graph.tree().getSelectionModel().clearAndSelect(graph.tree().getRow(region));
+            assertEquals(new LineSelection(inAbstract, inAbstract + 1), card.selection, "the two lines of the paragraph the region reads, in the abstract");
+        });
+    }
 }

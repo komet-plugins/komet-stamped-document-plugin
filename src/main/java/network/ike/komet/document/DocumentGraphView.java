@@ -381,7 +381,7 @@ final class DocumentGraphView {
                 return ordinals;
             }
             for (GitDocumentMaterializer.StoredLine line : node.markup().lines()) {
-                int ordinal = assembly.ordinal(line.nid());
+                int ordinal = assembly.ordinal(node.member(), line.nid());
                 if (ordinal >= 0 && !line.text().isBlank() && node.children().stream().noneMatch(c -> c.spans(ordinal))) {
                     ordinals.add(ordinal);
                 }
@@ -794,6 +794,7 @@ final class DocumentGraphView {
                 box.getChildren().add(preview(node.label()));
                 meaning.setText(node.kind() == Kind.RETIRED ? "retired line" : "line");
             }
+            region(node, box);
             Node marginalia = marginalia(node);
             if (marginalia != null) {
                 box.getChildren().add(marginalia);
@@ -861,6 +862,7 @@ final class DocumentGraphView {
                     box.getChildren().add(caption("→ " + markup.attributes().values().iterator().next(), "#34465f"));
                 }
             }
+            region(node, box);
             Node marginalia = marginalia(node);
             if (marginalia != null) {
                 box.getChildren().add(marginalia);
@@ -878,6 +880,18 @@ final class DocumentGraphView {
                 style.append("-fx-font-style: italic;");
             }
             setStyle(style.toString());
+        }
+
+        /**
+         * A document shown by a tagged region says its tags on its row, {@code tag=brief}: the same
+         * document stands elsewhere in the tree whole, and the two rows would otherwise read alike.
+         */
+        private void region(DocumentGraph.Node node, HBox box) {
+            if (node.kind() == Kind.DOCUMENT && node.member() != null && !node.member().tags().isEmpty()) {
+                Label tags = caption("· " + node.member().tags(), "#34465f");
+                tags.getStyleClass().add("stamped-document-graph-region");
+                box.getChildren().add(tags);
+            }
         }
 
         private void propertyRow(PropertyRow row) {

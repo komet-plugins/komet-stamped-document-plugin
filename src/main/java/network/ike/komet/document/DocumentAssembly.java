@@ -337,10 +337,10 @@ public final class DocumentAssembly {
         Map<Long, StoredBlock> blocks = new LinkedHashMap<>();
         StoredBlock root = null;
         if (document.root() != null) {
-            List<Long> members = projectMembers(document, document.root(), kept, blocks);
+            Held held = projectMembers(document, document.root(), kept, blocks);
             boolean titled = heads(document, document.root(), kept);
             root = new StoredBlock(document.root().nid(), document.root().kind(), document.root().level(), titled ? document.root().title() : "",
-                    titled ? document.root().parameters() : "", members, document.root().stamp(), members);
+                    titled ? document.root().parameters() : "", held.members(), document.root().stamp(), held.tree());
             blocks.put(root.nid(), root);
         }
         Map<Long, List<StoredReference>> references = new HashMap<>();
@@ -361,30 +361,52 @@ public final class DocumentAssembly {
                 titled ? document.attributes() : List.of(), root, blocks, references, sentences);
     }
 
-    /** The members a block keeps: its kept lines, and its child blocks that keep any; a section without its heading gives up its members to its parent. */
-    private static List<Long> projectMembers(StoredDocument document, StoredBlock block, Set<Long> kept, Map<Long, StoredBlock> blocks) {
-        List<Long> members = new ArrayList<>();
-        for (long nid : block.members()) {
+    /**
+     * What a block keeps, in the two orders a stored block has: its members, and its tree, which in a
+     * document stored as vertices also holds the blank lines between its blocks.
+     */
+    private record Held(List<Long> members, List<Long> tree) { }
+
+    /** What a block keeps: its kept lines, and its child blocks that keep any; a section without its heading gives up what it keeps to its parent. */
+    private static Held projectMembers(StoredDocument document, StoredBlock block, Set<Long> kept, Map<Long, StoredBlock> blocks) {
+        Map<Long, Held> children = new HashMap<>();
+        List<Long> members = projectList(document, block.members(), kept, blocks, children, false);
+        List<Long> tree = block.tree().equals(block.members()) ? members : projectList(document, block.tree(), kept, blocks, children, true);
+        return new Held(members, tree);
+    }
+
+    /** One of a block's two lists cut to the lines kept; a child block is projected once and read from {@code children} the second time. */
+    private static List<Long> projectList(StoredDocument document, List<Long> listed, Set<Long> kept, Map<Long, StoredBlock> blocks,
+                                          Map<Long, Held> children, boolean tree) {
+        List<Long> out = new ArrayList<>();
+        for (long nid : listed) {
             if (kept.contains(nid)) {
-                members.add(nid);
+                out.add(nid);
                 continue;
             }
             StoredBlock child = document.blocks().get(nid);
             if (child == null) {
                 continue;                                         // a line the region leaves out
             }
-            List<Long> held = projectMembers(document, child, kept, blocks);
-            if (held.isEmpty()) {
+            Held held = children.get(nid);
+            if (held == null) {
+                held = projectMembers(document, child, kept, blocks);
+                children.put(nid, held);
+                if (!held.members().isEmpty() && !(child.kind() == Block.Kind.SECTION && !heads(document, child, kept))) {
+                    blocks.put(child.nid(), new StoredBlock(child.nid(), child.kind(), child.level(), child.title(), child.parameters(),
+                            held.members(), child.stamp(), held.tree()));
+                }
+            }
+            if (held.members().isEmpty()) {
                 continue;
             }
-            if (child.kind() == Block.Kind.SECTION && !heads(document, child, kept)) {
-                members.addAll(held);
+            if (!blocks.containsKey(child.nid())) {
+                out.addAll(tree ? held.tree() : held.members());   // a section without its heading: what it keeps stands where it stood
                 continue;
             }
-            blocks.put(child.nid(), new StoredBlock(child.nid(), child.kind(), child.level(), child.title(), child.parameters(), held, child.stamp(), held));
-            members.add(child.nid());
+            out.add(child.nid());
         }
-        return members;
+        return out;
     }
 
     /** Whether a section's or a document's heading line is among the lines kept. */

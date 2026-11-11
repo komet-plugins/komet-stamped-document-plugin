@@ -77,6 +77,11 @@ import java.util.regex.Pattern;
  * surface ordinals they span, so selecting a text run or an emphasis selects its lines on the
  * other views. What each line is comes from {@link LineRoles} over the member's text, the
  * classification the materializer stored as each line vertex's meaning.
+ *
+ * <p>A file shown twice, whole in one place and by a tagged region in another, is projected in each
+ * place from the lines that showing reads, and every node spans the ordinals of its own showing. A
+ * line's role is read from its whole file in either place, so a line of a region is what it is in
+ * the file. A stored sentence is bound once in each showing that reads its block whole.
  */
 final class DocBookProjection {
 
@@ -95,9 +100,10 @@ final class DocBookProjection {
     private final DocumentAssembly assembly;
     /** Whether stored sentences show as nodes; when not, their content is spliced into the paragraph. */
     private final boolean sentences;
-    /** The stored sentences a flow has matched, so each is shown once. */
-    private final Set<Long> consumed = new HashSet<>();
-    private final Map<DocumentAssembly.Member, Map<Long, LineRoles.Role>> roles = new IdentityHashMap<>();
+    /** The stored sentences a flow has matched in each showing, so each is shown once there. */
+    private final Map<DocumentAssembly.Member, Set<Long>> consumed = new IdentityHashMap<>();
+    /** Each file's line roles, read from its whole text: a file shown twice is classified once. */
+    private final Map<StoredDocument, Map<Long, LineRoles.Role>> roles = new IdentityHashMap<>();
     private final Map<DocumentAssembly.Member, Map<Long, StoredLine>> lines = new IdentityHashMap<>();
 
     private DocBookProjection(DocumentAssembly assembly) {
@@ -134,7 +140,7 @@ final class DocBookProjection {
 
     /** A member's document element; included by {@code include}, it spans that line too. */
     private Node document(DocumentAssembly.Member member, StoredLine include, String href) {
-        StoredDocument document = member.document();
+        StoredDocument document = member.shown();
         String fallback = document.attributes().isEmpty() || document.attributes().getFirst().isBlank()
                 ? (member.path().isEmpty() ? "Document" : member.fileName()) : document.attributes().getFirst();
         List<StoredLine> own = new ArrayList<>();
@@ -157,14 +163,25 @@ final class DocBookProjection {
         if (!href.isEmpty()) {
             attributes.put("href", href);
         }
+        int equals = member.tags().indexOf('=');
+        if (equals > 0) {
+            attributes.put(member.tags().substring(0, equals), member.tags().substring(equals + 1));   // the include's tag attribute, as written
+        }
         attributes.putAll(element.attributes);
         String title = element.title == null ? fallback : element.title.markup().text();
         List<Node> children = element.withTitle();
-        String detail = member.path();
+        String detail = DocumentGraph.where(member);
         if (document.root() == null) {
             detail = detail.isEmpty() ? "no structure in the store; re-materialize to add it" : detail + " — no structure in the store; re-materialize to add it";
         }
-        int[] span = span(own, children);
+        int[] span = span(member, element.lines, children);
+        if (include != null && member.includedBy() != null) {
+            int at = assembly.ordinal(member.includedBy(), include.nid());   // the include line is the including showing's
+            if (at >= 0) {
+                span[0] = span[0] < 0 ? at : Math.min(span[0], at);
+                span[1] = Math.max(span[1], at);
+            }
+        }
         return new Node(Kind.DOCUMENT, document.root() == null ? 0 : document.root().nid(), title, detail, member, span[0], span[1],
                 document.root() == null ? null : document.root().stamp(), document.root(), null, null, null, null, List.of(),
                 new Markup("Document", frozen(attributes), title, List.copyOf(own)),
@@ -210,7 +227,7 @@ final class DocBookProjection {
                 return children;                                 // an include, a comment, a conditional: the element it holds
             }
         }
-        int[] span = span(element.lines, children);
+        int[] span = span(member, element.lines, children);
         String label = label(block, element);
         return List.of(new Node(Kind.BLOCK, block.nid(), label, block.parameters(), member, span[0], span[1], block.stamp(), block, null, null,
                 null, null, List.of(), new Markup(element.name, frozen(element.attributes), text(element), List.copyOf(element.lines)),
@@ -244,7 +261,7 @@ final class DocBookProjection {
             long nid = members.get(i);
             StoredLine line = line(member, nid);
             if (line == null) {
-                StoredBlock child = member.document().blocks().get(nid);
+                StoredBlock child = member.shown().blocks().get(nid);
                 if (child == null) {
                     continue;
                 }
@@ -374,7 +391,7 @@ final class DocBookProjection {
         for (int i = index + 1; i < members.size(); i++) {
             StoredLine line = line(member, members.get(i));
             if (line == null) {
-                return member.document().blocks().containsKey(members.get(i));
+                return member.shown().blocks().containsKey(members.get(i));
             }
             if (role(member, line).meaning() != IkeConcept.BLANK_LINE) {
                 return false;
@@ -464,9 +481,11 @@ final class DocBookProjection {
 
     /** An include line: the included document when the assembly resolved it, else an {@code Include} element saying why not. */
     private Node include(DocumentAssembly.Member member, StoredLine line, String target) {
-        Optional<DocumentAssembly.Include> include = assembly.includeOf(line.nid());
+        Optional<DocumentAssembly.Include> include = assembly.includeOf(member, line.nid());
         if (include.isPresent() && include.get().resolved()) {
-            return document(include.get().child(), line, target);
+            Node child = document(include.get().child(), line, target);
+            String missing = include.get().note();               // a tag the include names that its file does not have
+            return missing.isEmpty() ? child : withDetail(child, child.detail().isEmpty() ? missing : child.detail() + "\n" + missing);
         }
         Map<String, String> attributes = new LinkedHashMap<>();
         attributes.put("href", target);
@@ -493,8 +512,8 @@ final class DocBookProjection {
 
     /** A verbatim body: one text node, every line from its first to its last as the surface holds them, blank ones included. */
     private Node verbatim(DocumentAssembly.Member member, List<StoredLine> body) {
-        int first = assembly.ordinal(body.getFirst().nid());
-        int last = assembly.ordinal(body.getLast().nid());
+        int first = assembly.ordinal(member, body.getFirst().nid());
+        int last = assembly.ordinal(member, body.getLast().nid());
         List<StoredLine> all = first >= 0 && last >= first ? assembly.lines().subList(first, last + 1) : body;
         StringBuilder text = new StringBuilder();
         for (StoredLine line : all) {
@@ -509,7 +528,7 @@ final class DocBookProjection {
     /** The list's style from its first item's marker: unordered, ordered or description. */
     private Optional<String> listStyle(DocumentAssembly.Member member, StoredBlock list) {
         for (long nid : list.tree()) {
-            StoredBlock item = member.document().blocks().get(nid);
+            StoredBlock item = member.shown().blocks().get(nid);
             if (item == null) {
                 continue;
             }
@@ -600,7 +619,7 @@ final class DocBookProjection {
                 if (firstLine == null) {
                     firstLine = line;
                     firstLineCells = count;
-                    int ordinal = assembly.ordinal(line.nid());
+                    int ordinal = assembly.ordinal(member, line.nid());
                     blankAfterFirstLine = ordinal >= 0 && ordinal + 1 < assembly.lines().size() && assembly.lines().get(ordinal + 1).text().isBlank();
                 }
             }
@@ -656,7 +675,7 @@ final class DocBookProjection {
         String name = header ? "Header row" : "Row";
         StoredBlock exact = lines.isEmpty() ? null : rowOf.get(lines.getFirst().nid());
         if (exact != null && exact.members().size() == lines.size() && lines.stream().allMatch(l -> exact.members().contains(l.nid()))) {
-            int[] span = span(lines, children);
+            int[] span = span(member, lines, children);
             return new Node(Kind.BLOCK, exact.nid(), name, exact.parameters(), member, span[0], span[1], exact.stamp(), exact, null, null, null,
                     null, List.of(), new Markup(name, attributes, "", List.copyOf(lines)), List.copyOf(children));
         }
@@ -836,7 +855,7 @@ final class DocBookProjection {
                 return;
             }
             spans = InlineMarkup.parse(text.toString());
-            List<StoredSentence> stored = member.document().sentences().getOrDefault(blockNid, List.of());
+            List<StoredSentence> stored = member.shown().sentences().getOrDefault(blockNid, List.of());
             if (stored.isEmpty()) {
                 for (Span span : spans) {
                     Node node = node(span);
@@ -862,6 +881,7 @@ final class DocBookProjection {
             String flowText = text.toString();
             String normalized = Segmenter.normalize(flowText.substring(range[0], range[1]));
             StoredSentence match = null;
+            Set<Long> consumed = DocBookProjection.this.consumed.computeIfAbsent(member, m -> new HashSet<>());
             for (StoredSentence candidate : stored) {
                 if (!consumed.contains(candidate.nid()) && candidate.text().equals(normalized)) {
                     match = candidate;
@@ -993,7 +1013,7 @@ final class DocBookProjection {
     /** A node the projection makes, with no entity of its own: it spans its lines and its children's, its STAMP the newest of its lines'. */
     private Node projected(Kind kind, DocumentAssembly.Member member, String element, Map<String, String> attributes, String text,
                            List<StoredLine> lines, List<Node> children) {
-        int[] span = span(lines, children);
+        int[] span = span(member, lines, children);
         StampEntity<?> stamp = null;
         for (StoredLine line : lines) {
             if (line.introduced() != null && (stamp == null || line.introduced().time() > stamp.time())) {
@@ -1036,12 +1056,12 @@ final class DocBookProjection {
         return first == last || last < 0 ? "line " + (first + 1) + of : "lines " + (first + 1) + "–" + (last + 1) + of;
     }
 
-    /** The ordinals a node spans: its own lines' and its children's. */
-    private int[] span(List<StoredLine> lines, List<Node> children) {
+    /** The ordinals a node spans in its showing: its own lines' there and its children's. */
+    private int[] span(DocumentAssembly.Member member, List<StoredLine> lines, List<Node> children) {
         int first = -1;
         int last = -1;
         for (StoredLine line : lines) {
-            int ordinal = assembly.ordinal(line.nid());
+            int ordinal = assembly.ordinal(member, line.nid());
             if (ordinal >= 0) {
                 first = first < 0 ? ordinal : Math.min(first, ordinal);
                 last = Math.max(last, ordinal);
@@ -1126,7 +1146,7 @@ final class DocBookProjection {
     private StoredLine line(DocumentAssembly.Member member, long nid) {
         return lines.computeIfAbsent(member, m -> {
             Map<Long, StoredLine> byNid = new HashMap<>();
-            for (StoredLine line : m.document().lines()) {
+            for (StoredLine line : m.shown().lines()) {
                 byNid.put(line.nid(), line);
             }
             return byNid;
@@ -1135,8 +1155,8 @@ final class DocBookProjection {
 
     /** A line's role, as {@link LineRoles} classifies the member's text: what the materializer stored as the line vertex's meaning. */
     private LineRoles.Role role(DocumentAssembly.Member member, StoredLine line) {
-        LineRoles.Role role = roles.computeIfAbsent(member, m -> {
-            List<StoredLine> all = m.document().lines();
+        LineRoles.Role role = roles.computeIfAbsent(member.document(), document -> {
+            List<StoredLine> all = document.lines();
             List<LineRoles.Role> classified = LineRoles.of(IkeDialectParser.parse(all.stream().map(StoredLine::text).toList()));
             Map<Long, LineRoles.Role> byNid = new HashMap<>();
             for (int i = 0; i < all.size() && i < classified.size(); i++) {

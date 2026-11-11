@@ -44,10 +44,13 @@ import java.util.function.Function;
  * later commits retired, each after the surviving line it followed, so it stands where it
  * stood; and on every block the commits that touched its lines, oldest first.
  *
- * <p>It is a tree, not a DAG: a block has one parent, a line belongs to one block, and the
- * assembly shows each file once. A cross-reference is a leaf that names its target, never a
- * second parent. Every node knows the surface ordinals it spans, so selecting a node is
- * selecting its lines on the other views; a version spans its line's, a retired line none.
+ * <p>It is a tree, not a DAG: a block has one parent and a line belongs to one block. A file the
+ * assembly shows twice, whole in one place and by a tagged region in another, has a tree under each
+ * include line that shows it: the same blocks and lines, the region's tree cut to the lines it reads,
+ * as the other views show them. A cross-reference is a leaf that names its target, never a second
+ * parent. Every node knows the surface ordinals it spans in its own showing, so selecting a node is
+ * selecting its lines in that place on the other views; a version spans its line's, a retired line
+ * none.
  *
  * <p>The graph is a pure function of the assembly and the histories: it reads nothing itself.
  */
@@ -80,7 +83,7 @@ public final class DocumentGraph {
      * @param nid       the entity's nid: the document block's, the block's, the line element's or the reference semantic's
      * @param label     what the row says
      * @param detail    a second line for a tooltip: a path, an include note, a reference's text; empty when none
-     * @param member    the member of the assembly the node belongs to
+     * @param member    the member of the assembly the node belongs to: the showing it stands in, for a file shown twice
      * @param first     the smallest surface ordinal the node spans, {@code -1} when it spans no line
      * @param last      the largest surface ordinal the node spans, {@code -1} when it spans no line
      * @param stamp     the STAMP the row shows: a line's introducing STAMP, a block's latest, a version's commit, a retired line's retiring; {@code null} when none
@@ -215,17 +218,20 @@ public final class DocumentGraph {
         return history == null ? DocumentHistory.NONE : history;
     }
 
-    /** One member's tree: its root block, or its lines flat when the store holds no structure. */
+    /**
+     * One showing's tree: its root block, or its lines flat when the store holds no structure. A
+     * showing of a tagged region is the tree of the lines it reads, and says its tags beside its path.
+     */
     private Node document(DocumentAssembly.Member member) {
-        StoredDocument document = member.document();
+        StoredDocument document = member.shown();
         DocumentHistory history = history(member);
         String title = document.attributes().isEmpty() ? "" : document.attributes().getFirst();
         if (title == null || title.isBlank()) {
             title = member.path().isEmpty() ? "Document" : member.fileName();
         }
-        String detail = member.path().isEmpty() ? "" : member.path();
+        String detail = where(member);
         List<Node> children = new ArrayList<>();
-        if (history != null) {
+        if (history != null && fromStart(member)) {
             for (DocumentHistory.RetiredLine retired : history.retiredAtStart()) {
                 children.add(retired(member, retired));
             }
@@ -257,7 +263,7 @@ public final class DocumentGraph {
      * them, so a document stored as vertices shows the blank lines its blocks hold.
      */
     private List<Node> members(DocumentAssembly.Member member, StoredBlock block, DocumentHistory history) {
-        StoredDocument document = member.document();
+        StoredDocument document = member.shown();
         List<Node> children = new ArrayList<>();
         for (long nid : block.tree()) {
             Optional<StoredLine> line = document.line(nid);
@@ -284,7 +290,7 @@ public final class DocumentGraph {
 
     /** A line's node: with history its versions beneath, then its references, then, for a resolved include, the child document's tree. */
     private Node line(DocumentAssembly.Member member, StoredLine line, DocumentHistory history) {
-        int ordinal = assembly.ordinal(line.nid());
+        int ordinal = assembly.ordinal(member, line.nid());
         int index = assembly.indexInMember(ordinal);
         List<Node> children = new ArrayList<>();
         if (history != null) {
@@ -298,13 +304,12 @@ public final class DocumentGraph {
                     member, -1, -1, null, null, null, reference, null, null, List.of(), null, List.of()));
         }
         String detail = "";
-        Optional<DocumentAssembly.Include> include = assembly.includeOf(line.nid());
+        Optional<DocumentAssembly.Include> include = assembly.includeOf(member, line.nid());
         if (include.isPresent()) {
             if (include.get().resolved()) {
                 children.add(document(include.get().child()));
-            } else {
-                detail = include.get().note();
             }
+            detail = include.get().note();                        // why it stays a line, or a tag its file does not have
         }
         int last = ordinal;
         for (Node child : children) {
@@ -317,6 +322,20 @@ public final class DocumentGraph {
         }
         return new Node(Kind.LINE, line.nid(), line.text(), detail, member, ordinal, ordinal < 0 ? -1 : last, line.introduced(), null, line, null,
                 null, null, List.of(), null, List.copyOf(children));
+    }
+
+    /** Where a showing is from, for its document's tooltip: its path, and the tags of a showing by region. */
+    static String where(DocumentAssembly.Member member) {
+        if (member.path().isEmpty()) {
+            return "";
+        }
+        return member.tags().isEmpty() ? member.path() : member.path() + " · " + member.tags();
+    }
+
+    /** Whether a showing reads its file from its first line: only there do the lines retired before the first stand. */
+    private static boolean fromStart(DocumentAssembly.Member member) {
+        return member.whole() || (!member.shown().lines().isEmpty() && !member.document().lines().isEmpty()
+                && member.shown().lines().getFirst() == member.document().lines().getFirst());
     }
 
     /** A retired line's node: its last text, the retiring commit as its STAMP, spanning no line of the document as it stands. */
