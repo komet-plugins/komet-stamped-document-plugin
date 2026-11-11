@@ -301,6 +301,12 @@ public final class DocumentSurfaceView {
     private int modelOrdinal;
     /** How deep inside containers the print build is: only blocks outside any are top-level blocks of the model. */
     private int nesting;
+    /**
+     * How many lists hold the item being built: 1 for an item of a list that stands in no other. An
+     * item's bullet on the pages follows this, as Typst's does. An example, a sidebar, a quote, an
+     * open block or an admonition around a list is no list, and adds none.
+     */
+    private int listDepth;
 
     private final Host host;
     private final DocumentSurface surface;
@@ -1332,14 +1338,16 @@ public final class DocumentSurfaceView {
                     addProse(member, block, own, paragraphs(own, " ", st.bold(), t -> t.replaceFirst("^\\.", "")), depth, false, section);
                 }
                 nesting++;
+                listDepth++;
                 int n = 0;
                 for (StoredBlock item : children) {
                     render(member, item, depth + 1, ++n, section);
                 }
+                listDepth--;
                 nesting--;
             }
             case LIST_ITEM, BIBLIOGRAPHY_ENTRY -> {
-                String marker = block.kind() == Block.Kind.BIBLIOGRAPHY_ENTRY ? "▪" : ordinalMarker(own, ordinal, print ? depth : -1);
+                String marker = block.kind() == Block.Kind.BIBLIOGRAPHY_ENTRY ? "▪" : ordinalMarker(own, ordinal, print ? Math.max(0, listDepth - 1) : -1);
                 List<LineRunModel.Line> lines = new ArrayList<>();
                 for (int i = 0; i < own.size(); i++) {
                     String text = MARKER.matcher(own.get(i).text()).replaceFirst("").strip();
@@ -1741,9 +1749,12 @@ public final class DocumentSurfaceView {
         }
     }
 
-    /** The item's marker: its number, or the bullet — on pages Typst's bullet for the item's depth, on screen a plain one. */
+    /**
+     * The item's marker: its number, or the bullet — on pages Typst's bullet for the item's depth among
+     * lists, 0 for an item of a list that stands in no other; on screen, a negative depth, a plain one.
+     */
     private static String ordinalMarker(List<StoredLine> own, int ordinal, int depth) {
-        String bullet = depth < 0 ? "•" : network.ike.komet.document.print.ModelUnits.bullet(Math.max(0, depth - 1));
+        String bullet = depth < 0 ? "•" : network.ike.komet.document.print.ModelUnits.bullet(depth);
         if (own.isEmpty()) {
             return bullet;
         }
@@ -2611,6 +2622,7 @@ public final class DocumentSurfaceView {
         printNotes = new network.ike.komet.document.print.InlineText.Numbering();
         modelOrdinal = -1;
         nesting = 0;
+        listDepth = 0;
         try {
             renderMember(assembly.host(), 0, "");
         } finally {
