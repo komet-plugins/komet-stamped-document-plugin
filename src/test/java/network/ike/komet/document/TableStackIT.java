@@ -26,6 +26,7 @@ import javafx.scene.Node;
 import javafx.scene.Scene;
 import javafx.scene.control.Label;
 import javafx.scene.layout.GridPane;
+import javafx.scene.layout.StackPane;
 import javafx.stage.Stage;
 import network.ike.komet.document.GitDocumentMaterializer.StoredBlock;
 import network.ike.komet.document.GitDocumentMaterializer.StoredDocument;
@@ -132,7 +133,11 @@ class TableStackIT {
         DocumentSurface body = onFx(() -> new DocumentSurface(new BlockFactory(Calculators.View.Default(), 13)));
         Stage stage = onFx(() -> {
             Stage made = new Stage();
-            made.setScene(new Scene(body, 1300, 900));
+            // The window keeps one size and the card's width changes inside it, as a card's does in
+            // a journal. A stage made narrow and then wide again has Monocle's render thread throw
+            // "Too small int buffer size" for the first wide frame: on stderr only, so nothing
+            // fails, and the build report counts each line of the stack trace as a warning.
+            made.setScene(new Scene(new StackPane(body), 1300, 900));
             made.show();
             new DocumentSurfaceView(host(), body).show(DocumentAssembly.single(document, "table-stack.adoc"));
             return made;
@@ -158,7 +163,7 @@ class TableStackIT {
 
         // narrow: the table of sentences is stacked, and the table of short cells is still a grid
         onFx(() -> {
-            stage.setWidth(520);
+            body.setMaxWidth(520);
             return null;
         });
         pulses();
@@ -191,7 +196,7 @@ class TableStackIT {
 
         // wide again: the grid is back, with its header
         onFx(() -> {
-            stage.setWidth(1300);
+            body.setMaxWidth(Double.MAX_VALUE);
             return null;
         });
         pulses();

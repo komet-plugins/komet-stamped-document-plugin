@@ -26,6 +26,14 @@ package network.ike.komet.document;
  * error on stderr for every test JVM, which the build report counts as a warning. Monocle puts
  * nothing on the screen of a machine that has one, either.</p>
  *
+ * <p>Keep a shown stage at one size. A stage made smaller and then larger again has the render
+ * thread throw {@code IllegalArgumentException: Too small int buffer size} for the first larger
+ * frame: JavaFX reuses the larger frame's pixel buffer for the smaller one and, when the stage
+ * grows, takes it again at the smaller frame's length ({@code QueuedPixelSource.getUnusedPixels}).
+ * It is on stderr only, and the build report counts each line of the stack trace as a warning. To
+ * try a narrower card, put the node in a {@code StackPane} and set its max width, as
+ * {@code TableStackIT} does.</p>
+ *
  * <p>Tests whose assertions depend on native rendering ({@code PageDiagramIT},
  * {@code PageInlineIT}, {@code PageTableIT}) keep the native toolkit; the working set's
  * {@code .mvn/build-report.yaml} ignores that one macOS line for them.</p>
