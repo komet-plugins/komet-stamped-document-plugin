@@ -36,7 +36,10 @@ class DocumentRepositoryTest {
     @TempDir
     Path root;
 
-    /** A repository made here has only the runner's global identity to commit with. */
+    /**
+     * A repository made here has only a global identity to commit with. The build gives git one of
+     * its own ({@code GIT_CONFIG_GLOBAL} in the POM); run outside it, the tests take the runner's.
+     */
     @BeforeEach
     void aGitIdentityIsConfigured() throws Exception {
         assumeTrue(GitOperations.git(root, "config", "--global", "user.email").ok(), "no global git identity");

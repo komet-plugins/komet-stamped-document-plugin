@@ -1,0 +1,11 @@
+# The global git configuration of the unit tests: surefire names this file in
+# GIT_CONFIG_GLOBAL, so the git a test runs reads it in place of ~/.gitconfig.
+#
+# DocumentRepositoryTest and DocumentLibraryTest have the code under test make a
+# repository and its first commit, and that commit has only a global identity to
+# take. A build agent's user has none, so both classes were skipped there.
+# Nothing else is set: a test sees git's own defaults, and none of the hooks,
+# signing or helpers of the person or agent that runs the build.
+[user]
+	name = Test Author
+	email = author@example.test

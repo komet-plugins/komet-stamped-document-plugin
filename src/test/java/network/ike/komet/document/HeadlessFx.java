@@ -32,6 +32,16 @@ package network.ike.komet.document;
  */
 public final class HeadlessFx {
 
+    /**
+     * The headless screen, as Monocle's {@code headless.geometry} reads it: width, height and bits
+     * a pixel. Monocle's own screen is 1280 by 800, and a window taller than its screen makes the
+     * render thread throw {@code BufferOverflowException} from {@code UploadingPainter} on every
+     * frame it draws: on stderr only, so no test fails, and the build report counts each line of
+     * each stack trace as a warning. This screen holds the tallest scene a test here shows
+     * (900 by 1400).
+     */
+    static final String SCREEN = "1600x1600-32";
+
     private HeadlessFx() {
     }
 
@@ -44,6 +54,7 @@ public final class HeadlessFx {
         }
         System.setProperty("glass.platform", "Monocle");
         System.setProperty("monocle.platform", "Headless");
+        System.setProperty("headless.geometry", SCREEN);
         System.setProperty("prism.order", "sw");
         System.setProperty("prism.text", "t2k");
         System.setProperty("java.awt.headless", "true");
