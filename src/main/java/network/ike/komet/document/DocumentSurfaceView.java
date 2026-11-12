@@ -183,6 +183,9 @@ public final class DocumentSurfaceView {
         /** The surface switched a layer on itself, as it does the comments' when one is written: the card's menu follows. */
         default void layerShown(Layer layer) { }
 
+        /** The reader turned a layer on or off from the surface's menu: the card does what its own layer menu does. */
+        default void layerRequested(Layer layer, boolean on) { }
+
         /** What the reader has folded in the shown document, as the view's keys, to be given back by {@link #rememberedFolds}. */
         default void rememberFolds(List<String> keys) { }
 
@@ -355,7 +358,13 @@ public final class DocumentSurfaceView {
     private final Folding folding = new Folding();
     /** The document the folds belong to. */
     private dev.ikm.tinkar.common.id.PublicId foldedDocument;
-    private final MenuItem foldItem = new MenuItem("Fold");
+    /** Fold: what can be folded where the menu was asked for, from the block out to its section, and every fold at once. */
+    private final Menu foldMenu = new Menu("Fold");
+    /** Layers: what is drawn over the document, as the toolbar's layer menu has it. */
+    private final Menu layersMenu = new Menu("Layers");
+    private final Map<Layer, CheckMenuItem> layerItems = new java.util.EnumMap<>(Layer.class);
+    /** By showing: each block's parent in the document the showing reads, for the folds that take in a whole table or list. */
+    private final Map<DocumentAssembly.Member, Map<Long, StoredBlock>> parents = new java.util.IdentityHashMap<>();
     private final CheckMenuItem signItem = new CheckMenuItem("Sign annotations");
     private final MenuItem editItem = new MenuItem("Edit block");
     private final MenuItem deleteItem = new MenuItem("Delete block…");
@@ -592,7 +601,10 @@ public final class DocumentSurfaceView {
      * what the lines built from it need.
      */
     private final class Area {
-        final DocumentAssembly.Member member;
+        /** The showing the area belongs to: the same file's showing in a later reading of the document, when the area is kept. */
+        DocumentAssembly.Member member;
+        /** Whether the area is where its block is found by nid: the block's first showing that can be edited. */
+        boolean byBlock;
         final StoredBlock block;
         final List<StoredLine> lines;
         final LineRunModel.Spec spec;
@@ -602,6 +614,8 @@ public final class DocumentSurfaceView {
         final VBox holder;
         final boolean editable;
         final String section;
+        /** The caption drawn with the block, as it reads: a label, not text of the area, so Find reads it here. */
+        String captionText = "";
         /**
          * With the Passages left out layer on: every line the showing holds of the block, where the area
          * draws fewer, a conditional's directives among them. An edit or a mark saves these, so nothing
@@ -747,7 +761,7 @@ public final class DocumentSurfaceView {
             area.setEditable(false);
             area.setWrapText(!ledger);
             area.setUseContentHeight(true);
-            area.setDisplayCaret(false);
+            area.setDisplayCaret(true);                           // a click leaves a caret where it landed, as in any text; it shows in the text that has the focus
             area.setHighlightCurrentParagraph(false);
             area.setContentPadding(LEDGER_PADDING);
             area.getStyleClass().add("doc-prose-block");
@@ -850,11 +864,139 @@ public final class DocumentSurfaceView {
      * @param shown the host document with its children resolved
      */
     public void show(DocumentAssembly shown) {
+        show(shown, false);
+    }
+
+    /**
+     * Shows a document that was read again, after an edit, a mark or a comment: what a block drew
+     * the last time is kept where the block, and everything its drawing reads, is as it was, so
+     * only what changed is drawn again and the rest of the view does not move. A document that is
+     * not the one shown, or whose numbering, attributes, includes or references changed, is shown
+     * as {@link #show} shows it.
+     *
+     * @param shown the host document with its children resolved
+     */
+    public void showChanged(DocumentAssembly shown) {
+        show(shown, true);
+    }
+
+    /** What a block drew, and what its drawing read: its place among its parent's blocks and every line and block in it. */
+    private record Drawn(int depth, int ordinal, String section, List<StoredLine> lines, List<StoredBlock> blocks, List<Area> areas,
+                         int notesFrom, int notesTo) { }
+
+    /** By showing and block: what each block drew in the Reading view the last time, while {@link #drawnUnder} holds. */
+    private final Map<String, Drawn> drawn = new HashMap<>();
+    /** What every block's drawing reads beside its own lines: see {@link #readBy}. */
+    private List<Object> drawnUnder;
+    /** Whether this showing keeps what the last one drew. */
+    private boolean keeping;
+    private final Map<DocumentAssembly.Member, String> showings = new java.util.IdentityHashMap<>();
+    /** How many areas the last showing kept, and how many it drew: for the log and for tests. */
+    private int keptAreas;
+    private int drawnAreas;
+
+    /** @return how many areas of the Reading view the last showing kept from the one before */
+    int keptAreas() {
+        return keptAreas;
+    }
+
+    /** @return how many areas of the Reading view the last showing drew */
+    int drawnAreas() {
+        return drawnAreas;
+    }
+
+    /**
+     * What the drawing of any block may read beside the block's own lines: the files shown and
+     * their order, every attribute entry, conditional and include line, the numbers and words of
+     * the headings and captions, what the cross references find, and how the view is set. While
+     * two readings agree in all of it, a block whose own lines are unchanged draws the same.
+     */
+    private List<Object> readBy(DocumentAssembly shown) {
+        List<String> files = new ArrayList<>();
+        List<String> entries = new ArrayList<>();
+        for (DocumentAssembly.Member member : shown.members()) {
+            files.add(member.path() + '|' + member.tags() + '|' + member.depth());
+            for (StoredLine line : member.document().lines()) {
+                String text = line.text();
+                if (text.startsWith(":") || text.startsWith("include::") || text.startsWith("ifdef::") || text.startsWith("ifndef::")
+                        || text.startsWith("ifeval::") || text.startsWith("endif::")) {
+                    entries.add(line.nid() + "|" + text);
+                }
+            }
+        }
+        List<String> numbered = new ArrayList<>();
+        captions.headings().forEach(heading -> numbered.add(heading.block() + "|" + heading.level() + '|' + heading.read()));
+        captions.all().forEach(caption -> numbered.add(caption.block() + "|" + caption.text()));
+        List<Object> read = new ArrayList<>();
+        read.add(files);
+        read.add(entries);
+        read.add(numbered);
+        read.add(shown.targets().drawn());
+        read.add(List.copyOf(shown.set()));
+        read.add(st);
+        read.add(st.base());
+        read.add(host.view());
+        read.add(past);
+        return read;
+    }
+
+    /** A showing's name across readings of the document: its file, its tags, and which showing of them it is. */
+    private String showing(DocumentAssembly.Member member) {
+        if (showings.isEmpty()) {
+            Map<String, Integer> seen = new HashMap<>();
+            for (DocumentAssembly.Member each : assembly.members()) {
+                String file = each.path() + '|' + each.tags();
+                showings.put(each, file + '#' + seen.merge(file, 1, Integer::sum));
+            }
+        }
+        return showings.getOrDefault(member, member.path() + '|' + member.tags());
+    }
+
+    /** Every line and block under a block, in document order, and whether any of the lines is an include. */
+    private boolean under(DocumentAssembly.Member member, StoredDocument document, StoredBlock block, List<StoredLine> lines, List<StoredBlock> held) {
+        boolean includes = false;
+        held.add(block);
+        for (long nid : block.members()) {
+            Optional<StoredLine> line = document.line(nid);
+            if (line.isPresent()) {
+                lines.add(line.get());
+                includes |= assembly.includeOf(member, nid).isPresent();
+            } else {
+                StoredBlock child = document.blocks().get(nid);
+                if (child != null) {
+                    includes |= under(member, document, child, lines, held);
+                }
+            }
+        }
+        return includes;
+    }
+
+    private static boolean same(List<?> one, List<?> other) {
+        if (one.size() != other.size()) {
+            return false;
+        }
+        for (int i = 0; i < one.size(); i++) {
+            if (one.get(i) != other.get(i) && !one.get(i).equals(other.get(i))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private void show(DocumentAssembly shown, boolean keep) {
         hidePopover();
+        if (keep) {
+            // a block that is kept must be as a reader's block is: one left open for editing, or with a note being
+            // written beside it, would stay so with nothing to close it
+            cancelEdit();
+            closeComposer(false);
+        }
         editing = null;
+        boolean sameAsShown = keep && assembly != null && view == View.READING && !layers.contains(Layer.LEFT_OUT)
+                && assembly.host().document().anchor().equals(shown.host().document().anchor());
         assembly = shown;
-        // the structured blocks of this document read each other here: trees folded in, statements named, values computed
-        blocks = new BlockContext();
+        showings.clear();
+        parents.clear();
         conditions = null;
         leftIn.clear();
         printed.clear();
@@ -866,6 +1008,12 @@ public final class DocumentSurfaceView {
         foldedDocument = shown.host().document().anchor();
         // the same document read again, after a mark or an edit, stands where the reader had it
         DocumentSurface.Viewpoint place = sameDocument && (view == View.READING || view == View.SOURCE) ? surface.viewpoint() : null;
+        // the block at the top of the view, by itself: where blocks are kept, it is found again wherever it now stands
+        network.ike.komet.document.surface.DocumentBlock top = sameAsShown && place != null && place.blockIndex() >= 0
+                && place.blockIndex() < surface.blockCount() ? surface.block(place.blockIndex()) : null;
+        if (focused != null && focused.holder != null) {
+            focused.holder.setStyle("");                              // a block that is kept does not keep the focus bar of the reading before
+        }
         areas.clear();
         pages.clear();
         pageLines.clear();
@@ -885,22 +1033,55 @@ public final class DocumentSurfaceView {
         String title = document.attributes().isEmpty() ? "" : document.attributes().getFirst();
         network.ike.komet.document.print.DocumentModel.Lists matter = network.ike.komet.document.print.StoredDocumentModel.lists(document);
         captions = Captions.of(shown, DocumentSurfaceView::isFigure, matter.sectionNumbers() ? matter.sectionLevels() : 0);
+        List<Object> read = readBy(shown);
+        keeping = sameAsShown && !drawn.isEmpty() && read.equals(drawnUnder);
+        drawnUnder = read;
+        if (!keeping) {
+            drawn.clear();
+            // the structured blocks of this document read each other here: trees folded in, statements named, values computed.
+            // Blocks that are kept go on reading the one they were drawn in.
+            blocks = new BlockContext();
+        }
+        keptAreas = 0;
         noteHomes = null;
         composing = null;
         readingNotes = new network.ike.komet.document.print.InlineText.Numbering();
+        long t0 = System.nanoTime();
         renderMember(shown.host(), 0, "");
+        long t1 = System.nanoTime();
         if (title.isEmpty() && document.root() != null) {
             title = document.root().title();
         }
         headerTitle.setText(title.isEmpty() ? StampNames.name(host.view(), dev.ikm.tinkar.common.service.PrimitiveData.nid(document.anchor())) : title);
         headerSection.setText("");
         buildSource(shown);
+        long t2 = System.nanoTime();
         folding.clear();
         folding.restore(foldKeys, key -> areaIndexOf(key), this::levelAt, areas.size());
         drawLeftOut();
-        stack();
-        if (place != null && place.blockIndex() >= 0 && place.blockIndex() < surface.blockCount()) {
-            surface.restoreViewpoint(new DocumentSurface.Viewpoint(place.blockIndex(), place.fraction(), null));
+        drawnAreas = areas.size() - keptAreas;
+        stack(keeping);
+        if (keeping) {
+            // what a margin shows depends on the block above it, which may be one of those drawn again
+            for (Area area : areas) {
+                fillMarginalia(area);
+            }
+        }
+        LOG.info("Drew {} reading block(s) and kept {} in {} ms, the source view in {} ms, and stacked the view shown in {} ms",
+                drawnAreas, keptAreas, (t1 - t0) / 1_000_000, (t2 - t1) / 1_000_000, (System.nanoTime() - t2) / 1_000_000);
+        if (place != null) {
+            int at = place.blockIndex();
+            if (top != null) {
+                for (int i = 0; i < areas.size(); i++) {
+                    if (areas.get(i).documentBlock == top) {
+                        at = i;
+                        break;
+                    }
+                }
+            }
+            if (at >= 0 && at < surface.blockCount()) {
+                surface.restoreViewpoint(new DocumentSurface.Viewpoint(at, place.fraction(), null));
+            }
         }
         selectAgain();
     }
@@ -1094,6 +1275,11 @@ public final class DocumentSurfaceView {
 
     /** Stacks the current view's blocks on the surface and draws the selection. */
     private void stack() {
+        stack(false);
+    }
+
+    /** @param keep whether the surface keeps the blocks it already shows that are still among the view's */
+    private void stack(boolean keep) {
         if (view == View.PAGE_LAYOUT || view == View.GRAPH) {
             return;                                              // the card shows the pages or the graph in the surface's place
         }
@@ -1104,7 +1290,12 @@ public final class DocumentSurfaceView {
             for (int i = 0; i < areas.size(); i++) {
                 areas.get(i).above = i == 0 ? null : areas.get(i - 1);
             }
-            surface.setBlocks(areas.stream().map(a -> a.documentBlock).toList());
+            List<network.ike.komet.document.surface.DocumentBlock> stacked = areas.stream().map(a -> a.documentBlock).toList();
+            if (keep) {
+                surface.updateBlocks(stacked);
+            } else {
+                surface.setBlocks(stacked);
+            }
             applyFolds();
         } else {
             surface.setMarginTracks(0, 0);
@@ -1395,6 +1586,44 @@ public final class DocumentSurfaceView {
 
     /** Renders one block of a member and its members into the Reading view's areas. */
     private void render(DocumentAssembly.Member member, StoredBlock block, int depth, int ordinal, String section) {
+        if (print || target != areas) {
+            draw(member, block, depth, ordinal, section);
+            return;
+        }
+        // The Reading view remembers what each block drew. A block whose lines, and the lines of every block in it, are
+        // as they were the last time, in the same place among its parent's blocks, is not drawn again: its areas are
+        // put back as they stand. A block that holds an include is drawn each time, since what it shows is another file's.
+        List<StoredLine> lines = new ArrayList<>();
+        List<StoredBlock> held = new ArrayList<>();
+        boolean includes = under(member, reads(member), block, lines, held);
+        String key = showing(member) + ':' + block.nid();
+        String under = section == null ? "" : section;
+        Drawn last = drawn.get(key);
+        if (keeping && last != null && !includes && last.depth() == depth && last.ordinal() == ordinal && last.section().equals(under)
+                && last.notesFrom() == readingNotes.last() && same(last.lines(), lines) && same(last.blocks(), held)) {
+            for (Area area : last.areas()) {
+                area.member = member;
+                target.add(area);
+                if (area.byBlock) {
+                    areasByBlock.putIfAbsent(area.block.nid(), area);
+                }
+            }
+            readingNotes.countedTo(last.notesTo());
+            keptAreas += last.areas().size();
+            return;
+        }
+        int from = target.size();
+        int notesFrom = readingNotes.last();
+        int names = readingNotes.names();
+        draw(member, block, depth, ordinal, section);
+        if (includes || readingNotes.names() != names) {
+            drawn.remove(key);                                    // a note counted by name is read by the blocks after it
+        } else {
+            drawn.put(key, new Drawn(depth, ordinal, under, lines, held, List.copyOf(target.subList(from, target.size())), notesFrom, readingNotes.last()));
+        }
+    }
+
+    private void draw(DocumentAssembly.Member member, StoredBlock block, int depth, int ordinal, String section) {
         StoredDocument document = reads(member);
         List<StoredLine> own = new ArrayList<>();
         List<StoredBlock> children = new ArrayList<>();
@@ -1898,6 +2127,276 @@ public final class DocumentSurfaceView {
                 return;
             }
         }
+    }
+
+    // ── find ──────────────────────────────────────────────────────────────────
+
+    /**
+     * Every place a text stands in the view shown, in reading order, whatever its case: in the
+     * text of the Reading view's blocks and in the captions of its figures and tables, or in the
+     * lines of the Source view. The pages and the graph are not read: they are other drawings of
+     * the same lines, and a match is shown where the lines are text.
+     *
+     * @param text the text to find; blank finds nothing
+     * @return the matches, each naming its block by its place in the view
+     */
+    List<Match> find(String text) {
+        if (text == null || text.isBlank() || view == View.PAGE_LAYOUT || view == View.GRAPH) {
+            return List.of();
+        }
+        List<Match> found = new ArrayList<>();
+        if (view != View.READING) {
+            for (DocumentSurface.DocumentMatch match : surface.findAll(text)) {
+                found.add(new Match(match.blockIndex(), -1, match.paragraphIndex(), match.start(), match.end(), match.selectable()));
+            }
+            return found;
+        }
+        Map<Integer, List<DocumentSurface.DocumentMatch>> inText = new HashMap<>();
+        for (DocumentSurface.DocumentMatch match : surface.findAll(text)) {
+            inText.computeIfAbsent(match.blockIndex(), i -> new ArrayList<>()).add(match);
+        }
+        String needle = text.toLowerCase(java.util.Locale.ROOT);
+        for (int i = 0; i < areas.size(); i++) {
+            Area area = areas.get(i);
+            List<DocumentSurface.DocumentMatch> own = inText.getOrDefault(i, List.of());
+            int before = found.size();
+            if (!area.cells.isEmpty()) {
+                // a table row is drawn as its cells, each a text of its own: the words are found where they are drawn
+                for (int c = 0; c < area.cells.size(); c++) {
+                    LineRunModel words = area.cells.get(c).model;
+                    if (words != null) {
+                        for (dev.ikm.komet.markdown.richtext.RichTextSearch.Match match : dev.ikm.komet.markdown.richtext.RichTextSearch.findAll(words, text)) {
+                            found.add(new Match(i, c, match.paragraphIndex(), match.start(), match.end(), true));
+                        }
+                    }
+                }
+            } else if (area.area != null && !area.area.isVisible()) {
+                // a block drawn as a figure, its source out of sight: found once, and shown by the figure
+                if (!own.isEmpty()) {
+                    found.add(new Match(i, -1, -1, -1, -1, false));
+                }
+            } else {
+                for (DocumentSurface.DocumentMatch match : own) {
+                    found.add(new Match(i, -1, match.paragraphIndex(), match.start(), match.end(), match.selectable()));
+                }
+            }
+            // a caption is a label; where the block's own text holds its words, they are found there already
+            if (found.size() == before && area.captionText.toLowerCase(java.util.Locale.ROOT).contains(needle)) {
+                found.add(new Match(i, -1, -1, -1, -1, false));
+            }
+        }
+        return found;
+    }
+
+    /**
+     * One place a text was found in the view shown.
+     *
+     * @param blockIndex     the block, by its place in the view
+     * @param cell           which cell of a table row the words are in, or -1 for the block's own text
+     * @param paragraphIndex the paragraph of that text, or -1 for a match shown by its block alone
+     * @param start          where the words begin in the paragraph
+     * @param end            where they end
+     * @param selectable     whether the words can be selected where they are drawn: a caption's and a figure's cannot
+     */
+    record Match(int blockIndex, int cell, int paragraphIndex, int start, int end, boolean selectable) {
+
+        /** @return whether this match stands before another in the view */
+        boolean before(Match other) {
+            if (blockIndex != other.blockIndex) {
+                return blockIndex < other.blockIndex;
+            }
+            if (cell != other.cell) {
+                return cell < other.cell;
+            }
+            if (paragraphIndex != other.paragraphIndex) {
+                return paragraphIndex < other.paragraphIndex;
+            }
+            return start < other.start;
+        }
+
+        private DocumentSurface.DocumentMatch inBlock() {
+            return new DocumentSurface.DocumentMatch(blockIndex, cell < 0 ? paragraphIndex : -1, cell < 0 ? start : -1, cell < 0 ? end : -1,
+                    selectable && cell < 0);
+        }
+    }
+
+    /** The text of a table cell that holds the match last shown, whose selection is taken away with the match. */
+    private RichTextArea matchedCell;
+
+    /**
+     * Goes to a match: opens any fold that hides its block, scrolls to it, and selects the words
+     * where they are drawn, in the block's text or in a table cell's. A caption's match, and a
+     * figure's, is shown by its block alone.
+     *
+     * @param match a match of {@link #find}
+     */
+    void showMatch(Match match) {
+        if (view == View.PAGE_LAYOUT || view == View.GRAPH) {
+            return;
+        }
+        if (view == View.READING && match.blockIndex() < areas.size()) {
+            unfoldToShow(match.blockIndex());
+        }
+        clearMatch();
+        DocumentSurface.DocumentMatch inBlock = match.inBlock();
+        surface.select(inBlock);
+        if (match.cell() >= 0 && view == View.READING && match.blockIndex() < areas.size() && match.cell() < areas.get(match.blockIndex()).cells.size()) {
+            RichTextArea cell = areas.get(match.blockIndex()).cells.get(match.cell()).rta;
+            if (inWindow(cell)) {
+                cell.select(jfx.incubator.scene.control.richtext.TextPos.ofLeading(match.paragraphIndex(), match.start()),
+                        jfx.incubator.scene.control.richtext.TextPos.ofLeading(match.paragraphIndex(), match.end()));
+                matchedCell = cell;
+            }
+            settleOn(match.blockIndex(), 3);
+        } else if (!match.selectable()) {
+            settleOn(match.blockIndex(), 3);
+        } else {
+            // far from where the reader was, the blocks on the way are built as they are scrolled past and move the
+            // target down the stack: the match is shown again once they have their heights
+            javafx.application.Platform.runLater(() -> javafx.application.Platform.runLater(() -> surface.select(inBlock)));
+        }
+    }
+
+    /**
+     * Replaces the words of a match with other words, in the source of the lines they are drawn
+     * from, and saves the block as an uncommitted edit, as a mark over selected words is saved:
+     * the match is selected as a reader would select it, its words are found in the source, and
+     * the source between them is replaced. A match that cannot be placed exactly, as one inside a
+     * caption, a heading or a table cell, or one that takes half of a marked phrase, is left as
+     * it stands and the status says why.
+     *
+     * @param match a match of {@link #find}
+     * @param with  the words to put in its place; empty takes the match away
+     * @return whether an edit was begun: the host reads the document again when it is saved
+     */
+    boolean replaceMatch(Match match, String with) {
+        if (view == View.PAGE_LAYOUT || view == View.GRAPH) {
+            host.status("Find and replace work in the Reading and Source views.");
+            return false;
+        }
+        if (match.cell() >= 0) {
+            host.status("A table cell's words are changed in the table's source: Edit block opens it.");
+            return false;
+        }
+        if (!match.selectable()) {
+            host.status("A caption's words, and a figure's, are changed in the block's source: Edit block opens it.");
+            return false;
+        }
+        if (view == View.READING && match.blockIndex() < areas.size()) {
+            unfoldToShow(match.blockIndex());
+        }
+        clearMatch();
+        clearExact();
+        surface.select(match.inBlock());                          // the control's selection is taken as the reader's own
+        return replaceSelection(with == null ? "" : with);
+    }
+
+    /** Writes other words in place of the words selected; see {@link #replaceMatch} and {@link #markSelection}. */
+    private boolean replaceSelection(String with) {
+        selectionBar.hide();
+        if (editing != null) {
+            host.status("Finish the edit in progress first: Save or Cancel it.");
+            return false;
+        }
+        if (past) {
+            host.status("The document is read as of a past time, which is not edited: move the view's time to the latest to change it.");
+            return false;
+        }
+        if (!wordsSelected() || exactModel == null || exactModel.get() == null) {
+            host.status("The words found could not be selected to replace them.");
+            return false;
+        }
+        LineRunModel model = exactModel.get();
+        boolean forward = exactAnchor.compareTo(exactCaret) <= 0;
+        jfx.incubator.scene.control.richtext.TextPos min = forward ? exactAnchor : exactCaret;
+        jfx.incubator.scene.control.richtext.TextPos max = forward ? exactCaret : exactAnchor;
+        Optional<LineRun> firstRun = model.runAt(min);
+        Optional<LineRun> lastRun = max.offset() > 0 ? model.runAt(jfx.incubator.scene.control.richtext.TextPos.ofLeading(max.index(), max.offset() - 1))
+                : model.runs(max.index() - 1).isEmpty() ? model.runAt(max) : Optional.of(model.runs(max.index() - 1).getLast());
+        Optional<Area> home = firstRun.flatMap(run -> blockAreaOf(run.nid()));
+        boolean inline = exactArea != null && exactArea.inline;
+        // prose read with its markup gone is placed in the source as a mark's words are; text drawn as written is its source
+        if (firstRun.isEmpty() || lastRun.isEmpty() || home.isEmpty() || inline && !marksIn(home.get().block)) {
+            host.status("Words are replaced in a paragraph, a list item or an admonition, or in the Source view: elsewhere, Edit block opens the source.");
+            return false;
+        }
+        LineRun first = firstRun.get();
+        LineRun last = lastRun.get();
+        Area block = home.get();
+        List<StoredLine> stored = block.saved();
+        List<String> lines = new ArrayList<>(stored.stream().map(StoredLine::text).toList());
+        int a = -1;
+        int b = -1;
+        for (int i = 0; i < stored.size(); i++) {
+            if (stored.get(i).nid() == first.nid()) {
+                a = i;
+            }
+            if (stored.get(i).nid() == last.nid()) {
+                b = i;
+            }
+        }
+        if (a < 0 || b < a) {
+            host.status("The words found run from one block into another: they are replaced in each block's source with Edit block.");
+            return false;
+        }
+        Share from = share(exactArea, model, first);
+        Share to = share(exactArea, model, last);
+        int start = from.base() + Math.max(0, min.offset() - first.start());
+        int end = to.base() + (last.paragraph() == max.index() ? Math.max(0, max.offset() - last.start()) : last.end() - last.start());
+        if (a == b) {
+            Optional<SourceSpan.Located> at = SourceSpan.locate(lines.get(a), inline, from.text(), start, end);
+            if (at.isEmpty()) {
+                host.status("Those words cannot be replaced where they stand: they hold something other than words, or half of a marked phrase. Edit block opens the source.");
+                return false;
+            }
+            String line = lines.get(a);
+            lines.set(a, line.substring(0, at.get().from()) + with + line.substring(at.get().to()));
+        } else {
+            // words that run over lines of the source: the lines become one, the words between its two ends replaced
+            java.util.OptionalInt opens = SourceSpan.start(lines.get(a), inline, from.text(), start);
+            java.util.OptionalInt closes = SourceSpan.end(lines.get(b), inline, to.text(), end);
+            if (opens.isEmpty() || closes.isEmpty()) {
+                host.status("Those words cannot be replaced where they stand: a marked phrase begins or ends among them. Edit block opens the source.");
+                return false;
+            }
+            lines.set(a, lines.get(a).substring(0, opens.getAsInt()) + with + lines.get(b).substring(closes.getAsInt()));
+            for (int i = b; i > a; i--) {
+                lines.remove(i);
+            }
+        }
+        reselect = null;
+        clearExact();
+        host.saveEdit(block.block, String.join("\n", lines));
+        return true;
+    }
+
+    /** @return where the reader is in the view shown, to be put back with {@link #restore}; null before any layout */
+    DocumentSurface.Viewpoint place() {
+        return view == View.READING || view == View.SOURCE ? surface.viewpoint() : null;
+    }
+
+    /** Puts the reader back where {@link #place} found them. */
+    void restore(DocumentSurface.Viewpoint place) {
+        if (place != null && (view == View.READING || view == View.SOURCE) && place.blockIndex() >= 0 && place.blockIndex() < surface.blockCount()) {
+            surface.restoreViewpoint(new DocumentSurface.Viewpoint(place.blockIndex(), place.fraction(), null));
+        }
+    }
+
+    /** Takes the selection of the last match shown away. */
+    void clearMatch() {
+        surface.clearSelection();
+        if (matchedCell != null) {
+            if (inWindow(matchedCell)) {
+                matchedCell.clearSelection();
+            }
+            matchedCell = null;
+        }
+    }
+
+    /** @return the place in the view of the block at the top of the viewport, or zero before any layout */
+    int topBlock() {
+        DocumentSurface.Viewpoint at = surface.viewpoint();
+        return at == null ? 0 : Math.max(0, at.blockIndex());
     }
 
     /**
@@ -2551,6 +3050,7 @@ public final class DocumentSurfaceView {
             network.ike.komet.document.print.InlineText read = network.ike.komet.document.print.InlineText.of(
                     assembly.reading(area.member).text(captions.text(block), assembly.attributes(area.member, block)), readingNotes);
             Label title = new Label(read.text());
+            area.captionText = read.text();
             title.setFont(Font.font("System", javafx.scene.text.FontWeight.BOLD, 13));
             title.setWrapText(true);                                     // a figure's title is read whole, not cut to the column
             title.setMaxWidth(Double.MAX_VALUE);
@@ -2673,7 +3173,8 @@ public final class DocumentSurfaceView {
                 DocumentAssembly.Member child = part.include().child();
                 int before = target.size();
                 renderMember(child, depth, section);
-                if (target.size() > before && !print) {
+                if (target.size() > before && !print && target.get(before).holder.getChildren().stream()
+                        .noneMatch(n -> n.getStyleClass().contains("stamped-document-member-path"))) {     // an area kept from the last reading has it
                     // the file, the region of it this include shows, and any tag the include names that the file does not have
                     Label path = new Label("↳ " + child.path() + (child.tags().isEmpty() ? "" : " · " + child.tags())
                             + (part.include().note().isEmpty() ? "" : " — " + part.include().note()));
@@ -2738,6 +3239,7 @@ public final class DocumentSurfaceView {
         }
         if (block != null && editable) {
             areasByBlock.putIfAbsent(block.nid(), area);              // a block shown twice is found by nid where it is first shown
+            area.byBlock = true;
         }
         area.holder.getChildren().add(area.area);
         if (leftOutShown() && !lines.isEmpty()) {
@@ -2791,6 +3293,14 @@ public final class DocumentSurfaceView {
                 .whenRealized(() -> {
                     fillMarginalia(area);
                     bindFoldMark(area);
+                    // a right-click beside the text, in either margin, asks for the menu as one in the text does
+                    Node row = area.documentBlock == null ? null : area.documentBlock.stackNode();
+                    if (row != null) {
+                        row.setOnContextMenuRequested(e -> {
+                            showMarginMenu(area, row, e.getScreenX(), e.getScreenY());
+                            e.consume();
+                        });
+                    }
                 });
         return area;
     }
@@ -2956,25 +3466,6 @@ public final class DocumentSurfaceView {
                 host.status("This section has nothing under its heading to fold.");
                 return;
             }
-        }
-        foldsChanged();
-    }
-
-    /** Folds the blocks the selection touches, or opens the fold the selection's first block anchors. */
-    private void toggleSelection() {
-        int[] span = selectedAreas();
-        if (span == null) {
-            return;
-        }
-        if (folding.at(span[0]).isPresent()) {
-            folding.unfold(span[0]);
-        } else if (span[0] == span[1] && levelAt(span[0]) >= 1) {
-            if (folding.foldSection(span[0], Folding.sectionEnd(this::levelAt, areas.size(), span[0])).isEmpty()) {
-                host.status("This section has nothing under its heading to fold.");
-                return;
-            }
-        } else {
-            folding.foldRun(span[0], span[1]);
         }
         foldsChanged();
     }
@@ -4457,7 +4948,7 @@ public final class DocumentSurfaceView {
             rta.setEditable(false);
             rta.setWrapText(true);
             rta.setUseContentHeight(true);
-            rta.setDisplayCaret(false);
+            rta.setDisplayCaret(true);
             rta.setHighlightCurrentParagraph(false);
             rta.setContentPadding(new Insets(3, 6, 3, 6));
             rta.getStyleClass().addAll("doc-prose-block", "doc-table-cell-text");
@@ -4506,7 +4997,14 @@ public final class DocumentSurfaceView {
         // a cross reference or a citation that found its target is a link: the pointer says so, and a click goes there
         rta.addEventHandler(MouseEvent.MOUSE_MOVED, e -> {
             boolean link = area != editing && model.get().internalLinkAt(rta.getTextPosition(e.getScreenX(), e.getScreenY())).isPresent();
-            rta.setCursor(link ? Cursor.HAND : null);
+            // the control's own text pane asks for the text cursor, and a node's cursor is shown before its parent's:
+            // the hand set on the control alone was never seen
+            Node text = textPane(rta, e);
+            if (text != null) {
+                text.setCursor(link ? Cursor.HAND : Cursor.TEXT);
+            } else {
+                rta.setCursor(link ? Cursor.HAND : null);
+            }
         });
         rta.addEventHandler(MouseEvent.MOUSE_CLICKED, e -> {
             if (area == editing || e.getButton() != MouseButton.PRIMARY || e.isShiftDown() || !e.isStillSincePress() || e.getClickCount() != 1) {
@@ -4579,19 +5077,247 @@ public final class DocumentSurfaceView {
                     host.selectionChanged();
                 }
             }
-            selectionBar.hide();
-            boolean structural = editableBlockOfSelection().isEmpty() || editing != null;
-            editItem.setDisable(structural);
-            deleteItem.setDisable(structural);
-            insertMenu.setDisable(structural);
-            formatMenu.setDisable(editing != null ? editing.structuredEditor != null : !canMark());
-            refreshInsertMenu();
-            refreshFoldItem();
-            signItem.setSelected(host.signsAnnotations());
-            viewItems.forEach((candidate, item) -> item.setSelected(candidate == view));
-            menu.show(rta, e.getScreenX(), e.getScreenY());
+            showMenu(area, rta, e.getScreenX(), e.getScreenY());
             e.consume();
         });
+    }
+
+    /** Shows the surface's menu for the selection as it stands, with what can be folded where it was asked for. */
+    private void showMenu(Area area, Node at, double screenX, double screenY) {
+        selectionBar.hide();
+        boolean structural = editableBlockOfSelection().isEmpty() || editing != null;
+        editItem.setDisable(structural);
+        deleteItem.setDisable(structural);
+        insertMenu.setDisable(structural);
+        formatMenu.setDisable(editing != null ? editing.structuredEditor != null : !canMark());
+        refreshInsertMenu();
+        refreshFoldMenu(area);
+        layerItems.forEach((layer, item) -> item.setSelected(layers.contains(layer)));
+        signItem.setSelected(host.signsAnnotations());
+        viewItems.forEach((candidate, item) -> item.setSelected(candidate == view));
+        menu.show(at, screenX, screenY);
+    }
+
+    /**
+     * The menu asked for beside a block, in its margins or the room around its text: the block's
+     * lines become the selection, unless they are within it already, and the menu is the one the
+     * text has, so that a fold, a layer, a comment or an edit is one right-click from the margin.
+     */
+    private void showMarginMenu(Area area, Node at, double screenX, double screenY) {
+        if (area == editing || view != View.READING || area.lines.isEmpty()) {
+            return;
+        }
+        hidePopover();
+        int first = ordinal(area, area.lines.getFirst().nid());
+        int last = ordinal(area, area.lines.getLast().nid());
+        if (first >= 0 && last >= 0 && (selection == null || !selection.contains(first) || !selection.contains(last))) {
+            clearExact();
+            selection = new LineSelection(first, last);
+            focus(area);
+            render();
+            host.selectionChanged();
+        }
+        showMenu(area, at, screenX, screenY);
+    }
+
+    // ── folds by what a block is and what it is in ────────────────────────────
+
+    /**
+     * Fills the Fold menu for the block the menu was asked at: the fold it anchors, to open; the
+     * blocks selected, when more than one; the block itself, by what it is; each table, list or
+     * other block it stands in; each section around it, nearest first; and every section, or
+     * every fold, at once.
+     */
+    private void refreshFoldMenu(Area area) {
+        foldMenu.getItems().clear();
+        int index = area == null ? -1 : areas.indexOf(area);
+        if (view != View.READING || index < 0) {
+            foldMenu.setDisable(true);
+            return;
+        }
+        foldMenu.setDisable(false);
+        if (folding.at(index).isPresent()) {
+            foldMenu.getItems().add(foldEntry("Unfold", "stampedDocumentUnfold", () -> folding.unfold(index)));
+        }
+        int[] span = selectedAreas();
+        if (span != null && span[1] > span[0]) {
+            foldMenu.getItems().add(foldEntry("Fold the " + (span[1] - span[0] + 1) + " blocks selected", "stampedDocumentFoldSelection",
+                    () -> folding.foldRun(span[0], span[1])));
+        }
+        java.util.Set<String> offered = new java.util.HashSet<>();
+        if (area.block != null && levelAt(index) < 0) {
+            // the block, then what it stands in: a row's table, an item's list, a paragraph's example or sidebar
+            StoredBlock at = area.block;
+            while (at != null && at.kind() != Block.Kind.DOCUMENT && at.kind() != Block.Kind.SECTION) {
+                int[] run = runOf(index, at);
+                String word = wordFor(at);
+                if (run != null && word != null && offered.add(run[0] + ":" + run[1])) {
+                    foldMenu.getItems().add(foldEntry("Fold " + word, "stampedDocumentFold" + DocumentInserts.camel(at.kind().name().toLowerCase(java.util.Locale.ROOT)),
+                            () -> folding.foldRun(run[0], run[1])));
+                }
+                at = parentOf(area.member, at);
+            }
+        }
+        // the sections around the block, nearest first
+        int level = Integer.MAX_VALUE;
+        for (int i = index; i >= 0; i--) {
+            int here = levelAt(i);
+            if (here >= 1 && here < level) {
+                int heading = i;
+                int end = Folding.sectionEnd(this::levelAt, areas.size(), heading);
+                level = here;
+                if (end >= index && end > heading) {
+                    String title = foldKey(heading).replaceFirst("^=+\\s*", "");
+                    foldMenu.getItems().add(foldEntry("Fold section “" + (title.length() > 48 ? title.substring(0, 47) + "…" : title) + "”",
+                            "stampedDocumentFoldSection", () -> folding.foldSection(heading, end)));
+                }
+            }
+        }
+        foldMenu.getItems().add(new SeparatorMenuItem());
+        foldMenu.getItems().add(foldEntry("Fold every section", "stampedDocumentFoldAll", this::foldEverySection));
+        MenuItem open = foldEntry("Unfold everything", "stampedDocumentUnfoldAll", folding::clear);
+        open.setDisable(folding.isEmpty());
+        foldMenu.getItems().add(open);
+    }
+
+    /** @return what the Fold menu offers at a block of the Reading view, by its place: for tests and automation */
+    List<String> foldsOffered(int index) {
+        refreshFoldMenu(areas.get(index));
+        return foldMenu.getItems().stream().filter(item -> !(item instanceof SeparatorMenuItem) && !item.isDisable()).map(MenuItem::getText).toList();
+    }
+
+    /** Chooses one of the folds {@link #foldsOffered} names, as a click on it does. */
+    void fold(int index, String offered) {
+        refreshFoldMenu(areas.get(index));
+        foldMenu.getItems().stream().filter(item -> offered.equals(item.getText())).findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("no fold “" + offered + "” is offered there")).fire();
+    }
+
+    /** @return whether a block of the Reading view is folded away: hidden, or standing as the line that says what is folded */
+    boolean folded(int index) {
+        return folding.hidden(index) || folding.at(index).map(fold -> !fold.atHeading()).orElse(false);
+    }
+
+    private MenuItem foldEntry(String text, String id, Runnable fold) {
+        MenuItem item = new MenuItem(text);
+        item.setId(id);
+        item.setOnAction(e -> {
+            fold.run();
+            foldsChanged();
+        });
+        return item;
+    }
+
+    /** Folds every outermost section: each heading at the shallowest level the document has below its title. */
+    private void foldEverySection() {
+        int outermost = Integer.MAX_VALUE;
+        for (int i = 0; i < areas.size(); i++) {
+            int level = levelAt(i);
+            if (level >= 1) {
+                outermost = Math.min(outermost, level);
+            }
+        }
+        for (int i = 0; i < areas.size(); i++) {
+            if (levelAt(i) == outermost) {
+                folding.foldSection(i, Folding.sectionEnd(this::levelAt, areas.size(), i));
+            }
+        }
+    }
+
+    /** What a fold of a block is called: the block's kind as a reader names it; null for a kind that is never folded by itself. */
+    private static String wordFor(StoredBlock block) {
+        Optional<StructuredBlockKind> drawn = StructuredBlocks.kindOf(block);
+        if (drawn.isPresent()) {
+            return drawn.get().name();
+        }
+        return switch (block.kind()) {
+            case PARAGRAPH -> "paragraph";
+            case LISTING -> "listing";
+            case LITERAL -> "literal block";
+            case EXAMPLE -> "example";
+            case QUOTE -> "quote";
+            case SIDEBAR -> "sidebar";
+            case OPEN -> "block";
+            case ADMONITION -> "note";
+            case TABLE -> "table";
+            case LIST -> "list";
+            case LIST_ITEM -> "list item";
+            case DIAGRAM -> "diagram";
+            case IMAGE -> "image";
+            case BIBLIOGRAPHY_ENTRY -> "reference";
+            default -> null;
+        };
+    }
+
+    /** A block's parent in the document its showing reads; null for the root. */
+    private StoredBlock parentOf(DocumentAssembly.Member member, StoredBlock block) {
+        if (member == null || block == null) {
+            return null;
+        }
+        return parents.computeIfAbsent(member, m -> {
+            Map<Long, StoredBlock> found = new HashMap<>();
+            for (StoredBlock each : reads(m).blocks().values()) {
+                for (long nid : each.members()) {
+                    found.put(nid, each);
+                }
+            }
+            return found;
+        }).get(block.nid());
+    }
+
+    /**
+     * The areas a block is drawn as, with every block in it, around one of them: the run of
+     * areas, unbroken, whose blocks are the block or stand in it. Null when the area is not one.
+     */
+    private int[] runOf(int index, StoredBlock block) {
+        Area area = areas.get(index);
+        java.util.Set<Long> within = new java.util.HashSet<>();
+        collect(reads(area.member), block, within);
+        if (area.block == null || !within.contains(area.block.nid())) {
+            return null;
+        }
+        int from = index;
+        int to = index;
+        while (from > 0 && inRun(areas.get(from - 1), area.member, within)) {
+            from--;
+        }
+        while (to + 1 < areas.size() && inRun(areas.get(to + 1), area.member, within)) {
+            to++;
+        }
+        return new int[] {from, to};
+    }
+
+    private static boolean inRun(Area area, DocumentAssembly.Member member, java.util.Set<Long> within) {
+        return area.member == member && area.block != null && within.contains(area.block.nid());
+    }
+
+    private static void collect(StoredDocument document, StoredBlock block, java.util.Set<Long> into) {
+        into.add(block.nid());
+        for (long nid : block.members()) {
+            StoredBlock child = document.blocks().get(nid);
+            if (child != null) {
+                collect(document, child, into);
+            }
+        }
+    }
+
+    private static final Object TEXT_PANE = new Object();
+
+    /**
+     * The node inside a text control that asks for the text cursor: the nearest one above what
+     * the pointer is on, found once and kept for as long as it is in a scene.
+     */
+    private static Node textPane(RichTextArea rta, MouseEvent e) {
+        if (rta.getProperties().get(TEXT_PANE) instanceof Node known && known.getScene() != null) {
+            return known;
+        }
+        for (Node at = e.getTarget() instanceof Node target ? target : null; at != null && at != rta; at = at.getParent()) {
+            if (at.getCursor() != null) {
+                rta.getProperties().put(TEXT_PANE, at);
+                return at;
+            }
+        }
+        return null;
     }
 
     private void showPopover() {
@@ -4619,7 +5345,8 @@ public final class DocumentSurfaceView {
      * Takes a gesture's selection in one text as the reader's own: the control keeps the words as
      * they were chosen, the block takes the focus, and the document's selection is the lines the
      * words touch, which is what an annotation records. A click alone selects no words: its line
-     * is the selection, and nothing is drawn but the focus.
+     * is the selection, and the caret stands where the click landed, for Shift-click and the
+     * Shift-arrow keys to select from.
      */
     private void snap(Area area, RichTextArea rta, java.util.function.Supplier<LineRunModel> source, SelectionSegment is) {
         LineRunModel model = source.get();
@@ -5199,15 +5926,30 @@ public final class DocumentSurfaceView {
         cancelEditing.setOnAction(e -> cancelEdit(editing));
         editingMenu.getItems().addAll(new SeparatorMenuItem(), cancelEditing);
         // Fold: the reader's view of the selected blocks, or of a heading's section
-        foldItem.setId("stampedDocumentFold");
-        foldItem.setOnAction(e -> toggleSelection());
+        foldMenu.setId("stampedDocumentFoldMenu");
+        layersMenu.setId("stampedDocumentLayersMenu");
+        for (Layer layer : Layer.values()) {
+            CheckMenuItem item = new CheckMenuItem(switch (layer) {
+                case DATES -> "Dates";
+                case STAMPS -> "Stamps";
+                case COMMENTS -> "Comments";
+                case TINTS -> "Commit tints";
+                case REVIEW_QUEUE -> "Review queue";
+                case ANNOTATION_MARKS -> "Annotation marks";
+                case LEFT_OUT -> "Passages left out";
+            });
+            item.setId("stampedDocumentMenuLayer" + layer.name());
+            item.setOnAction(e -> host.layerRequested(layer, item.isSelected()));
+            layerItems.put(layer, item);
+            layersMenu.getItems().add(item);
+        }
         // Record: what the document is and was, and how an annotation is recorded
         MenuItem history = item("Show history", "stampedDocumentShowHistory", host::showHistory);
         MenuItem print = item("Print to PDF…", "stampedDocumentMenuPrintPdf", host::printPdf);
         signItem.setId("stampedDocumentSignAnnotations");
         signItem.setOnAction(e -> host.setSignsAnnotations(signItem.isSelected()));
         menu.getItems().addAll(affirm, refute, comment, retract, new SeparatorMenuItem(), editItem, deleteItem, new SeparatorMenuItem(), insertMenu,
-                formatMenu, new SeparatorMenuItem(), foldItem, new SeparatorMenuItem());
+                formatMenu, new SeparatorMenuItem(), foldMenu, layersMenu, new SeparatorMenuItem());
         menu.getItems().addAll(viewItems.values());
         menu.getItems().addAll(new SeparatorMenuItem(), history, print, signItem);
     }
@@ -5226,25 +5968,6 @@ public final class DocumentSurfaceView {
             }
         });
         return item;
-    }
-
-    /** The Fold item says what it would do to the selection: open a fold, fold a section, or fold the selected blocks. */
-    private void refreshFoldItem() {
-        int[] span = selectedAreas();
-        if (span == null) {
-            foldItem.setText("Fold");
-            foldItem.setDisable(true);
-            return;
-        }
-        foldItem.setDisable(false);
-        if (folding.at(span[0]).isPresent()) {
-            foldItem.setText("Unfold");
-        } else if (span[0] == span[1] && levelAt(span[0]) >= 1) {
-            foldItem.setText("Fold section");
-        } else {
-            int blocks = span[1] - span[0] + 1;
-            foldItem.setText(blocks == 1 ? "Fold block" : "Fold " + blocks + " blocks");
-        }
     }
 
     private static MenuItem item(String text, String id, Runnable action) {
@@ -5535,7 +6258,6 @@ public final class DocumentSurfaceView {
         }
         RichTextArea rta = area.area;
         rta.setEditable(false);
-        rta.setDisplayCaret(false);
         rta.setId(null);
         rta.setStyle(area.block != null && area.block.kind() == Block.Kind.ADMONITION ? "-fx-background-color: #FFF8E1; -fx-background-radius: 4;"
                 : area.block != null && (area.block.kind() == Block.Kind.LISTING || area.block.kind() == Block.Kind.LITERAL)

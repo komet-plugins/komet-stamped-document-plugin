@@ -23,6 +23,7 @@ import network.ike.komet.document.print.InlineText;
 import network.ike.komet.document.print.StoredDocumentModel;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.regex.Matcher;
@@ -91,6 +92,17 @@ public final class DocumentTargets {
         for (Target target : byId.values()) {
             blocksByKey.putIfAbsent(target.key(), target.block());
         }
+    }
+
+    /**
+     * What the references of a document read as, for comparing two readings of it: each target's
+     * id, the block it names and its label, in the order of their ids. Two assemblies with the
+     * same list read every cross reference the same way.
+     *
+     * @return the targets as text
+     */
+    public List<String> drawn() {
+        return byId.values().stream().map(target -> target.id() + '|' + target.block() + '|' + target.label()).sorted().toList();
     }
 
     /** @return no target at all: every reference stays as written */

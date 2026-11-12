@@ -185,6 +185,21 @@ public record InlineText(String text, List<Run> runs, List<Note> notes, int[] of
             return last;
         }
 
+        /** @return how many notes have been counted by name: a text that names none leaves this as it was */
+        public int names() {
+            return named.size();
+        }
+
+        /**
+         * Counts on from a number, for a text whose notes were numbered in an earlier reading
+         * that is kept as it was drawn: the notes after it take the numbers after its last.
+         *
+         * @param number the number of the last note of the text kept
+         */
+        public void countedTo(int number) {
+            last = Math.max(last, number);
+        }
+
         private int next(String id) {
             last++;
             if (id != null) {

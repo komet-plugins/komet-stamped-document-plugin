@@ -258,6 +258,106 @@ public final class DocumentSurface extends BorderPane {
         }
     }
 
+    /**
+     * Takes a new list of blocks that holds most of the blocks the surface already shows, as a
+     * document read again after an edit does: a block that is in both lists stays as it stands,
+     * built or not, with its row untouched; a block that is gone leaves; a new block is put in
+     * its place, built at once where the block it replaces was built, with that block's height
+     * as its room, so what a reader is looking at is never drawn as a stand-in. Lists that share
+     * no order, or a surface that holds an exchange's turns, are taken as {@link #setBlocks}
+     * takes them.
+     *
+     * @param document the blocks to show, in order
+     * @return how many blocks were kept as they stood
+     */
+    public int updateBlocks(List<DocumentBlock> document) {
+        boolean wasVirtual = virtual;
+        if (blocks.isEmpty() || !turns.isEmpty() || !turnStarts.isEmpty() || !exchangeHeaders.isEmpty() || !exchangeTitles.isEmpty()
+                || wasVirtual != document.size() > VIRTUAL_FROM || stack.getChildren().size() != blocks.size()) {
+            setBlocks(document);
+            return 0;
+        }
+        java.util.Set<DocumentBlock> wanted = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        wanted.addAll(document);
+        java.util.Set<DocumentBlock> held = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        held.addAll(blocks);
+        // the blocks kept must stand in the same order in both lists: then the lists differ only by runs put in place of runs
+        int at = 0;
+        for (DocumentBlock block : blocks) {
+            if (!wanted.contains(block)) {
+                continue;
+            }
+            while (at < document.size() && document.get(at) != block) {
+                if (held.contains(document.get(at))) {
+                    setBlocks(document);                            // a kept block has moved
+                    return 0;
+                }
+                at++;
+            }
+            if (at == document.size()) {
+                setBlocks(document);
+                return 0;
+            }
+            at++;
+        }
+        if (selectedArea != null) {
+            clearSelection();
+        }
+        int kept = 0;
+        int old = 0;
+        int index = 0;
+        while (index < document.size() || old < blocks.size()) {
+            if (index < document.size() && old < blocks.size() && document.get(index) == blocks.get(old)) {
+                kept++;
+                index++;
+                old++;
+                continue;
+            }
+            // a run of blocks that are gone, and the run of new blocks that stands where they stood
+            List<double[]> gone = new ArrayList<>();
+            while (old < blocks.size() && !wanted.contains(blocks.get(old))) {
+                DocumentBlock leaving = blocks.get(old);
+                double height = stack.getChildren().get(old).getBoundsInParent().getHeight();
+                gone.add(new double[] {height, leaving.isRealized() ? 1 : 0});
+                leaving.released();
+                stack.getChildren().remove(old);
+                blocks.remove(old);
+            }
+            boolean besideBuilt = old > 0 && blocks.get(old - 1).isRealized() || old < blocks.size() && blocks.get(old).isRealized();
+            int n = 0;
+            while (index < document.size() && !held.contains(document.get(index))) {
+                DocumentBlock coming = document.get(index);
+                double[] was = n < gone.size() ? gone.get(n) : null;
+                blocks.add(old, coming);
+                if (virtual) {
+                    coming.released();
+                    Node cell = cell(coming);
+                    stack.getChildren().add(old, cell);
+                    if (was != null && was[0] > 0 && cell instanceof Cell standing) {
+                        standing.standAt(was[0]);
+                    }
+                    if (was != null ? was[1] > 0 : besideBuilt) {
+                        realize(old);
+                    }
+                } else {
+                    stack.getChildren().add(old, stackNode(coming));
+                    coming.realized();
+                }
+                n++;
+                old++;
+                index++;
+            }
+            if (gone.isEmpty() && n == 0) {
+                setBlocks(document);                                // neither list moves on: they share no order after all
+                return 0;
+            }
+        }
+        if (virtual) {
+            lookSoon();
+        }
+        return kept;
+    }
+
     // ── Building blocks as they are read ─────────────────────────────────
 
     /** How many blocks a document has before it is built as it is read rather than whole. */

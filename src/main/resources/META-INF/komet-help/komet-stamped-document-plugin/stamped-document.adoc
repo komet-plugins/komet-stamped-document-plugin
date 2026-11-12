@@ -20,6 +20,8 @@ When the card is wide, each control shows its name beside its icon. When it is n
 
 == The More menu
 
+Find…:: Opens a bar under the Repository line for finding text; Command-F opens it from anywhere in the card. The text is found as you type it, whatever its case, from where you are reading: in the Reading view in the text of the blocks and in the captions of figures and tables, in the Source view in the lines as written. Return, or Command-G, goes to the next match and Shift-Return to the one before; a match under a fold opens the fold. Esc closes the bar. The Page layout and the Graph are not read.
+Find and Replace…:: Opens the find bar with a second row, as Option-Command-F does: the words to put in place of what is found, Replace and Replace All. Replace changes the match shown and goes to the next; Replace All changes every match, from the last to the first, and puts you back where you were reading. Each replacement is an edit of its block, as a mark is: the bar at the foot of the card counts the lines edited, Commit records them and Discard… takes them back. Words are replaced in paragraphs, list items and admonitions, and anywhere in the Source view; a match in a heading, a caption or a table cell is left as it stands, and the status line says how many were.
 Open file…:: Chooses a committed `.adoc` file and shows it, materializing it first if the knowledge base lacks it.
 Refresh:: Reads the list of documents and the shown document again.
 Export…:: Writes the document from the knowledge base back into a working tree at its recorded path, and compares it with HEAD.
@@ -33,8 +35,12 @@ Attributes set for this card:: Lists the attribute names the document's `ifdef` 
 
 == Reviewing and editing
 
-Click in a block to give it the focus. The Reading view marks the block with a bar at its left edge.
-Drag across words to select them, or double-click one word.
+Click in a block to give it the focus. The Reading view marks the block with a bar at its left edge, and the caret stands where you clicked.
+Drag across words to select them, or double-click one word; Shift-click, or the arrow keys with Shift, select from the caret.
+
+The right-click menu is the same in the text and in the margins beside it. In a margin it acts on the block the margin stands beside, whose lines it shows selected.
+Its _Fold_ menu folds the block by what it is, a paragraph, a listing or a figure; the table or list the block is in, from any row or item; and each section around it, the nearest first. _Fold every section_ leaves the outermost headings alone on the page, and _Unfold everything_ opens every fold. A fold is opened by a click on its line, or by _Unfold_ where it was made.
+Its _Layers_ menu turns on and off what is drawn over the document, as the toolbar's layer menu does: dates, stamps, comments, annotation marks and the others.
 
 A judgment is recorded on whole lines of the source, because a line is what carries a STAMP.
 Right-click and choose _Affirm…_, _Refute…_ or _Comment…_ to record your judgment of the lines your selection touches; with no words selected the menu shows those lines selected.

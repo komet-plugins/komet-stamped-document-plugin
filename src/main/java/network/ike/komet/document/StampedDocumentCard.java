@@ -158,6 +158,8 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
 
     static final String CARD_NAME = "STAMPed Document";
 
+    /** By document: the commit its repository stood at when this card last read it into the knowledge base. */
+    private static final String PREF_READ_AT = "network.ike.komet.document.readAt.";
     private static final String PREF_DOCUMENT = "network.ike.komet.document.document";
     /** The working tree a document was last opened from, committed or exported into. */
     private static final String PREF_WORKING_TREE = "network.ike.komet.document.workingTree";
@@ -657,6 +659,7 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
             if (surface != null) {
                 surface.setView(is);
                 showCenter(is);
+                find(false);                                       // the matches are of the view shown
             }
         });
         modes.setId("stampedDocumentGraphModes");
@@ -693,6 +696,7 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
                     if (layer == DocumentSurfaceView.Layer.LEFT_OUT && assembly != null) {
                         // this layer changes what the Reading view is made of: the document is drawn again, where the reader stood
                         surface.show(assembly);
+                        find(false);
                         if (surface.view() == DocumentSurfaceView.View.PAGE_LAYOUT) {
                             buildPages();
                         }
@@ -719,6 +723,9 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
         Icons.iconOnly(overflow, "mdi2d-dots-horizontal", "Verbs that act on the whole document");
         overflow.getStyleClass().add("stamped-toolbar-control");
         overflow.getItems().addAll(
+                item("Find… (⌘F)", "stampedDocumentFind", "Find text in the document: Return goes to the next match, Shift-Return to the one before", this::showFind),
+                item("Find and Replace… (⌥⌘F)", "stampedDocumentFindReplace", "Find text and put other words in its place, one match at a time or all of them", this::showReplace),
+                new SeparatorMenuItem(),
                 item("Show in Navigator", "stampedDocumentShowInNavigator", "Select the document's file in the journal's Documents tray", this::showInNavigator),
                 item("Show in Finder", "stampedDocumentShowInFinder", "Show the document's file in the Finder", this::showInFinder),
                 new SeparatorMenuItem(),
@@ -774,6 +781,248 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
         modes.setCompact(compact);
         Icons.compact(layerMenu, compact);
         Icons.compact(overflow, compact);
+    }
+
+    // ── find ──────────────────────────────────────────────────────────────────
+
+    private final HBox replaceBar = new HBox(6);
+    private final javafx.scene.control.TextField replaceField = new javafx.scene.control.TextField();
+    /** What a replacement does once its edit is saved and the document is read again; null when none is under way. */
+    private Runnable afterRead;
+    private int replaced;
+    private int leftAsIs;
+    private network.ike.komet.document.surface.DocumentSurface.Viewpoint placeBeforeReplacing;
+    private final HBox findBar = new HBox(6);
+    private final javafx.scene.control.TextField findField = new javafx.scene.control.TextField();
+    private final Label findCount = new Label();
+    /** The matches of the text in the bar, in reading order, and which of them is shown. */
+    private List<DocumentSurfaceView.Match> findMatches = List.of();
+    private int findAt = -1;
+
+    /**
+     * The bar Command-F opens beneath the Repository line: a field, where the match shown stands
+     * among the matches, the match before, the next, and close. It finds as the text is typed,
+     * from where the reader is; Return goes on to the next match and Shift-Return back.
+     */
+    private void buildFindBar() {
+        findBar.setId("stampedDocumentFindBar");
+        findBar.setAlignment(javafx.geometry.Pos.CENTER_LEFT);
+        findBar.setPadding(new Insets(4, 12, 4, 12));
+        findField.setId("stampedDocumentFindField");
+        findField.setPromptText("Find in the document");
+        HBox.setHgrow(findField, javafx.scene.layout.Priority.ALWAYS);
+        findCount.setId("stampedDocumentFindCount");
+        findCount.setStyle("-fx-text-fill: #5f6b7a;");
+        findCount.setMinWidth(javafx.scene.layout.Region.USE_PREF_SIZE);
+        Button previous = findButton("▲", "stampedDocumentFindPrevious", "The match before (Shift-Return)", () -> stepFind(-1));
+        Button next = findButton("▼", "stampedDocumentFindNext", "The next match (Return)", () -> stepFind(1));
+        Button close = findButton("✕", "stampedDocumentFindClose", "Close (Esc)", this::hideFind);
+        findField.textProperty().addListener((obs, was, is) -> find(true));
+        findField.setOnAction(e -> stepFind(1));
+        findField.addEventFilter(javafx.scene.input.KeyEvent.KEY_PRESSED, e -> {
+            if (e.getCode() == javafx.scene.input.KeyCode.ESCAPE) {
+                hideFind();
+                e.consume();
+            } else if (e.getCode() == javafx.scene.input.KeyCode.ENTER && e.isShiftDown()) {
+                stepFind(-1);
+                e.consume();
+            }
+        });
+        findBar.getChildren().setAll(findField, findCount, previous, next, close);
+        findBar.setVisible(false);
+        findBar.setManaged(false);
+        replaceBar.setId("stampedDocumentReplaceBar");
+        replaceBar.setAlignment(javafx.geometry.Pos.CENTER_LEFT);
+        replaceBar.setPadding(new Insets(0, 12, 4, 12));
+        replaceField.setId("stampedDocumentReplaceField");
+        replaceField.setPromptText("Replace with");
+        HBox.setHgrow(replaceField, javafx.scene.layout.Priority.ALWAYS);
+        Button one = findButton("Replace", "stampedDocumentReplace", "Put these words in place of the match shown, and go to the next (Return)", this::replaceFound);
+        Button all = findButton("Replace All", "stampedDocumentReplaceAll", "Put these words in place of every match, as edits you can commit or discard", this::replaceAll);
+        replaceField.setOnAction(e -> replaceFound());
+        replaceField.addEventFilter(javafx.scene.input.KeyEvent.KEY_PRESSED, e -> {
+            if (e.getCode() == javafx.scene.input.KeyCode.ESCAPE) {
+                hideFind();
+                e.consume();
+            }
+        });
+        replaceBar.getChildren().setAll(replaceField, one, all);
+        replaceBar.setVisible(false);
+        replaceBar.setManaged(false);
+    }
+
+    private static Button findButton(String text, String id, String tooltip, Runnable action) {
+        Button button = new Button(text);
+        button.setId(id);
+        button.setTooltip(new Tooltip(tooltip));
+        button.setFocusTraversable(false);
+        button.setOnAction(e -> action.run());
+        return button;
+    }
+
+    /** Command-F, or the overflow menu's Find…: opens the bar with its text selected, and finds that text again. */
+    private void showFind() {
+        if (surface == null) {
+            return;
+        }
+        findBar.setVisible(true);
+        findBar.setManaged(true);
+        findField.requestFocus();
+        findField.selectAll();
+        find(true);
+    }
+
+    /** Option-Command-F, or the overflow menu's Find and Replace…: the find bar with the row that replaces beneath it. */
+    private void showReplace() {
+        if (surface == null) {
+            return;
+        }
+        replaceBar.setVisible(true);
+        replaceBar.setManaged(true);
+        showFind();
+    }
+
+    /**
+     * Replace: the match shown takes the words of the replace field, as an edit of its block that
+     * Commit records and Discard takes back; once the document is read again, the next match is
+     * shown. With no match shown yet, the first is shown and nothing is replaced.
+     */
+    private void replaceFound() {
+        if (surface == null || afterRead != null || findMatches.isEmpty()) {
+            return;
+        }
+        if (findAt < 0) {
+            stepFind(1);
+            return;
+        }
+        var match = findMatches.get(findAt);
+        if (surface.replaceMatch(match, replaceField.getText())) {
+            afterRead = () -> {
+                // the match is gone: the next is the first that stands at or after where it stood
+                find(false);
+                for (int i = 0; i < findMatches.size(); i++) {
+                    if (!findMatches.get(i).before(match)) {
+                        findAt = i;
+                        showFindMatch();
+                        return;
+                    }
+                }
+                if (!findMatches.isEmpty()) {
+                    findAt = 0;
+                    showFindMatch();
+                }
+            };
+        }
+    }
+
+    /**
+     * Replace All: every match takes the words of the replace field, one edit after another, from
+     * the last match to the first, so that words put in which hold the text found are not found
+     * again. A match that cannot be placed in its source, as one in a caption or a heading, is
+     * left, and the status says how many were.
+     */
+    private void replaceAll() {
+        if (surface == null || afterRead != null || findMatches.isEmpty()) {
+            return;
+        }
+        replaced = 0;
+        leftAsIs = 0;
+        replaceBar.setDisable(true);
+        placeBeforeReplacing = surface.place();
+        replaceBefore(null);
+    }
+
+    private void replaceBefore(DocumentSurfaceView.Match last) {
+        String text = findField.getText() == null ? "" : findField.getText();
+        findMatches = surface.find(text);
+        for (int i = findMatches.size() - 1; i >= 0; i--) {
+            var match = findMatches.get(i);
+            if (last != null && !match.before(last)) {
+                continue;
+            }
+            if (surface.replaceMatch(match, replaceField.getText())) {
+                replaced++;
+                findCount.setText("Replacing… " + replaced);
+                afterRead = () -> replaceBefore(match);
+                return;
+            }
+            leftAsIs++;
+        }
+        replaceBar.setDisable(false);
+        find(false);
+        surface.clearMatch();
+        surface.restore(placeBeforeReplacing);                         // the reader is put back where they were reading
+        placeBeforeReplacing = null;
+        statusLine.setText(replaced + (replaced == 1 ? " match replaced" : " matches replaced")
+                + (leftAsIs == 0 ? "." : "; " + leftAsIs + (leftAsIs == 1 ? " left as it stands" : " left as they stand")
+                + ", in a caption, a heading, a table cell or a marked phrase: Edit block changes " + (leftAsIs == 1 ? "it." : "those."))
+                + (replaced == 0 ? "" : " Commit records the edits; Discard… takes them back."));
+    }
+
+    private void hideFind() {
+        replaceBar.setVisible(false);
+        replaceBar.setManaged(false);
+        findBar.setVisible(false);
+        findBar.setManaged(false);
+        findMatches = List.of();
+        findAt = -1;
+        if (surface != null) {
+            surface.clearMatch();
+        }
+    }
+
+    /**
+     * Finds the bar's text in the view shown. With {@code show}, the first match at or after the
+     * block at the top of the viewport is shown; without, the matches are counted again and the
+     * reader stays put, as after the document is read again.
+     */
+    private void find(boolean show) {
+        if (surface == null || !findBar.isVisible()) {
+            return;
+        }
+        String text = findField.getText() == null ? "" : findField.getText();
+        DocumentSurfaceView.View view = surface.view();
+        if (view == DocumentSurfaceView.View.PAGE_LAYOUT || view == DocumentSurfaceView.View.GRAPH) {
+            findMatches = List.of();
+            findAt = -1;
+            findCount.setText("Find reads the Reading and Source views");
+            return;
+        }
+        findMatches = surface.find(text);
+        if (findMatches.isEmpty()) {
+            findAt = -1;
+            findCount.setText(text.isBlank() ? "" : "No matches");
+            surface.clearMatch();
+            return;
+        }
+        if (!show) {
+            findAt = -1;
+            findCount.setText(findMatches.size() == 1 ? "1 match" : findMatches.size() + " matches");
+            return;
+        }
+        int top = surface.topBlock();
+        findAt = 0;
+        for (int i = 0; i < findMatches.size(); i++) {
+            if (findMatches.get(i).blockIndex() >= top) {
+                findAt = i;
+                break;
+            }
+        }
+        showFindMatch();
+    }
+
+    /** Goes to the next match, or the one before, around the ends. */
+    private void stepFind(int by) {
+        if (findMatches.isEmpty() || surface == null) {
+            return;
+        }
+        findAt = findAt < 0 ? (by > 0 ? 0 : findMatches.size() - 1) : Math.floorMod(findAt + by, findMatches.size());
+        showFindMatch();
+    }
+
+    private void showFindMatch() {
+        surface.showMatch(findMatches.get(findAt));
+        findCount.setText((findAt + 1) + " of " + findMatches.size());
     }
 
     private static MenuItem item(String text, String id, String tooltip, Runnable action) {
@@ -863,7 +1112,8 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
             preferences().putBoolean(PREF_REPOSITORY_OPEN, is);
             syncPreferences();
         });
-        host.setTop(new VBox(repositoryPanel, materializing));
+        buildFindBar();
+        host.setTop(new VBox(repositoryPanel, materializing, findBar, replaceBar));
         center.getChildren().setAll(documentArea.fxObject());
         host.setCenter(center);
         host.setBottom(null);
@@ -878,6 +1128,19 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
             }
         }
         setCardContent(host);
+        // Find has no button: the toolbar has no room for one. The keys work wherever the focus is in the card.
+        fxObject().addEventFilter(javafx.scene.input.KeyEvent.KEY_PRESSED, e -> {
+            if (e.isShortcutDown() && !e.isAltDown() && e.getCode() == javafx.scene.input.KeyCode.F) {
+                showFind();
+                e.consume();
+            } else if (e.isShortcutDown() && e.isAltDown() && e.getCode() == javafx.scene.input.KeyCode.F) {
+                showReplace();
+                e.consume();
+            } else if (e.isShortcutDown() && e.getCode() == javafx.scene.input.KeyCode.G && findBar.isVisible()) {
+                stepFind(e.isShiftDown() ? -1 : 1);
+                e.consume();
+            }
+        });
         String remembered = preferences().get(PREF_WORKING_TREE, "");
         if (!remembered.isEmpty() && Files.isDirectory(Path.of(remembered))) {
             repoRoot = Path.of(remembered);
@@ -1137,7 +1400,19 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
      * the whole store while a tree is known.
      */
     private static Opened read(PublicId anchor, Path root, long asOf, List<String> set) {
-        Optional<Loaded> host = Loaded.read(anchor, root, true, asOf);
+        return read(anchor, root, asOf, set, Map.of(), null);
+    }
+
+    /**
+     * As {@link #read(PublicId, Path, long, List)}, for a document already read whose files are
+     * known to be as they were but for one: the others are taken as they were read, and only the
+     * one that changed is read from the store.
+     *
+     * @param asRead   the files as last read, by path; empty to read every file
+     * @param hostPath the host's path among them, or null to read the host
+     */
+    private static Opened read(PublicId anchor, Path root, long asOf, List<String> set, Map<String, Loaded> asRead, String hostPath) {
+        Optional<Loaded> host = hostPath != null && asRead.containsKey(hostPath) ? Optional.of(asRead.get(hostPath)) : Loaded.read(anchor, root, true, asOf);
         if (host.isEmpty()) {
             if (asOf == Long.MAX_VALUE) {
                 return null;
@@ -1149,6 +1424,11 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
             return new Opened(before, Map.of(empty.host().path(), before), empty, asOf);
         }
         Map<String, Loaded> loaded = new LinkedHashMap<>();
+        asRead.forEach((path, file) -> {
+            if (!path.equals(hostPath)) {
+                loaded.put(path, file);
+            }
+        });
         List<Path> trees = new ArrayList<>();
         if (root != null) {
             trees.add(root);
@@ -1226,16 +1506,39 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
 
     /** As {@link #open(PublicId)}, then puts a report on the status line and runs {@code afterShow} once drawn. */
     private void open(PublicId anchor, String report, Runnable afterShow) {
+        open(anchor, report, afterShow, null);
+    }
+
+    /**
+     * @param changed the path of the one file of the document shown that an edit just changed, so
+     *                the others need not be read again; null to read every file
+     */
+    private void open(PublicId anchor, String report, Runnable afterShow, String changed) {
         statusLine.setText("Reading from the store …");
         Path known = repoRoot;
         long asOf = asOf();
+        // the files an edit did not touch are as they were read, when the same document is read the same way
+        Map<String, Loaded> asRead = new LinkedHashMap<>();
+        String hostPath = null;
+        if (changed != null && shown != null && assembly != null && PublicId.equals(shown.anchor(), anchor) && asOf == shownAsOf
+                && members.containsKey(changed)) {
+            asRead.putAll(members);
+            asRead.remove(changed);
+            hostPath = assembly.host().path();
+        }
+        String host = hostPath;
         // the card may never have opened this document's file: its repository is found before it is read,
         // so the includes are read from it and a comment or a commit has somewhere to go without asking
         java.util.concurrent.atomic.AtomicReference<Path> home = new java.util.concurrent.atomic.AtomicReference<>();
         List<String> set = attributesSet(anchor);
+        long started = System.nanoTime();
+        long[] readAt = new long[1];
         CompletableFuture.supplyAsync(() -> {
             home.set(home(anchor, known).orElse(null));
-            return read(anchor, home.get() != null ? home.get() : known, asOf, set);
+            Path tree = home.get() != null ? home.get() : known;
+            Opened read = read(anchor, tree, asOf, set, java.util.Objects.equals(tree, known) ? asRead : Map.of(), host);
+            readAt[0] = System.nanoTime();
+            return read;
         }).whenComplete((loaded, failure) -> Platform.runLater(() -> {
             if (failure == null && loaded != null && home.get() != null && java.util.Objects.equals(repoRoot, known)) {
                 useWorkingTree(home.get());
@@ -1249,7 +1552,10 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
                 statusLine.setText("The store holds no manifest for that document.");
                 return;
             }
+            long showing = System.nanoTime();
             show(loaded);
+            LOG.info("Read {} file(s) in {} ms, waited {} ms for the application thread, drew them in {} ms",
+                    loaded.members().size(), (readAt[0] - started) / 1_000_000, (showing - readAt[0]) / 1_000_000, (System.nanoTime() - showing) / 1_000_000);
             if (report != null) {
                 statusLine.setText(report);
             }
@@ -1287,6 +1593,8 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
         // again from the top, and the line that stood at the top of the view is put back there
         Optional<PageStackView.Anchor> place = shown != null && pageStack != null && surface.view() == DocumentSurfaceView.View.PAGE_LAYOUT
                 && PublicId.equals(shown.anchor(), loaded.document().anchor()) ? pageStack.anchor() : Optional.empty();
+        // the document that is shown, read again after an edit, a mark, a comment or a commit: what did not change stays as it is drawn
+        boolean again = shown != null && PublicId.equals(shown.anchor(), loaded.document().anchor());
         shown = loaded.document();
         assembly = opened.assembly();
         members = opened.members();
@@ -1296,11 +1604,23 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
         shownAsOf = opened.asOf();
         summaries = CommitSummaries.merge(members.values().stream().map(Loaded::summaries).toList());
         surface.setPast(shownAsOf != Long.MAX_VALUE);
-        surface.show(assembly);
+        if (again) {
+            surface.showChanged(assembly);
+        } else {
+            surface.show(assembly);
+        }
+        find(false);                                               // the document was read again: its matches are counted again
+        Runnable replacing = afterRead;
+        afterRead = null;
+        if (replacing != null) {
+            Platform.runLater(replacing);                              // once this showing has said what it has to say
+        }
         fillAttributesMenu();
         pendingEdit = members.values().stream().anyMatch(Loaded::pending);
-        repositoryPanel.refresh(state -> state.remotes().stream().findFirst()
-                .ifPresent(remote -> GitRepositoryTerms.record(shown.anchor(), remote.url(), state.branch())));
+        repositoryPanel.refresh(state -> {
+            state.remotes().stream().findFirst().ifPresent(remote -> GitRepositoryTerms.record(shown.anchor(), remote.url(), state.branch()));
+            followHead(state);
+        });
         showingMember(assembly.host());
         documentArea.refreshExpandedView();
         if (surface.view() == DocumentSurfaceView.View.PAGE_LAYOUT) {
@@ -2252,6 +2572,37 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
      * Materializes the shown document's file and every file it includes, or asks for a file when
      * no working tree holds it.
      */
+    /**
+     * Reads into the knowledge base what the repository has that the card has not read: when the
+     * shown document's working tree stands at a commit other than the one the card last read it
+     * at, the file and every file it includes are materialized, as More, Materialize does. A
+     * commit made outside Komet, or on another machine and pulled, is then in the document the
+     * next time it is opened, with no one having to ask. The commit is remembered by the card, so
+     * a document whose repository has not moved is not read from git again, and a commit the
+     * knowledge base already holds for the document, as one made from this card, is not read at all.
+     */
+    private void followHead(GitOperations.RepositoryState state) {
+        if (shown == null || repoRoot == null || state == null || state.headSha().isBlank() || shownAsOf != Long.MAX_VALUE
+                || materializing.running() || !java.util.Objects.equals(state.root(), repoRoot)) {
+            return;
+        }
+        Optional<Path> file = currentFile();
+        if (file.isEmpty() || !Files.isRegularFile(repoRoot.resolve(file.get()))) {
+            return;
+        }
+        String key = PREF_READ_AT + shown.anchor().asUuidArray()[0];
+        if (state.headSha().equals(preferences().get(key, ""))) {
+            return;
+        }
+        preferences().put(key, state.headSha());                       // before the reading, which shows the document again
+        syncPreferences();
+        if (summaries.shaByStamp().values().stream().anyMatch(sha -> sha.startsWith(state.headSha()))) {
+            return;                                                    // the knowledge base holds that commit: one this card made, or one read before
+        }
+        LOG.info("The repository of {} stands at {}, which this card has not read: materializing it", file.get(), state.headSha());
+        materializeFile(repoRoot, file.get());
+    }
+
     private void materialize() {
         Optional<Path> file = currentFile();
         if (file.isEmpty() || !Files.isRegularFile(repoRoot.resolve(file.get()))) {
@@ -2600,6 +2951,14 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
         CheckMenuItem item = layerItems.get(layer);
         if (item != null) {
             item.setSelected(true);                                // its listener remembers the choice
+        }
+    }
+
+    @Override
+    public void layerRequested(DocumentSurfaceView.Layer layer, boolean on) {
+        CheckMenuItem item = layerItems.get(layer);
+        if (item != null) {
+            item.setSelected(on);                                  // its listener draws the layer and remembers the choice
         }
     }
 
@@ -3586,14 +3945,21 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
                         Throwable cause = failure.getCause() != null ? failure.getCause() : failure;
                         statusLine.setText("Edit not saved: " + cause.getMessage());
                         LOG.warn("Editing block {} of {} failed", block.nid(), anchor, cause);
+                        afterRead = null;                              // a replacement that waited on this edit does not go on
+                        replaceBar.setDisable(false);
                         return;
                     }
                     if (!saved.result().completed()) {
                         statusLine.setText("Edit not saved: " + saved.result().message());
+                        afterRead = null;
+                        replaceBar.setDisable(false);
                         return;
                     }
                     surface.cancelEdit();
-                    open(anchor);
+                    // only the file the block is in was written: the document's other files are as they were read
+                    String changed = members.entrySet().stream().filter(file -> file.getValue().document().blocks().containsKey(block.nid()))
+                            .map(Map.Entry::getKey).findFirst().orElse(null);
+                    open(anchor, null, null, changed);
                     saved.wrote().ifPresent(wrote -> {
                         LOG.info("Block {} of {} saved: {}", block.nid(), anchor.idString(), wrote);
                         statusLine.setText(wrote);
