@@ -2896,6 +2896,7 @@ public final class DocumentSurfaceView {
                 column.setFillWidth(true);
                 grid.getColumnConstraints().add(column);
             }
+            List<TableGrid.Placed> placed = new ArrayList<>();
             int at = 0;                                          // the column the next cell begins in
             for (int k = 0; at < widths.size(); k++) {
                 // a cell takes the columns it spans; a row short of cells is filled out with empty ones
@@ -2921,14 +2922,18 @@ public final class DocumentSurfaceView {
                     CellText cell = new CellText(area, read.withInlines(text -> conceptChips(text, true)));
                     cells.add(cell);
                     box.getChildren().add(cell.rta);
+                    String words = read.paragraphs().getFirst().lines().stream().map(LineRunModel.Line::text)
+                            .collect(java.util.stream.Collectors.joining(" ")).strip();
                     if (span == 1) {
                         // a cell over several columns has their room together: its words widen no one column
-                        for (LineRunModel.Line line : read.paragraphs().getFirst().lines()) {
-                            fit.words(c, line.text(), head);
-                        }
+                        fit.words(c, words, head);
+                    }
+                    if (head) {
+                        fit.heads(c, span, words);
                     }
                 }
                 grid.add(box, c, 0, span, 1);
+                placed.add(new TableGrid.Placed(box, c, span, own.isEmpty()));
                 at += span;
             }
             area.cells = List.copyOf(cells);
@@ -2944,34 +2949,69 @@ public final class DocumentSurfaceView {
                 // the rows are blocks of the surface, which stands its blocks apart: a row after the first closes that space
                 VBox.setMargin(grid, new Insets(-DocumentSurface.BLOCK_SPACING, 0, 0, 0));
             }
-            fit.add(grid);
+            fit.add(grid, head, placed);
         }
     }
 
     /**
      * The rows of one table in the Reading view, which share their columns' widths: each column
-     * its weight's share of the row, but no narrower than its widest word, as
-     * {@link TableColumnFit} shares them. Fitted again whenever the rows' width changes.
+     * its weight's share of the row, but no narrower than its widest word, nor than holds its
+     * longest cell in three lines, up to the width a line of running text is read in, as
+     * {@link TableColumnFit} shares them. A row too narrow for that is not drawn as a grid, whose columns would stand a few
+     * letters wide and a page tall: each row's cells stand one under another, each with the name
+     * its column's header gives it, and the header row, whose words they are, is not drawn. Fitted
+     * again whenever the rows' width changes.
      */
     private final class TableGrid {
         /** What a cell's text stands in from its column's edges: the text's own padding and the rule beside it. */
         private static final double CELL_INSET = 20;
+        /** The least width a cell of running text is read in, in ems: narrower, and a sentence stands two words to a line. */
+        private static final double READ_EMS = 9;
+        /** The size a stacked cell's name is drawn in, which the stylesheet gives it, and the room about its words. */
+        private static final double NAME_SIZE = 11;
+        private static final double NAME_INSET = 14;
+
+        /** A cell's box in its row: the column it begins in, the columns it takes, and whether it holds no words. */
+        record Placed(VBox box, int column, int span, boolean empty) {
+        }
+
+        /** A row of the table: its grid, whether it is the header, its cells, and the names drawn over them when stacked. */
+        private record Row(javafx.scene.layout.GridPane grid, boolean head, List<Placed> cells, Map<Placed, Label> names) {
+        }
 
         final List<Integer> weights;
-        final List<javafx.scene.layout.GridPane> rows = new ArrayList<>();
+        final List<Row> rows = new ArrayList<>();
         /** By column: its words, each with whether a header cell draws it bold. */
         final List<Map<String, Boolean>> words = new ArrayList<>();
+        /** By column: the longest text one cell of it holds. */
+        final String[] longest;
+        /** By column: the longest text one cell of it holds under the header. */
+        final String[] longestValue;
+        /** By column: the words of its header cell, empty when the table has no header or the cell none. */
+        final String[] heads;
         /** Measures a word in the font the cells draw it in, which the scene's stylesheets name. */
         final javafx.scene.text.Text probe = new javafx.scene.text.Text();
-        /** Each column's least width, once measured in a scene. */
+        /** Each column's least width, once measured in a scene: what keeps its words whole and its text read. */
         double[] least;
+        /** By column, once measured: the width its header's words take as a stacked cell's name. */
+        double[] nameWide;
+        /** By column, once measured: the width its longest cell under the header takes on one line. */
+        double[] valueWide;
         double fitted = -1;
+        /** Whether the rows stand as stacks of cells, not as a grid; {@code null} before the first fit. */
+        Boolean stacked;
 
         TableGrid(List<Integer> weights) {
             this.weights = weights;
             for (int c = 0; c < weights.size(); c++) {
                 words.add(new HashMap<>());
             }
+            longest = new String[weights.size()];
+            heads = new String[weights.size()];
+            longestValue = new String[weights.size()];
+            java.util.Arrays.fill(longestValue, "");
+            java.util.Arrays.fill(longest, "");
+            java.util.Arrays.fill(heads, "");
             probe.setManaged(false);
             probe.setVisible(false);
         }
@@ -2982,44 +3022,218 @@ public final class DocumentSurfaceView {
                     words.get(column).merge(word, bold, Boolean::logicalOr);
                 }
             }
-        }
-
-        void add(javafx.scene.layout.GridPane row) {
-            if (rows.isEmpty()) {
-                row.getChildren().add(probe);
-                row.widthProperty().addListener((obs, was, is) -> fit());
-                row.sceneProperty().addListener((obs, was, is) -> fit());
+            if (text.length() > longest[column].length()) {
+                longest[column] = text;
             }
-            rows.add(row);
+            if (!bold && text.length() > longestValue[column].length()) {
+                longestValue[column] = text;
+            }
         }
 
-        private void fit() {
-            javafx.scene.layout.GridPane first = rows.getFirst();
-            double width = first.getWidth() - first.snappedLeftInset() - first.snappedRightInset();
-            if (first.getScene() == null || width <= 0 || Math.abs(width - fitted) < 0.5) {
+        /** The header's words for the columns one of its cells takes. */
+        void heads(int column, int span, String text) {
+            for (int c = column; c < column + span && c < heads.length; c++) {
+                heads[c] = text;
+            }
+        }
+
+        void add(javafx.scene.layout.GridPane grid, boolean head, List<Placed> cells) {
+            if (rows.isEmpty()) {
+                grid.getChildren().add(probe);
+            }
+            // every row asks: the header's own grid is out of the layout while the rows are stacked, and hears of no width
+            grid.widthProperty().addListener((obs, was, is) -> fit(grid));
+            grid.sceneProperty().addListener((obs, was, is) -> fit(grid));
+            rows.add(new Row(grid, head, List.copyOf(cells), new HashMap<>()));
+        }
+
+        /** Whether the rows stand as stacks of cells; for tests. */
+        boolean stacked() {
+            return Boolean.TRUE.equals(stacked);
+        }
+
+        private void fit(javafx.scene.layout.GridPane asked) {
+            if (!asked.isManaged() || asked.getScene() == null) {
+                return;
+            }
+            fit(asked.getWidth() - asked.snappedLeftInset() - asked.snappedRightInset());
+        }
+
+        /** Fits the rows to a width: as a grid when each column can be read at its share, and else as stacks. */
+        void fit(double width) {
+            javafx.scene.layout.GridPane first = rows.getFirst().grid();
+            if (width <= 0 || Math.abs(width - fitted) < 0.5) {
                 return;
             }
             if (least == null) {
+                if (first.getScene() == null) {
+                    return;
+                }
+                double size = st.cell().getFontSize();
                 least = new double[weights.size()];
+                nameWide = new double[weights.size()];
+                valueWide = new double[weights.size()];
                 for (int c = 0; c < least.length; c++) {
                     for (Map.Entry<String, Boolean> word : words.get(c).entrySet()) {
-                        probe.setText(word.getKey());
-                        probe.setStyle("-fx-font-size: " + st.cell().getFontSize() + "px;" + (word.getValue() ? " -fx-font-weight: bold;" : ""));
-                        probe.applyCss();
-                        least[c] = Math.max(least[c], Math.ceil(probe.getLayoutBounds().getWidth()) + CELL_INSET);
+                        least[c] = Math.max(least[c], Math.ceil(measured(word.getKey(), size, word.getValue())) + CELL_INSET);
                     }
+                    // running text wants a line it is read in; a cell of a few words wants three lines, and a word or a number itself
+                    double read = Math.min(measured(longest[c], size, false) / 3, READ_EMS * size);
+                    least[c] = Math.max(least[c], Math.ceil(read) + CELL_INSET);
+                    nameWide[c] = Math.ceil(measured(heads[c], NAME_SIZE, true)) + NAME_INSET;
+                    valueWide[c] = Math.ceil(measured(longestValue[c], size, false)) + CELL_INSET;
                 }
                 probe.setText("");
             }
             fitted = width;
+            boolean stack = !TableColumnFit.holds(least, width);
+            if (stack) {
+                stack(width);
+            } else {
+                grid(width);
+            }
+            stacked = stack;
+        }
+
+        private double measured(String text, double size, boolean bold) {
+            if (text.isEmpty()) {
+                return 0;
+            }
+            probe.setText(text);
+            probe.setStyle("-fx-font-size: " + size + "px;" + (bold ? " -fx-font-weight: bold;" : ""));
+            probe.applyCss();
+            return probe.getLayoutBounds().getWidth();
+        }
+
+        /** The rows as a grid: every cell in its columns, at the widths the columns share. */
+        private void grid(double width) {
             double[] share = TableColumnFit.shares(weights, least, width);
-            for (javafx.scene.layout.GridPane row : rows) {
+            for (Row row : rows) {
+                javafx.scene.layout.GridPane grid = row.grid();
+                if (Boolean.TRUE.equals(stacked)) {
+                    grid.getStyleClass().remove("doc-table-stacked");
+                    grid.getChildren().removeAll(row.names().values());
+                    grid.setVisible(true);
+                    grid.setManaged(true);
+                    grid.getColumnConstraints().clear();
+                    for (int c = 0; c < share.length; c++) {
+                        javafx.scene.layout.ColumnConstraints column = new javafx.scene.layout.ColumnConstraints();
+                        column.setFillWidth(true);
+                        grid.getColumnConstraints().add(column);
+                    }
+                    for (Placed cell : row.cells()) {
+                        cell.box().setVisible(true);
+                        cell.box().setManaged(true);
+                        javafx.scene.layout.GridPane.setConstraints(cell.box(), cell.column(), 0, cell.span(), 1);
+                    }
+                }
                 for (int c = 0; c < share.length; c++) {
-                    row.getColumnConstraints().get(c).setPercentWidth(100.0 * share[c] / width);
+                    grid.getColumnConstraints().get(c).setPercentWidth(100.0 * share[c] / width);
                 }
             }
         }
+
+        /**
+         * The rows as stacks: a row's cells one under another, each named by its column's header.
+         * A column whose longest cell stands on one line beside its name is drawn so in every
+         * row, the names in a column of their own so the cells line up; a column of longer cells
+         * has its name over the cell, which takes the row's whole width. A cell with no words is
+         * not drawn, and neither is the header row when there are rows to carry its names.
+         */
+        private void stack(double width) {
+            boolean named = rows.size() > 1 && rows.getFirst().head() && java.util.Arrays.stream(heads).anyMatch(name -> !name.isEmpty());
+            boolean[] beside = new boolean[weights.size()];
+            double names = 0;
+            if (named) {
+                // twice: a name too wide for some column's cells is no measure of the names' column
+                for (int pass = 0; pass < 2; pass++) {
+                    double widest = 0;
+                    for (int c = 0; c < beside.length; c++) {
+                        beside[c] = !heads[c].isEmpty() && Math.max(names, nameWide[c]) + valueWide[c] <= width;
+                        if (beside[c]) {
+                            widest = Math.max(widest, nameWide[c]);
+                        }
+                    }
+                    names = widest;
+                }
+            }
+            boolean two = names > 0;
+            for (Row row : rows) {
+                javafx.scene.layout.GridPane grid = row.grid();
+                if (!grid.getStyleClass().contains("doc-table-stacked")) {
+                    grid.getStyleClass().add("doc-table-stacked");
+                }
+                grid.getChildren().removeAll(row.names().values());
+                boolean hidden = named && row.head();
+                grid.setVisible(!hidden);
+                grid.setManaged(!hidden);
+                grid.getColumnConstraints().clear();
+                if (two) {
+                    javafx.scene.layout.ColumnConstraints name = new javafx.scene.layout.ColumnConstraints();
+                    name.setPercentWidth(100.0 * names / width);
+                    javafx.scene.layout.ColumnConstraints cell = new javafx.scene.layout.ColumnConstraints();
+                    cell.setPercentWidth(100.0 - 100.0 * names / width);
+                    cell.setFillWidth(true);
+                    grid.getColumnConstraints().addAll(name, cell);
+                } else {
+                    javafx.scene.layout.ColumnConstraints whole = new javafx.scene.layout.ColumnConstraints();
+                    whole.setPercentWidth(100);
+                    whole.setFillWidth(true);
+                    grid.getColumnConstraints().add(whole);
+                }
+                int whole = two ? 2 : 1;
+                int line = 0;
+                for (Placed cell : row.cells()) {
+                    boolean shown = !cell.empty();
+                    cell.box().setVisible(shown);
+                    cell.box().setManaged(shown);
+                    if (!shown) {
+                        // out of the layout, and in a place the stack has
+                        javafx.scene.layout.GridPane.setConstraints(cell.box(), 0, 0, 1, 1);
+                        continue;
+                    }
+                    // a cell over every column is the row's own words, and has no one column's name
+                    String name = !named || row.head() || cell.span() >= weights.size() ? "" : name(cell);
+                    if (name.isEmpty()) {
+                        javafx.scene.layout.GridPane.setConstraints(cell.box(), 0, line++, whole, 1);
+                        continue;
+                    }
+                    Label label = row.names().computeIfAbsent(cell, made -> {
+                        Label one = new Label(name);
+                        one.getStyleClass().add("doc-table-cell-name");
+                        one.setWrapText(true);
+                        one.setMinWidth(0);
+                        one.setMaxWidth(Double.MAX_VALUE);
+                        return one;
+                    });
+                    boolean aside = cell.span() == 1 && beside[cell.column()];
+                    label.pseudoClassStateChanged(NAME_BESIDE, aside);
+                    if (aside) {
+                        grid.add(label, 0, line, 1, 1);
+                        javafx.scene.layout.GridPane.setValignment(label, javafx.geometry.VPos.TOP);
+                        javafx.scene.layout.GridPane.setConstraints(cell.box(), 1, line++, 1, 1);
+                    } else {
+                        grid.add(label, 0, line++, whole, 1);
+                        javafx.scene.layout.GridPane.setConstraints(cell.box(), 0, line++, whole, 1);
+                    }
+                }
+            }
+        }
+
+        /** The name a cell stands under: its column's header, or its columns' headers where they differ. */
+        private String name(Placed cell) {
+            List<String> names = new ArrayList<>();
+            for (int c = cell.column(); c < cell.column() + cell.span() && c < heads.length; c++) {
+                if (!heads[c].isEmpty() && !names.contains(heads[c])) {
+                    names.add(heads[c]);
+                }
+            }
+            return String.join(" · ", names);
+        }
     }
+
+    /** On a stacked table cell's name: it stands beside its cell, not over it. */
+    private static final javafx.css.PseudoClass NAME_BESIDE = javafx.css.PseudoClass.getPseudoClass("beside");
 
     /** One paragraph per line, or one paragraph of all lines joined by the separator. */
     private static LineRunModel.Spec paragraphs(List<StoredLine> lines, String separator, StyleAttributeMap style,

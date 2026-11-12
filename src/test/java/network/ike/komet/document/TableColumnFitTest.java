@@ -85,4 +85,15 @@ class TableColumnFitTest {
         assertEquals(25, share[2], 1e-9);
         assertEquals(100, share[3], 1e-9);
     }
+
+    @Test
+    @DisplayName("A width holds the columns side by side when it is no less than what they need together")
+    void aWidthHoldsTheColumnsOrDoesNot() {
+        double[] least = {137, 85, 100, 137, 137};
+        assertTrue(TableColumnFit.holds(least, 596));
+        assertTrue(TableColumnFit.holds(least, 780));
+        assertTrue(!TableColumnFit.holds(least, 595), "a point short, and some column is cut below its need");
+        assertTrue(!TableColumnFit.holds(least, 300), "a paragraph's width holds no five columns of sentences");
+        assertTrue(TableColumnFit.holds(new double[0], 0), "no columns need nothing");
+    }
 }

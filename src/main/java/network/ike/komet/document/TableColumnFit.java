@@ -22,7 +22,9 @@ import java.util.List;
  * gives it, unless that is less than its widest word needs: a word split inside itself reads worse
  * than a column a little off its weight. The columns with room to spare give up what the others
  * lack, each in proportion to its spare room. When the words alone need more than the width, no
- * share can keep them whole, and the columns share the width in proportion to those needs.
+ * share can keep them whole, and the columns share the width in proportion to those needs. A
+ * screen need not come to that: {@link #holds} says whether a width holds the columns at all, and
+ * a table it does not hold is drawn another way, a row's cells one under another.
  */
 final class TableColumnFit {
 
@@ -30,13 +32,22 @@ final class TableColumnFit {
     }
 
     /**
-     * Shares a width among columns.
+     * Whether a width holds a table's columns side by side, each at the least it needs. Narrower,
+     * and every column is cut below what its words or its lines want: columns a few letters wide
+     * and a page tall, which read worse than the same cells one under another.
      *
-     * @param weights the relative widths {@code cols} names, one for each column
-     * @param least   the least width each column needs to keep its widest word whole
-     * @param width   the width to share
-     * @return each column's width; they sum to {@code width}
+     * @param least the least width each column needs
+     * @param width the width to share
+     * @return whether the needs together are no more than the width
      */
+    static boolean holds(double[] least, double width) {
+        double needed = 0;
+        for (double one : least) {
+            needed += one;
+        }
+        return needed <= width + 0.01;
+    }
+
     /**
      * The relative widths a table's columns are printed with: the weights {@code cols} names when
      * every column's share of the measure holds its widest word, and else the shares that do, as
@@ -66,6 +77,14 @@ final class TableColumnFit {
         return List.copyOf(out);
     }
 
+    /**
+     * Shares a width among columns.
+     *
+     * @param weights the relative widths {@code cols} names, one for each column
+     * @param least   the least width each column needs to keep its widest word whole
+     * @param width   the width to share
+     * @return each column's width; they sum to {@code width}
+     */
     static double[] shares(List<Integer> weights, double[] least, double width) {
         int columns = weights.size();
         double[] share = new double[columns];

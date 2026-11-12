@@ -79,6 +79,29 @@
     -fx-border-width: 0;
 }
 
+/*
+ * A table too narrow for its columns: a row's cells stand one under another, with no rule between
+ * them, each under or beside the name its column's header gives it.
+ */
+.claude-doc-stack .doc-table-row.doc-table-stacked {
+    -fx-padding: 2 0 3 0;
+}
+
+.claude-doc-stack .doc-table-row.doc-table-stacked .doc-table-cell {
+    -fx-border-width: 0;
+}
+
+.claude-doc-stack .doc-table-cell-name {
+    -fx-font-size: 11px;
+    -fx-font-weight: bold;
+    -fx-text-fill: #6f6a62;
+    -fx-padding: 5 6 0 6;
+}
+
+.claude-doc-stack .doc-table-cell-name:beside {
+    -fx-padding: 5 6 3 6;
+}
+
 /* A cell's text draws on its row's ground, the header's tint included. */
 .claude-doc-stack .doc-table-cell-text,
 .claude-doc-stack .doc-table-cell-text .content {
