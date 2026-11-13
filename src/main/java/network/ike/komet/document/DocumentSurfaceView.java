@@ -2645,11 +2645,17 @@ public final class DocumentSurfaceView {
             return List.of();
         }
         StructuredBlockKind.Source source = StructuredBlocks.source(document, block);
+        // a kind whose blocks read as a run draws each knowing the blocks of the run before it
+        List<StructuredBlockKind.Source> before = kind.get().printsAsRun() ? StructuredBlocks.runBefore(document, block) : List.of();
+        StringBuilder run = new StringBuilder();
+        for (StructuredBlockKind.Source earlier : before) {
+            run.append("\n\u0000").append(earlier.parameters()).append('\n').append(earlier.content());
+        }
         // keyed by the caption too: a figure inserted before this one renumbers it, with the same source
-        return printed.computeIfAbsent(source.parameters() + "\n" + captions.text(block) + "\n" + source.content(), key -> {
+        return printed.computeIfAbsent(source.parameters() + "\n" + captions.text(block) + "\n" + source.content() + run, key -> {
             try {
                 List<network.ike.komet.document.DecisionFigure> figures = network.ike.komet.document.DecisionFigureText
-                        .inSerif(() -> kind.get().figures(source, new StructuredBlockKind.Context(host.view(), blocks, st.base())));
+                        .inSerif(() -> kind.get().figures(source, before, new StructuredBlockKind.Context(host.view(), blocks, st.base())));
                 if (figures.isEmpty() || block.title().isEmpty()) {
                     return figures;
                 }

@@ -255,6 +255,69 @@ public final class StructuredBlocks {
     }
 
     /**
+     * The blocks of a block's kind that stand directly before it among its parent's members, with
+     * nothing but blank lines between: the run the block continues, which a kind that
+     * {@link StructuredBlockKind#printsAsRun() prints as a run} draws it by. A paragraph, a
+     * heading or a block of another kind ends the run.
+     *
+     * @param document the block's document
+     * @param block    the block
+     * @return the sources of the blocks before it in document order, the nearest last; empty for
+     *         a block that begins a run or is not structured
+     */
+    public static List<StructuredBlockKind.Source> runBefore(StoredDocument document, StoredBlock block) {
+        Optional<StructuredBlockKind> kind = kindOf(block);
+        StoredBlock parent = kind.isEmpty() ? null : parents(document).get(block.nid());
+        if (parent == null) {
+            return List.of();
+        }
+        List<Long> members = parent.members();
+        List<StructuredBlockKind.Source> before = new ArrayList<>();
+        for (int i = members.indexOf(block.nid()) - 1; i >= 0; i--) {
+            long member = members.get(i);
+            StoredBlock earlier = document.blocks().get(member);
+            if (earlier == null) {
+                // a line of the parent's own between two blocks: a blank one parts nothing
+                if (document.line(member).map(line -> line.text().isBlank()).orElse(false)) {
+                    continue;
+                }
+                break;
+            }
+            if (kindOf(earlier).filter(kind.get()::equals).isEmpty()) {
+                break;
+            }
+            before.addFirst(source(document, earlier));
+        }
+        return before;
+    }
+
+    /** The block each member is in, for the document asked of last: one document is asked of many times over. */
+    private record Parents(java.lang.ref.WeakReference<StoredDocument> document, Map<Long, StoredBlock> byMember) {
+    }
+
+    private static volatile Parents parents;
+
+    private static Map<Long, StoredBlock> parents(StoredDocument document) {
+        Parents known = parents;
+        if (known != null && known.document().get() == document) {
+            return known.byMember();
+        }
+        Map<Long, StoredBlock> byMember = new java.util.HashMap<>();
+        for (StoredBlock parent : document.blocks().values()) {
+            for (long member : parent.members()) {
+                byMember.put(member, parent);
+            }
+        }
+        if (document.root() != null) {
+            for (long member : document.root().members()) {
+                byMember.put(member, document.root());
+            }
+        }
+        parents = new Parents(new java.lang.ref.WeakReference<>(document), byMember);
+        return byMember;
+    }
+
+    /**
      * Every line of a block in document order, its children's included, the members being in
      * document order: an open block's content is read as AsciiDoc, so its lines sit in child
      * blocks, while a listing holds its own.

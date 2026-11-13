@@ -87,6 +87,33 @@ public interface StructuredBlockKind {
     }
 
     /**
+     * Whether blocks of this kind that stand one directly after another read as a run on a page:
+     * a list of statements, where what a block says once the next one need not say again. A
+     * surface then gives each block the blocks of the run before it, through
+     * {@link #figures(Source, List, Context)}.
+     *
+     * @return true for a kind whose blocks read as a run; false by default
+     */
+    default boolean printsAsRun() {
+        return false;
+    }
+
+    /**
+     * What the block is on a page when blocks of its kind stand directly before it, with nothing
+     * between: the block's own figures, drawn knowing what the run has said already. A surface
+     * asks this only of a kind that {@link #printsAsRun() prints as a run}.
+     *
+     * @param source  the block's source
+     * @param before  the sources of the blocks of this kind directly before it, in document
+     *                order, the nearest last; empty for a block that begins a run
+     * @param context what the surface offers
+     * @return the figures in order; none prints the block as its source
+     */
+    default List<DecisionFigure> figures(Source source, List<Source> before, Context context) {
+        return figures(source, context);
+    }
+
+    /**
      * Writes the knowledge a block of this kind states, after the block's text was saved: a
      * decision tree as a version of its tree semantic, an ANF statement as a statement of its block,
      * a complex concept as a version of its specification. The versions are uncommitted, by the edit's
