@@ -154,6 +154,46 @@ class InlineTextTest {
         assertEquals("one +\ntwo", InlineText.of("one +\ntwo").text());
     }
 
+    /** A UUID no store in these tests holds: a page prints a token by its label, which needs no store. */
+    private static final String LENS = "f19c2b35-f7b3-5949-88d1-691d4002bc56";
+
+    @Test
+    void aConceptPrintsAsItsNameAndNeverAsItsCode() {
+        InlineText read = InlineText.of("Made of k:uuid=" + LENS + "[Etafilcon A] and k:sctid=303529009[Hydrogel], *k:uuid=" + LENS + "[Etafilcon A]* bold.");
+        assertEquals("Made of Etafilcon A and Hydrogel, Etafilcon A bold.", read.text());
+        assertEquals(List.of(run(34, 45, false, true, false)), read.runs(), "a token in a span takes the span's style");
+        assertEquals("Its module is Module, or Module.", InlineText.of("Its module is k:uuid=" + LENS + "[Module], or [k:uuid=" + LENS + "[Module]].").text(),
+                "brackets written around a token go with it, as they go with its chip on screen");
+        assertEquals("Chronic disease", InlineText.of("k:nid=-2147483000[Chronic disease]").text(), "a token of a nid, which nothing resolves, by its label");
+        assertEquals("A lens.¹", InlineText.of("A lens.footnote:[Of k:uuid=" + LENS + "[Etafilcon A].]").text());
+        assertEquals("Of Etafilcon A.", InlineText.of("A lens.footnote:[Of k:uuid=" + LENS + "[Etafilcon A].]").notes().getFirst().body().text(), "and in a footnote");
+    }
+
+    @Test
+    void aConceptStaysAsWrittenInCodeOnScreenAndWhenNothingNamesIt() {
+        String token = "k:uuid=" + LENS + "[Etafilcon A]";
+        assertEquals(token, InlineText.of("`" + token + "`").text(), "code shows a token as written");
+        String unnamed = "a k:uuid=" + LENS + " b";
+        assertEquals(unnamed, InlineText.of(unnamed).text(), "a token with no label that no open store names has nothing else to print");
+        String prose = "Made of " + token + ", *firm*.";
+        InlineText screen = InlineText.onScreen(prose, new InlineText.Numbering());
+        assertEquals("Made of " + token + ", firm.", screen.text(), "the screen keeps the token for its chip and reads the rest as a page does");
+        assertTrue(screen.runs().getFirst().bold());
+    }
+
+    @Test
+    void aConceptsLabelKeepsItsSourceOffsets() {
+        String source = "See k:uuid=" + LENS + "[Etafilcon A] here";
+        InlineText read = InlineText.of(source);
+        int label = source.indexOf("Etafilcon");
+        assertEquals("See Etafilcon A here", read.text());
+        assertEquals(4, read.drawnAt(4), "the token's machinery stands where its name begins");
+        assertEquals(4, read.drawnAt(label));
+        assertEquals(14, read.drawnAt(label + "Etafilcon ".length()), "a word of the label is drawn from where it is written");
+        assertEquals(15, read.drawnAt(source.indexOf("] here")), "the closing bracket stands where the name ends");
+        assertEquals(20, read.drawnAt(source.length()));
+    }
+
     @Test
     void literalTextIsNotRead() {
         InlineText read = InlineText.literal("`kept` *as is*");

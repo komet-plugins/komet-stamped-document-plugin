@@ -18,12 +18,14 @@ package network.ike.komet.document.print;
 import design.knowledge.stamp.adoc.dialect.InlineMarkup;
 import design.knowledge.stamp.adoc.dialect.InlineMarkup.Span;
 import network.ike.komet.document.AsciiDocMarkdown;
+import network.ike.komet.document.KonceptTokens;
 
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 
 /**
  * Prose as a page prints it: AsciiDoc inline markup read once, by {@link InlineMarkup}, into the
@@ -40,6 +42,13 @@ import java.util.Objects;
  * its target is read as one before the text comes here. Anchors and concealed index terms
  * print nothing; an anchor is kept as a place such a link can point at. An attribute reference stays as written. A trailing
  * {@code +} stays too: on a page it stands for the hard break, outside every line's range.
+ *
+ * <p>A concept token, {@code k:uuid=<UUID>[Name]} or {@code k:sctid=<SCTID>[Name]}
+ * ({@link KonceptTokens}), prints as the concept's name and never as its code: the words of its
+ * label, else the name the open store gives the concept ({@link KonceptTokens.Found#name()}). A
+ * token with neither, and one in monospace, which shows code as written, stays as written. The
+ * Reading view draws a token as the concept's chip, so it reads prose {@link #onScreen} and keeps
+ * the token for the chip to take its place.
  *
  * @param text    the drawn text; a footnote's mark is its number in superscript digits
  * @param runs    the styled ranges of the text, ascending; what they leave out is plain
@@ -227,7 +236,23 @@ public record InlineText(String text, List<Run> runs, List<Note> notes, int[] of
      * @return the printed text
      */
     public static InlineText of(String markup, Numbering numbering) {
-        Reader reader = new Reader(markup, numbering);
+        return read(markup, numbering, true);
+    }
+
+    /**
+     * Reads prose as the Reading view draws it: as {@link #of(String, Numbering)} reads it, but a
+     * concept token stays as written, since the screen draws it as the concept's chip.
+     *
+     * @param markup    the text, physical lines joined by {@code \n}
+     * @param numbering the document's count
+     * @return the text as the screen draws it before its chips are put in
+     */
+    public static InlineText onScreen(String markup, Numbering numbering) {
+        return read(markup, numbering, false);
+    }
+
+    private static InlineText read(String markup, Numbering numbering, boolean names) {
+        Reader reader = new Reader(markup, numbering, names);
         reader.walk(InlineMarkup.parse(markup), Run.PLAIN);
         return reader.done(markup.length());
     }
@@ -305,11 +330,14 @@ public record InlineText(String text, List<Run> runs, List<Note> notes, int[] of
         private final List<Note> notes = new ArrayList<>();
         private final List<Anchor> anchors = new ArrayList<>();
         private final int[] offsets;
+        /** Whether a concept token is read as its name, as a page prints it, or kept as written for the screen's chip. */
+        private final boolean names;
         private int at;
 
-        Reader(String source, Numbering numbering) {
+        Reader(String source, Numbering numbering, boolean names) {
             this.source = source;
             this.numbering = numbering;
+            this.names = names;
             this.offsets = new int[source.length() + 1];
         }
 
@@ -364,21 +392,63 @@ public record InlineText(String text, List<Run> runs, List<Note> notes, int[] of
             }
         }
 
-        /** A text run: its characters, each kept against its source offset; an escape's backslash becomes nothing. */
+        /**
+         * A text run: its characters, each kept against its source offset; an escape's backslash
+         * becomes nothing. Read for a page, a concept token is its name, in the run's style.
+         */
         private void text(Span span, Run style) {
             String text = span.text();
             int i = span.start();
-            for (int k = 0; k < text.length(); k++) {
-                char c = text.charAt(k);
-                while (i < span.end() && source.charAt(i) != c) {
-                    offsets[i++] = out.length();
+            int k = 0;
+            for (KonceptTokens.Found token : names && !style.mono() ? KonceptTokens.find(text) : List.<KonceptTokens.Found>of()) {
+                Optional<String> name = token.name();
+                if (name.isEmpty()) {
+                    continue;                                     // nothing to name it by: it stays as written
                 }
-                if (i < span.end()) {
-                    offsets[i++] = out.length();
+                // a token written inside brackets of its own, as the assistant writes some, is the reference: the brackets go
+                // with it, as they go with its chip on screen
+                boolean bracketed = token.start() > k && text.charAt(token.start() - 1) == '['
+                        && token.end() < text.length() && text.charAt(token.end()) == ']';
+                int from = bracketed ? token.start() - 1 : token.start();
+                int to = bracketed ? token.end() + 1 : token.end();
+                for (; k < from; k++) {
+                    i = take(text.charAt(k), i, span.end());
+                    emit(String.valueOf(text.charAt(k)), style);
                 }
-                emit(String.valueOf(c), style);
+                // a label's words are drawn where they are written, the token's other characters standing at their edges;
+                // a name the store gives stands where the token began
+                int words = token.label() != null && !token.label().isBlank() ? token.labelStart() + token.label().indexOf(name.get()) : -1;
+                for (; k < to; k++) {
+                    i = take(text.charAt(k), i, span.end());
+                    if (words >= 0 && k >= words && k < words + name.get().length()) {
+                        emit(String.valueOf(text.charAt(k)), style);
+                    }
+                }
+                if (words < 0) {
+                    emit(name.get(), style);
+                }
+            }
+            for (; k < text.length(); k++) {
+                i = take(text.charAt(k), i, span.end());
+                emit(String.valueOf(text.charAt(k)), style);
             }
             at = Math.max(at, i);
+        }
+
+        /**
+         * Takes a character of a run from the source, at an offset or after it: the characters
+         * passed over, an escape's backslash, stand where it does in the drawn text.
+         *
+         * @return the source offset after it
+         */
+        private int take(char c, int i, int end) {
+            while (i < end && source.charAt(i) != c) {
+                offsets[i++] = out.length();
+            }
+            if (i < end) {
+                offsets[i++] = out.length();
+            }
+            return i;
         }
 
         /** A footnote's mark, which Typst sets tight against the word before: the space between goes. */
@@ -398,7 +468,7 @@ public record InlineText(String text, List<Run> runs, List<Note> notes, int[] of
                 id = null;                                        // a name given twice: Typst's label must stay unique
             }
             int number = repeat ? numbering.named.get(id) : numbering.next(id);
-            Reader reader = new Reader(source, numbering);
+            Reader reader = new Reader(source, numbering, names);
             reader.at = span.start();
             reader.walk(span.children(), Run.PLAIN);
             String mark = superscript(number);

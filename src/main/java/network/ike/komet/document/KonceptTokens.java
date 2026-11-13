@@ -15,8 +15,16 @@
  */
 package network.ike.komet.document;
 
+import dev.ikm.tinkar.common.id.PublicId;
+import dev.ikm.tinkar.common.id.PublicIds;
+import dev.ikm.tinkar.common.service.PrimitiveData;
+import dev.ikm.tinkar.common.util.uuid.UuidUtil;
 import network.ike.komet.document.ConceptChipInlineDecorator;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Optional;
+import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -29,6 +37,8 @@ import java.util.regex.Pattern;
  * walking the compose model's segments, each chip serializes through {@link #token}.
  *
  * <p>Pure string functions, deliberately: serialization is testable without a store or a toolkit.
+ * The one exception is {@link Found#name()}, which asks the open store for the name of a token
+ * written without a label, and finds none when no store is running.
  * Interim home — the canonical token (parse/serialize + adoc macro) is
  * {@code IKE-Network/ike-issues#735}'s remit in koncept-core; this class carries only what the
  * compose surface needs and can retire onto it.
@@ -87,10 +97,94 @@ public final class KonceptTokens {
      * The tight inline token grammar, for the display projection (kept in step with the decorator).
      * It still recognizes the {@code nid} kind that text stored before
      * {@code IKE-Network/ike-issues#1170} can hold, only so that such a token projects as its
-     * label; nothing here resolves an identifier.
+     * label; a nid is never resolved.
      */
     private static final Pattern TOKEN =
-            Pattern.compile("k:(?:sctid|uuid|nid|id)=[0-9a-fA-F-]+(?:\\[([^\\[\\]]*)])?");
+            Pattern.compile("k:(?<kind>sctid|uuid|nid|id)=(?<id>[0-9a-fA-F-]+)(?:\\[(?<label>[^\\[\\]]*)])?");
+
+    /**
+     * A token as it stands in a text.
+     *
+     * @param start the token's first character
+     * @param end   the character after its last, the label's closing bracket included
+     * @param kind  the id space as written: {@code uuid}, {@code sctid}, {@code id}, or the
+     *              {@code nid} of text stored before {@code IKE-Network/ike-issues#1170}
+     * @param id    the identifier as written
+     * @param label the words between the brackets, or {@code null} when the token has none
+     */
+    public record Found(int start, int end, String kind, String id, String label) {
+
+        /** @return where the label's first character stands in the text, or {@code -1} when the token has none */
+        public int labelStart() {
+            return label == null ? -1 : end - 1 - label.length();
+        }
+
+        /**
+         * The name a reader is shown for the token where it cannot be drawn as a chip, as on a
+         * printed page: its label, which its author wrote for the reader; else the name the open
+         * store gives the component it names. A nid is never resolved: it names a component only
+         * in the store that assigned it.
+         *
+         * @return the name, or empty when the token has no label and names nothing the open store holds
+         */
+        public Optional<String> name() {
+            if (label != null && !label.isBlank()) {
+                return Optional.of(label.strip());
+            }
+            try {
+                PublicId component = publicId(kind, id);
+                if (component != null && PrimitiveData.running() && PrimitiveData.get().hasPublicId(component)) {
+                    return PrimitiveData.textOptional(PrimitiveData.nid(component)).map(String::strip).filter(name -> !name.isEmpty());
+                }
+            } catch (RuntimeException unresolvable) {
+                // an identifier that is not one, or a store that cannot say: nothing to name it by
+            }
+            return Optional.empty();
+        }
+    }
+
+    /**
+     * The tokens of a text, in order.
+     *
+     * @param text the text; may be null
+     * @return the tokens, none overlapping
+     */
+    public static List<Found> find(String text) {
+        if (text == null || text.indexOf("k:") < 0) {
+            return List.of();
+        }
+        List<Found> found = new ArrayList<>();
+        Matcher m = TOKEN.matcher(text);
+        while (m.find()) {
+            found.add(new Found(m.start(), m.end(), m.group("kind"), m.group("id"), m.group("label")));
+        }
+        return found;
+    }
+
+    /**
+     * The public id a token's identifier names. The generic {@code id} kind (mirroring the
+     * koncept-tree line grammar) is read as a UUID first, then as an SCTID-shaped number. Nothing
+     * here asks a store whether the component exists.
+     *
+     * @param kind the id space as written in the token
+     * @param id   the identifier
+     * @return the public id; {@code null} for a nid, which is not a public identifier
+     * @throws IllegalArgumentException when the identifier is not one of its kind
+     */
+    public static PublicId publicId(String kind, String id) {
+        return switch (kind) {
+            case "uuid" -> PublicIds.of(UUID.fromString(id));
+            case "sctid" -> PublicIds.of(UuidUtil.fromSNOMED(id));
+            case "id" -> {
+                try {
+                    yield PublicIds.of(UUID.fromString(id));
+                } catch (IllegalArgumentException notAUuid) {
+                    yield PublicIds.of(UuidUtil.fromSNOMED(id));
+                }
+            }
+            default -> null;
+        };
+    }
 
     /**
      * The human-display projection of token text: each {@code k:} token replaced by its label (or
@@ -107,7 +201,7 @@ public final class KonceptTokens {
         Matcher m = TOKEN.matcher(tokenText);
         StringBuilder sb = new StringBuilder();
         while (m.find()) {
-            String label = m.group(1);
+            String label = m.group("label");
             m.appendReplacement(sb, Matcher.quoteReplacement(label == null ? "" : label));
         }
         m.appendTail(sb);

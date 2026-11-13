@@ -3433,7 +3433,7 @@ public final class DocumentSurfaceView {
     private Area addArea(DocumentAssembly.Member member, StoredBlock block, List<StoredLine> lines, LineRunModel.Spec read, int depth, boolean editable, String section,
                          boolean inline) {
         LineRunModel.Inlined inlined = inline ? (print ? read.inlined(printNotes, assembly.reading(member)) : onScreen(read).inlined(readingNotes, assembly.reading(member))) : null;
-        // on screen a concept the prose names is drawn as its chip; a page prints the reference as written
+        // on screen a concept the prose names is drawn as its chip; a page prints its name, as the PDF does
         LineRunModel.Spec spec = inlined == null ? read : print ? inlined.spec() : inlined.spec().withInlines(text -> conceptChips(text, false));
         // a unit of the Page layout is bare: the oracles place it by its text and style, and its lines are built from it
         // a block that a tagged region cuts is read there and edited where its file is shown whole: an edit is of the whole block

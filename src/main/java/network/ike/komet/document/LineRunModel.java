@@ -352,7 +352,9 @@ public final class LineRunModel extends StyledTextModelViewOnlyBase {
                     source.append(references == null ? drawn(p, line) : references.line(line.line().nid(), drawn(p, line)));
                 }
                 starts[p.lines().size()] = source.length();
-                InlineText inline = InlineText.of(source.toString(), numbering);
+                // the screen keeps a concept token as written, for its chip to take its place; a page prints its name
+                InlineText inline = p.style() != null && Boolean.TRUE.equals(p.style().get(SCREEN))
+                        ? InlineText.onScreen(source.toString(), numbering) : InlineText.of(source.toString(), numbering);
                 String text = inline.text().replace('\n', ' ');
                 List<Line> lines = new ArrayList<>();
                 for (int i = 0; i < p.lines().size(); i++) {

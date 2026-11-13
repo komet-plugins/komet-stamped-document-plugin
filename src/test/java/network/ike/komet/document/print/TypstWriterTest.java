@@ -456,6 +456,25 @@ class TypstWriterTest {
     }
 
     @Test
+    void aConceptPrintsAsItsNameInProseInACellAndInACaption() {
+        String lens = "k:uuid=f19c2b35-f7b3-5949-88d1-691d4002bc56[Etafilcon A]";
+        String typst = body("""
+                The lens is made of %s, a k:sctid=303529009[Hydrogel].
+
+                .Materials of %s
+                |===
+                | Material | %s
+                |===
+                """.formatted(lens, lens, lens));
+        for (String code : List.of("k:uuid", "k:sctid", "f19c2b35", "303529009")) {
+            assertFalse(typst.contains(code), "no code is printed: " + typst);
+        }
+        assertTrue(typst.contains("The lens is made of Etafilcon A, a Hydrogel."), typst);
+        assertTrue(typst.contains("[Material], [Etafilcon A],"), typst);
+        assertTrue(typst.contains("caption: [Materials of Etafilcon A]"), typst);
+    }
+
+    @Test
     void aTableBreaksBetweenWholeRowsItsCaptionKeptWithIt() {
         String preamble = TypstWriter.preamble("T", TypstWriter.PageSetup.DEFAULT);
 

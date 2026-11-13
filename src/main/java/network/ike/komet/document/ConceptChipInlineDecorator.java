@@ -291,26 +291,11 @@ public final class ConceptChipInlineDecorator implements InlineDecorator {
     }
 
     /**
-     * The id of a {@code k:} interchange token: the kind names the id space. The generic
-     * {@code id} kind (mirroring the koncept-tree line grammar) accepts a UUID first, then an
-     * SCTID-shaped number.
+     * The id of a {@code k:} interchange token: the kind names the id space, read as
+     * {@link KonceptTokens#publicId} reads it, so a page names the component a chip draws.
      */
     private static PublicId interchangeId(String kind, String value) {
-        return switch (kind) {
-            case "uuid" -> PublicIds.of(UUID.fromString(value));
-            case "sctid" -> PublicIds.of(UuidUtil.fromSNOMED(value));
-            case "id" -> genericId(value);
-            default -> null;
-        };
-    }
-
-    /** A {@code k:id=…} value: a UUID when it parses as one, otherwise an SCTID-shaped number. */
-    private static PublicId genericId(String value) {
-        try {
-            return PublicIds.of(UUID.fromString(value));
-        } catch (IllegalArgumentException notAUuid) {
-            return PublicIds.of(UuidUtil.fromSNOMED(value));
-        }
+        return KonceptTokens.publicId(kind, value);
     }
 
     /**

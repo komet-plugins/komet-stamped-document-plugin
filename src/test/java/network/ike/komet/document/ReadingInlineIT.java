@@ -234,6 +234,17 @@ class ReadingInlineIT {
         assertFalse(bold.contains("its stars"), "and nothing in a listing is weighted");
     }
 
+    @Test
+    void aPageNamesAConceptWrittenWithNoLabelAsTheOpenStoreNamesIt() {
+        PublicId literal = network.ike.foundation.ike.bindings.IkeConcept.ASCIIDOC_LITERAL_BLOCK.publicId();
+        String uuid = literal.asUuidArray()[0].toString();
+        String name = PrimitiveData.textOptional(PrimitiveData.nid(literal)).orElseThrow();
+        assertEquals("A " + name + " here.", network.ike.komet.document.print.InlineText.of("A k:uuid=" + uuid + " here.").text(),
+                "a token with no label prints as the name the open store gives its concept");
+        assertEquals("A " + name + " here.", network.ike.komet.document.print.InlineText.of("A k:uuid=" + uuid + "[] here.").text(),
+                "and so does one whose label is empty");
+    }
+
     private static final String CITED = """
             :topic-id: reading-cited
             [[reading-cited]]

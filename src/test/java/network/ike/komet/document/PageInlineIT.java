@@ -65,8 +65,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * Inline spans on the Stamped Document card's pages, from a stored document through the units,
  * both oracles and the page lines: no markup is drawn, inline code is drawn in the mono font at
- * the raw size with every piece keeping its source line, Typst's lines are the lines drawn, and a
- * footnote stands at the page's foot under its rule.
+ * the raw size with every piece keeping its source line, Typst's lines are the lines drawn, a
+ * concept is printed as its name, and a footnote stands at the page's foot under its rule.
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class PageInlineIT {
@@ -85,7 +85,7 @@ class PageInlineIT {
             %s
             Said so. footnote:[With `code` in it.] And <<anf-data-types>> after.
 
-            A second paragraph with `code` to close.
+            A second paragraph with `code` and k:uuid=f19c2b35-f7b3-5949-88d1-691d4002bc56[a lens material] to close.
 
             . *Cascade-walker reachability* over `release-cascade.yaml`, a %s
             . *Set notify policy* for %s
@@ -141,6 +141,8 @@ class PageInlineIT {
         assertTrue(body.text().contains("the data types"), body.text());
         assertTrue(body.text().contains("Said so.¹ And anf data types after."), body.text());
         LayoutOracle.Unit note = units.get(body.index() + 1);
+        LayoutOracle.Unit second = units.stream().filter(u -> u.text().startsWith("A second paragraph")).findFirst().orElseThrow();
+        assertEquals("A second paragraph with code and a lens material to close.", second.text(), "a concept prints as its name, never its code");
         assertEquals(LayoutOracle.Kind.FOOTNOTE, note.kind());
         assertEquals("¹With code in it.", note.text());
 
