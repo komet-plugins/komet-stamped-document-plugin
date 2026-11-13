@@ -1842,9 +1842,20 @@ public final class DocumentSurfaceView {
                 }
                 boolean header = block.parameters().contains("header");
                 if (!own.isEmpty() && !print) {
-                    Area delimiters = add(member, block, own, paragraphs(own, "", st.smallGrey(), null), depth, false, section);
-                    if (delimiters != null) {
-                        title(delimiters, block);
+                    // The table's own lines, its attributes, its title and its delimiters, are its source, which the Source view
+                    // shows: the Reading view draws the table, and its caption above it. The caption stands on the title's line,
+                    // whose text is not drawn; an untitled table has nothing above its rows.
+                    if (!block.title().isEmpty()) {
+                        List<StoredLine> titled = own.stream().filter(l -> BLOCK_TITLE_LINE.matcher(l.text().strip()).matches()).limit(1).toList();
+                        List<StoredLine> carrier = titled.isEmpty() ? own.subList(0, 1) : titled;
+                        Area caption = add(member, block, carrier, paragraphs(carrier, "", st.smallGrey(), null), depth, false, section);
+                        if (caption != null) {
+                            if (caption.area != null) {
+                                caption.area.setVisible(false);
+                                caption.area.setManaged(false);
+                            }
+                            title(caption, block);
+                        }
                     }
                 } else if (print && !block.title().isEmpty()) {
                     // The caption, which Typst sets above the table: carried by the block's first line, or the first cell's.
@@ -1867,7 +1878,7 @@ public final class DocumentSurfaceView {
                     modelOrdinal++;
                 }
                 // in the Reading view a picture that is found is shown, and the lines that name it stand beneath it small and
-                // grey, as a table's own lines do; one that is not found is its lines, marked as a picture's
+                // grey; one that is not found is its lines, marked as a picture's
                 Optional<javafx.scene.image.Image> shown = print ? Optional.<javafx.scene.image.Image>empty()
                         : pictureOf(document, block).flatMap(this::pictureImage);
                 Area area = add(member, block, own, shown.isPresent() ? paragraphs(own, "", st.smallGrey(), null)

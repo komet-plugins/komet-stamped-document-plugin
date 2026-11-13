@@ -56,6 +56,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * monospace is in the mono font, a cross reference and a link read as their words, and a
  * footnote is a mark in the text with its words beneath the block. What is not prose, a listing
  * and the header's attribute lines, stays as written, and every character keeps its source line.
+ * A table's own lines, its attributes, title and delimiters, are not drawn: its caption is.
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class ReadingInlineIT {
@@ -81,6 +82,12 @@ class ReadingInlineIT {
 
             |===
             | Named | k:uuid=MODULE[Module] in a *cell*
+            |===
+
+            .Materials of the lens
+            [cols="1,2"]
+            |===
+            | Material | Etafilcon A
             |===
 
             ----
@@ -141,11 +148,22 @@ class ReadingInlineIT {
         List<String> chipped = new ArrayList<>();
         List<Node> chips = new ArrayList<>();
         List<String> cells = new ArrayList<>();
+        List<String> shown = new ArrayList<>();
+        List<String> captions = new ArrayList<>();
         onFx(() -> {
             for (int b = 0; b < body.blockCount(); b++) {
+                for (Node caption : body.block(b).node().lookupAll(".stamped-document-caption")) {
+                    captions.add(((javafx.scene.control.Label) caption).getText());
+                }
                 StyledTextModel model = body.block(b).model();
                 if (model == null) {
                     continue;
+                }
+                jfx.incubator.scene.control.richtext.RichTextArea drawn = body.block(b).richText();
+                if (drawn != null && drawn.isVisible()) {
+                    for (int p = 0; p < model.size(); p++) {
+                        shown.add(model.getPlainText(p));
+                    }
                 }
                 StringBuilder text = new StringBuilder();
                 for (int p = 0; p < model.size(); p++) {
@@ -226,7 +244,12 @@ class ReadingInlineIT {
         assertEquals(List.of(named, named), chipped, "a concept the store holds is a chip in place of its reference, brackets written around "
                 + "the reference going with it; one the store does not hold stays as written");
         assertEquals(2, chips.size());
-        assertEquals(List.of("Named|text", "in a cell|chip text bold"), cells, "a table's cells read as prose does, a concept a chip and a strong word bold");
+        assertEquals(List.of("Named|text", "in a cell|chip text bold", "Material|text", "Etafilcon A|text"), cells,
+                "a table's cells read as prose does, a concept a chip and a strong word bold");
+        for (String source : List.of("|===", "[cols", ".Materials")) {
+            assertTrue(shown.stream().noneMatch(t -> t.contains(source)), "a table's own lines are its source, not drawn: " + source + " in " + shown);
+        }
+        assertTrue(captions.stream().anyMatch(c -> c.endsWith("Materials of the lens")), "a titled table has its caption: " + captions);
         assertTrue(chips.getFirst() instanceof dev.ikm.komet.framework.controls.KonceptBadge, "the chip the rest of Komet draws: " + chips.getFirst());
 
         assertTrue(texts.stream().anyMatch(t -> t.contains("a listing keeps *its stars* and `ticks`")), "a listing is its source: " + texts);
