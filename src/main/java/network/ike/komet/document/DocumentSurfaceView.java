@@ -638,6 +638,8 @@ public final class DocumentSurfaceView {
         final Map<Node, boolean[]> hiddenByFold = new java.util.LinkedHashMap<>();
         LineRunModel model;
         HBox marginalia;
+        /** The row whose pointer the area follows, so that its repeated date and STAMPs are drawn while the pointer is beside it. */
+        Node followed;
         /** The area before this one in the Reading view, whose date and STAMPs this one's are read against; null for the first. */
         Area above;
         /** The STAMPs that introduced the area's lines, oldest first, read once. */
@@ -3506,6 +3508,11 @@ public final class DocumentSurfaceView {
         area.notes.getStyleClass().add("stamped-document-notes");
         VBox right = new VBox(4, area.marginalia, area.notes);
         right.setFillWidth(true);
+        // A figure in the body may reach into the right margin, and the margin is drawn over it. The margin
+        // takes the pointer on its marks only, so what the figure has there can be clicked.
+        for (javafx.scene.layout.Pane column : List.of(right, area.marginalia, area.notes)) {
+            column.setPickOnBounds(false);
+        }
         Node left = dateBox(area);
         // a date or a STAMP the block above already shows is drawn while the pointer is on the block or its margins
         for (Node under : List.of(area.holder, left, right)) {
@@ -3518,6 +3525,7 @@ public final class DocumentSurfaceView {
                 .whenRealized(() -> {
                     fillMarginalia(area);
                     bindFoldMark(area);
+                    followRow(area);
                     // a right-click beside the text, in either margin, asks for the menu as one in the text does
                     Node row = area.documentBlock == null ? null : area.documentBlock.stackNode();
                     if (row != null) {
@@ -4669,6 +4677,7 @@ public final class DocumentSurfaceView {
         if (layers.contains(Layer.STAMPS)) {
             FlowPane icons = new FlowPane(3, 3);
             icons.setPrefWrapLength(120);
+            icons.setPickOnBounds(false);                               // the marks take the pointer, not the room between them
             icons.getStyleClass().add("stamped-document-stamps");
             area.icons = icons;
             if (!stamps.isEmpty()) {
@@ -4755,13 +4764,28 @@ public final class DocumentSurfaceView {
         showRepeats(area);
     }
 
+    /**
+     * Follows the pointer on the area's row. The right margin takes the pointer on its marks only, so
+     * that a figure reaching into it can be used there; the row is what says the pointer is beside
+     * the block where the margin shows nothing.
+     */
+    private void followRow(Area area) {
+        Node row = area.documentBlock == null ? null : area.documentBlock.stackNode();
+        if (row != null && row != area.followed) {
+            area.followed = row;
+            row.hoverProperty().addListener(obs -> showRepeats(area));
+        }
+    }
+
     /** Draws a repeated date and repeated STAMPs only under the pointer, fainter than those that mark a change; each keeps its room. */
     private void showRepeats(Area area) {
         if (area.date == null || area.marginalia == null || !area.hiddenByFold.isEmpty()) {
             return;                                                  // a fold line stands in the block's place: its margins come back with it
         }
+        followRow(area);
         boolean pointed = area.holder.isHover() || area.date.getParent() != null && area.date.getParent().isHover()
-                || area.marginalia.getParent() != null && area.marginalia.getParent().isHover();
+                || area.marginalia.getParent() != null && area.marginalia.getParent().isHover()
+                || area.followed != null && area.followed.isHover();
         area.date.setVisible(layers.contains(Layer.DATES) && (!area.dateRepeats || pointed));
         area.date.setOpacity(area.dateRepeats ? REPEAT_OPACITY : 1);
         if (area.icons != null) {

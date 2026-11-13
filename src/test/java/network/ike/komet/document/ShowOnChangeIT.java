@@ -198,6 +198,86 @@ class ShowOnChangeIT {
         assertEquals(1, onFx(() -> runStamps(surface)), "the header shows the STAMP of the line at the top");
     }
 
+    private static final String BESIDE = """
+            :topic-id: margin-pointer
+            = The Pointer in the Margin
+
+            First paragraph, as first written.
+
+            Second paragraph, as first written.
+            """;
+
+    @Test
+    void theRightMarginTakesAClickOnItsMarksOnly() throws Exception {
+        // a robot on a real screen would move the person's pointer
+        Assumptions.assumeTrue("Monocle".equals(System.getProperty("glass.platform")), "a pointer of the test's own");
+        Path dir = Files.createDirectories(root.resolve("margin"));
+        git(dir, "init", "-q", "-b", "main");
+        git(dir, "config", "user.name", "author");
+        git(dir, "config", "user.email", "author@example.test");
+        Path file = dir.resolve("margin.adoc");
+        Files.writeString(file, BESIDE);
+        git(dir, "add", "margin.adoc");
+        gitOn(dir, "2026-05-03T12:00:00Z", "commit", "-q", "--no-gpg-sign", "-m", "The document");
+        StoredDocument document = GitDocumentMaterializer.load(GitDocumentMaterializer.materialize(dir, file).anchor(), true).orElseThrow();
+
+        DocumentSurface surface = onFx(() -> new DocumentSurface(new BlockFactory(Calculators.View.Default(), 13)));
+        onFx(() -> {
+            Stage stage = new Stage();
+            stage.setScene(new Scene(surface, 900, 700));
+            stage.show();
+            DocumentSurfaceView v = new DocumentSurfaceView(host(), surface);
+            v.show(DocumentAssembly.single(document, "margin.adoc"));
+            return v;
+        });
+        pulses();
+        int second = onFx(() -> {
+            for (int i = 0; i < surface.blockCount(); i++) {
+                if (surface.block(i).plainText().strip().startsWith("Second paragraph")) {
+                    return i;
+                }
+            }
+            throw new AssertionError("no second paragraph");
+        });
+
+        // the right margin beside the block, where it shows nothing: the block's date and STAMP repeat the block's above
+        javafx.geometry.Point2D beside = onFx(() -> {
+            Node column = surface.block(second).stackNode().lookup(".stamped-document-marginalia").getParent();
+            javafx.geometry.Bounds on = column.localToScreen(column.getBoundsInLocal());
+            return new javafx.geometry.Point2D(on.getMinX() + on.getWidth() * 0.75, on.getCenterY());
+        });
+        onFx(() -> {
+            new javafx.scene.robot.Robot().mouseMove(beside.getX(), beside.getY());
+            return null;
+        });
+        pulses();
+        assertEquals(List.of(true, true, 0.5, 0.5), onFx(() -> drawn(surface, second)),
+                "the pointer in a block's right margin draws the date and the STAMP it shares with the block above");
+
+        // a figure in the body may reach into the margin beside it; what it has there is used there
+        int[] clicks = {0};
+        onFx(() -> {
+            javafx.scene.layout.Pane body = (javafx.scene.layout.Pane) surface.block(second).node();
+            javafx.scene.layout.Region reaching = new javafx.scene.layout.Region();
+            reaching.setManaged(false);
+            reaching.setOnMouseClicked(e -> clicks[0]++);
+            body.getChildren().add(reaching);
+            javafx.geometry.Point2D at = body.screenToLocal(beside);
+            reaching.resizeRelocate(at.getX() - 6, at.getY() - 4, 12, 8);
+            return null;
+        });
+        pulses();
+        onFx(() -> {
+            javafx.scene.robot.Robot robot = new javafx.scene.robot.Robot();
+            robot.mouseMove(beside.getX(), beside.getY());
+            robot.mousePress(javafx.scene.input.MouseButton.PRIMARY);
+            robot.mouseRelease(javafx.scene.input.MouseButton.PRIMARY);
+            return null;
+        });
+        pulses();
+        assertEquals(1, clicks[0], "a click on what the body has under the right margin reaches it: the margin takes a click on its marks only");
+    }
+
     /** Moves the pointer to the middle of a block's body and waits for the view to follow. */
     private static void pointAt(DocumentSurface surface, int block) throws Exception {
         onFx(() -> {

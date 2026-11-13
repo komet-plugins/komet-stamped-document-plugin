@@ -140,6 +140,101 @@ class DocumentSurfaceVirtualTest {
         assertTrue(onFx(() -> surface.block(399).isRealized()));
     }
 
+    /**
+     * A block that is built 60 high where it was expected to stand 100 high. A real document's
+     * blocks are expected at a height worked out from their source lines, which is seldom the
+     * height they are built at.
+     */
+    private static DocumentBlock misjudged(int index) {
+        Region body = new Region();
+        body.setPrefHeight(60);
+        body.setMinHeight(60);
+        body.setMaxHeight(60);
+        return DocumentBlock.of(body, "block " + index).withEstimatedHeight(100);
+    }
+
+    /** Where a block's top is in the window. */
+    private static double screenTop(DocumentSurface surface, int index) {
+        javafx.scene.Node node = surface.block(index).stackNode();
+        return node.localToScene(node.getBoundsInLocal()).getMinY();
+    }
+
+    /** Lets the window's own pulses lay the surface out, look again and keep the reader's place. */
+    private static void pulses() throws Exception {
+        for (int i = 0; i < 8; i++) {
+            Thread.sleep(40);
+            onFx(() -> null);
+        }
+    }
+
+    @Test
+    void aBuiltBlockLetsItsStandInsRoomGoWithoutWaitingForTheReaderToMove() throws Exception {
+        org.junit.jupiter.api.Assumptions.assumeTrue("Monocle".equals(System.getProperty("glass.platform")), "a window of the test's own");
+        DocumentSurface surface = onFx(() -> {
+            DocumentSurface s = new DocumentSurface(null);
+            List<DocumentBlock> blocks = new ArrayList<>();
+            for (int i = 0; i < 400; i++) {
+                blocks.add(misjudged(i));
+            }
+            javafx.stage.Stage stage = new javafx.stage.Stage();
+            stage.setScene(new Scene(s, 600, 500));
+            stage.show();
+            s.setBlocks(blocks);
+            return s;
+        });
+        // nothing moves and nothing is asked of the window: the blocks in view come to their own height by themselves
+        Thread.sleep(600);
+        assertTrue(onFx(() -> surface.block(0).isRealized()));
+        assertEquals(60, onFx(() -> surface.block(0).stackNode().getBoundsInParent().getHeight()), 1,
+                "a built block stands at its own height soon after it is built, and not at its stand-in's until the next scroll");
+    }
+
+    @Test
+    void theTextInViewStaysInPlaceWhenBlocksAboveItAreBuilt() throws Exception {
+        // pulses need a window that is showing, and a window of a real toolkit would open on the person's screen
+        org.junit.jupiter.api.Assumptions.assumeTrue("Monocle".equals(System.getProperty("glass.platform")), "a window of the test's own");
+        DocumentSurface surface = onFx(() -> {
+            DocumentSurface s = new DocumentSurface(null);
+            List<DocumentBlock> blocks = new ArrayList<>();
+            for (int i = 0; i < 400; i++) {
+                blocks.add(misjudged(i));
+            }
+            javafx.stage.Stage stage = new javafx.stage.Stage();
+            stage.setScene(new Scene(s, 600, 500));
+            stage.show();
+            s.setBlocks(blocks);
+            return s;
+        });
+        pulses();
+        // a jump into the middle of the document, as a link in its contents makes: the blocks far above are not built
+        onFx(() -> {
+            surface.revealBlock(200);
+            return null;
+        });
+        pulses();
+        assertFalse(onFx(() -> surface.block(170).isRealized()), "the blocks far above the place jumped to are stand-ins still");
+        javafx.scene.control.ScrollPane scroll = (javafx.scene.control.ScrollPane) onFx(() -> surface.lookup(".claude-doc-surface"));
+        javafx.scene.layout.Region stack = (javafx.scene.layout.Region) onFx(() -> surface.block(0).stackNode().getParent());
+        double heightAtFirst = onFx(stack::getHeight);
+
+        // scrolled up 40 at a time, as a wheel or a trackpad does: block 200 moves down the window by 40 each time, and by no more
+        double was = onFx(() -> screenTop(surface, 200));
+        for (int step = 1; step <= 60; step++) {
+            onFx(() -> {
+                double range = stack.getHeight() - scroll.getViewportBounds().getHeight();
+                scroll.setVvalue(Math.clamp(scroll.getVvalue() - 40 / range, 0, 1));
+                return null;
+            });
+            pulses();
+            double now = onFx(() -> screenTop(surface, 200));
+            assertEquals(was + 40, now, 1, "step " + step + ": the text moved by what was scrolled, though blocks above it were built");
+            was = now;
+        }
+        assertTrue(onFx(() -> surface.block(170).isRealized()), "blocks above were built on the way up");
+        assertTrue(onFx(stack::getHeight) < heightAtFirst - 400,
+                "and stood lower than they were expected to: the document is shorter by what they were misjudged by");
+    }
+
     private static long count(DocumentSurface surface) {
         long n = 0;
         for (int i = 0; i < surface.blockCount(); i++) {

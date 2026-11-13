@@ -151,6 +151,18 @@ public final class DocumentSurface extends BorderPane {
         });
         scroll.vvalueProperty().addListener((obs, was, is) -> lookSoon());
         scroll.viewportBoundsProperty().addListener((obs, was, is) -> lookSoon());
+        // the reader's place is read on every scroll, and kept after every layout
+        scroll.vvalueProperty().addListener((obs, was, is) -> notePlace());
+        sceneProperty().addListener((obs, was, is) -> {
+            if (was != null) {
+                was.removePreLayoutPulseListener(beforeLayout);
+                was.removePostLayoutPulseListener(afterLayout);
+            }
+            if (is != null) {
+                is.addPreLayoutPulseListener(beforeLayout);
+                is.addPostLayoutPulseListener(afterLayout);
+            }
+        });
     }
 
     // ── Regions (dev-interaction-surface-family) ──────────────────────────
@@ -233,6 +245,7 @@ public final class DocumentSurface extends BorderPane {
      */
     public void setBlocks(List<DocumentBlock> document) {
         clearSelection();
+        placeBlock = null;                                              // another document: its place is read at the next scroll
         stack.getChildren().clear();
         blocks.clear();
         turns.clear();
@@ -358,6 +371,148 @@ public final class DocumentSurface extends BorderPane {
         return kept;
     }
 
+    // ── Keeping the reader's place ───────────────────────────────────────
+
+    /**
+     * The block the top of the viewport is in. A scroll pane keeps its distance from the top of
+     * its content when the content's height changes, and a reader keeps a place in the text. The
+     * two part when a block above the viewport takes another height: a block built at its own
+     * height where its stand-in stood at an expected one, a section folded or opened, a block
+     * written again. The text in view then moves by the difference, though nobody scrolled (KEC,
+     * 2026-11-13: "sometimes I see the view jump so that it is not scrolling from where I thought
+     * it would"). So the surface reads the reader's place whenever the scroll is moved, as this
+     * block and how far the viewport's top is below the block's, and after every layout scrolls
+     * to that place again.
+     */
+    private DocumentBlock placeBlock;
+    /** How far the top of the viewport is below the top of {@link #placeBlock}; negative in the space above it. */
+    private double placeInset;
+    /** Where {@link #placeBlock} is in the list, as a place to start looking from; it may be stale. */
+    private int placeIndex;
+    /** Whether the surface is scrolling to keep the place: that scroll is not a move of the reader's. */
+    private boolean keepingPlace;
+    /**
+     * Whether a pulse is laying the scene out. The scroll pane moves its own position during a
+     * layout, to hold its distance from the top when the content's height has changed; that is
+     * not a move of the reader's either, and it is what the place is kept against.
+     */
+    private boolean layingOut;
+    private final Runnable beforeLayout = () -> layingOut = true;
+    private final Runnable afterLayout = () -> {
+        layingOut = false;
+        keepPlace();
+    };
+
+    /** A block's top in the stack, or NaN for a block that is not laid out there: one that is gone, or hidden by a fold. */
+    private double topOf(DocumentBlock block) {
+        Node node = block == null ? null : block.stackNode();
+        return node == null || node.getParent() != stack || !node.isManaged() ? Double.NaN : node.getBoundsInParent().getMinY();
+    }
+
+    /**
+     * How far down the stack the top of the viewport is, or NaN before the surface is laid out.
+     * Worked out as the scroll pane works it out, from its position and the height the stack was
+     * last given: the scroll pane moves its content after its position's other listeners have run,
+     * so where the content is drawn is not yet where a scroll has put it.
+     */
+    private double viewportTop() {
+        double viewport = scroll.getViewportBounds().getHeight();
+        double height = stack.getHeight();
+        return viewport <= 0 || height <= 0 ? Double.NaN : scroll.getVvalue() * Math.max(0, height - viewport);
+    }
+
+    /**
+     * Reads the reader's place from what is drawn: the first block that ends below the top of the
+     * viewport. Called when the scroll is moved by anything but a layout or the surface itself: a
+     * wheel, a trackpad, the scroll bar, a jump to a block.
+     */
+    private void notePlace() {
+        if (keepingPlace || layingOut) {
+            return;
+        }
+        double top = viewportTop();
+        if (blocks.isEmpty() || Double.isNaN(top)) {
+            placeBlock = null;
+            return;
+        }
+        int found = -1;
+        for (int i = Math.clamp(placeIndex, 0, blocks.size() - 1); i < blocks.size(); i++) {
+            double y = topOf(blocks.get(i));
+            if (!Double.isNaN(y) && y + blocks.get(i).stackNode().getBoundsInParent().getHeight() > top) {
+                found = i;
+                break;
+            }
+        }
+        // from where the place last was the first such block may be further up
+        for (int i = (found < 0 ? blocks.size() : found) - 1; i >= 0; i--) {
+            double y = topOf(blocks.get(i));
+            if (Double.isNaN(y)) {
+                continue;
+            }
+            if (y + blocks.get(i).stackNode().getBoundsInParent().getHeight() <= top) {
+                break;
+            }
+            found = i;
+        }
+        if (found < 0) {
+            placeBlock = null;
+            return;
+        }
+        // The top of the viewport may be in a block's room and not in the block: in a stand-in, which will be
+        // built at another height, or in the room a newly built block still keeps beneath itself. That room
+        // is not a place in the text. The place is then the next block, which is what the reader sees.
+        if (top - topOf(blocks.get(found)) >= builtHeight(blocks.get(found))) {
+            for (int i = found + 1; i < blocks.size(); i++) {
+                if (!Double.isNaN(topOf(blocks.get(i)))) {
+                    found = i;
+                    break;
+                }
+            }
+        }
+        placeIndex = found;
+        placeBlock = blocks.get(found);
+        placeInset = top - topOf(placeBlock);
+    }
+
+    /** How tall a block is as it is built, leaving out any room it stands in beyond that: nothing, for a block that is not built. */
+    private double builtHeight(DocumentBlock block) {
+        Node node = block.stackNode();
+        if (node instanceof Cell cell) {
+            return block.isRealized() && cell.row != null ? cell.holder.getHeight() : 0;
+        }
+        return node == null ? 0 : node.getBoundsInParent().getHeight();
+    }
+
+    /** After a layout: scrolls to the reader's place again, when the layout has moved the block it is in. */
+    private void keepPlace() {
+        if (keepingPlace || placeBlock == null) {
+            return;
+        }
+        double y = topOf(placeBlock);
+        double top = viewportTop();
+        if (Double.isNaN(y) || Double.isNaN(top)) {
+            placeBlock = null;                                       // the block is gone or folded away: the place is read at the next scroll
+            return;
+        }
+        double want = y + placeInset;
+        if (Math.abs(top - want) < 0.5) {
+            return;
+        }
+        double range = stack.getHeight() - scroll.getViewportBounds().getHeight();
+        if (range <= 0) {
+            return;
+        }
+        keepingPlace = true;
+        try {
+            scroll.setVvalue(Math.clamp(want / range, 0, 1));
+        } finally {
+            keepingPlace = false;
+        }
+        if (want < 0 || want > range) {
+            notePlace();                                             // the document ends before the place can be kept: the place is where the view now is
+        }
+    }
+
     // ── Building blocks as they are read ─────────────────────────────────
 
     /** How many blocks a document has before it is built as it is read rather than whole. */
@@ -463,9 +618,14 @@ public final class DocumentSurface extends BorderPane {
                 if (++floorPulses >= FLOOR_PULSES) {
                     letRoomGo();
                     stand.setManaged(false);
+                } else {
+                    // A scene that has nothing more to draw stops its pulses. The room would then stay until
+                    // the reader next moved, and be let go under that movement: the view jumped as a scroll began.
+                    Platform.requestNextPulse();
                 }
             };
             scene.addPostLayoutPulseListener(floor);
+            Platform.requestNextPulse();
         }
 
         private void letRoomGo() {
@@ -1136,6 +1296,7 @@ public final class DocumentSurface extends BorderPane {
     /** Rebuilds every block from {@link #turns} through the current factory. */
     private void rebuild() {
         clearSelection();
+        placeBlock = null;                                              // every block is built anew: the place is read at the next scroll
         stack.getChildren().clear();
         virtual = false;
         blocks.clear();
