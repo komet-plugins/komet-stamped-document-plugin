@@ -82,8 +82,64 @@ class StructuredBlockIT {
             A paragraph after it.
             """;
 
+    private static final String RUN_STYLE = "test-run";
+    private static final String RUN_DOCUMENT = """
+            :topic-id: structured-run
+            = Structured run
+
+            [test-run]
+            ----
+            first
+            ----
+
+            [test-run]
+            ----
+            second
+            ----
+
+            A paragraph ends the run.
+
+            [test-run]
+            ----
+            third
+            ----
+            """;
+
     @TempDir
     Path root;
+
+    /** A kind whose blocks read as a run: its control says what the block holds and what the run before it holds. */
+    private static final StructuredBlockKind RUN_KIND = new StructuredBlockKind() {
+        @Override
+        public String style() {
+            return RUN_STYLE;
+        }
+
+        @Override
+        public String name() {
+            return "test run";
+        }
+
+        @Override
+        public boolean readsAsRun() {
+            return true;
+        }
+
+        @Override
+        public Node view(Source source, Context context) {
+            return view(source, List.of(), context);
+        }
+
+        @Override
+        public Node view(Source source, List<Source> before, Context context) {
+            return new Label(source.content() + " after " + before.stream().map(Source::content).toList());
+        }
+
+        @Override
+        public Optional<Editor> editor(Source source, Context context) {
+            return Optional.empty();
+        }
+    };
 
     /** A kind that reads its content as one label and edits it in a text area. */
     private static final StructuredBlockKind KIND = new StructuredBlockKind() {
@@ -139,11 +195,13 @@ class StructuredBlockIT {
         PrimitiveData.start();
         new LoadEntitiesFromProtobufFile(PB_STARTER_DATA).compute();
         StructuredBlocks.register(KIND);
+        StructuredBlocks.register(RUN_KIND);
     }
 
     @AfterAll
     void teardown() {
         StructuredBlocks.unregister(STYLE);
+        StructuredBlocks.unregister(RUN_STYLE);
         PrimitiveData.stop();
     }
 
@@ -197,43 +255,7 @@ class StructuredBlockIT {
 
         AtomicReference<String> saved = new AtomicReference<>();
         List<String> statuses = new ArrayList<>();
-        DocumentSurfaceView.Host host = new DocumentSurfaceView.Host() {
-            @Override
-            public ViewCalculator view() {
-                return Calculators.View.Default();
-            }
-
-            @Override
-            public CommitSummaries summaries() {
-                return CommitSummaries.NONE;
-            }
-
-            @Override
-            public void status(String text) {
-                statuses.add(text);
-            }
-
-            @Override
-            public void annotate(AnnotationKind kind) {
-            }
-
-            @Override
-            public void saveEdit(StoredBlock edited, String text) {
-                saved.set(text);
-            }
-
-            @Override
-            public void showHistory() {
-            }
-
-            @Override
-            public void selectionChanged() {
-            }
-
-            @Override
-            public void showingMember(DocumentAssembly.Member member) {
-            }
-        };
+        DocumentSurfaceView.Host host = host(saved, statuses);
 
         DocumentSurfaceView surface = onFx(() -> {
             DocumentSurface documentSurface = new DocumentSurface(new BlockFactory(Calculators.View.Default(), 13));
@@ -276,15 +298,89 @@ class StructuredBlockIT {
         DocumentEditor.cancel(anchor);
     }
 
+    @Test
+    void aBlockOfAKindThatReadsAsARunIsShownKnowingTheRunBeforeIt() throws Exception {
+        // a document, a topic and a day of its own: one store holds every document of this class
+        Path dir = repository("structured-run", "structured-run.adoc", RUN_DOCUMENT, "2026-03-02T12:00:00");
+        PublicId anchor = GitDocumentMaterializer.materialize(dir, dir.resolve("structured-run.adoc")).anchor();
+        StoredDocument document = GitDocumentMaterializer.load(anchor, true).orElseThrow();
+        List<Long> order = document.lines().stream().map(GitDocumentMaterializer.StoredLine::nid).toList();
+        List<StoredBlock> runs = document.blocks().values().stream()
+                .filter(block -> block.kind() == Block.Kind.LISTING && block.parameters().startsWith("[" + RUN_STYLE))
+                .sorted(java.util.Comparator.comparingInt((StoredBlock block) -> order.indexOf(block.members().getFirst()))).toList();
+        assertEquals(3, runs.size());
+        assertEquals(List.of(), StructuredBlocks.runBefore(document, runs.get(0)));
+        assertEquals(List.of("first"), StructuredBlocks.runBefore(document, runs.get(1)).stream().map(StructuredBlockKind.Source::content).toList());
+        assertEquals(List.of(), StructuredBlocks.runBefore(document, runs.get(2)), "a paragraph ends the run");
+
+        DocumentSurfaceView surface = onFx(() -> {
+            DocumentSurface documentSurface = new DocumentSurface(new BlockFactory(Calculators.View.Default(), 13));
+            DocumentSurfaceView view = new DocumentSurfaceView(host(new AtomicReference<>(), new ArrayList<>()), documentSurface);
+            view.show(DocumentAssembly.single(document, "structured-run.adoc"));
+            return view;
+        });
+        List<String> shown = new ArrayList<>();
+        for (StoredBlock block : runs) {
+            shown.add(onFx(() -> ((Label) surface.structuredViewOfBlock(block.nid()).orElseThrow()).getText()));
+        }
+        assertEquals(List.of("first after []", "second after [first]", "third after []"), shown,
+                "each block's control is made with the blocks of the run directly before it");
+    }
+
+    /** A host that keeps what the surface asks it to save and what it reports. */
+    private static DocumentSurfaceView.Host host(AtomicReference<String> saved, List<String> statuses) {
+        return new DocumentSurfaceView.Host() {
+            @Override
+            public ViewCalculator view() {
+                return Calculators.View.Default();
+            }
+
+            @Override
+            public CommitSummaries summaries() {
+                return CommitSummaries.NONE;
+            }
+
+            @Override
+            public void status(String text) {
+                statuses.add(text);
+            }
+
+            @Override
+            public void annotate(AnnotationKind kind) {
+            }
+
+            @Override
+            public void saveEdit(StoredBlock edited, String text) {
+                saved.set(text);
+            }
+
+            @Override
+            public void showHistory() {
+            }
+
+            @Override
+            public void selectionChanged() {
+            }
+
+            @Override
+            public void showingMember(DocumentAssembly.Member member) {
+            }
+        };
+    }
+
     private Path repository() throws Exception {
-        Path dir = Files.createDirectories(root.resolve("structured"));
+        return repository("structured", "structured.adoc", DOCUMENT, "2026-03-01T12:00:00");
+    }
+
+    private Path repository(String folder, String file, String text, String day) throws Exception {
+        Path dir = Files.createDirectories(root.resolve(folder));
         git(dir, "init", "-q", "-b", "main");
         git(dir, "config", "user.name", "author");
         git(dir, "config", "user.email", "author@example.test");
         git(dir, "config", "commit.gpgsign", "false");
-        Files.writeString(dir.resolve("structured.adoc"), DOCUMENT);
-        git(dir, "add", "structured.adoc");
-        git(dir, "commit", "-q", "--no-gpg-sign", "--date=2026-03-01T12:00:00", "-m", "Add the document");
+        Files.writeString(dir.resolve(file), text);
+        git(dir, "add", file);
+        git(dir, "commit", "-q", "--no-gpg-sign", "--date=" + day, "-m", "Add the document");
         return dir;
     }
 

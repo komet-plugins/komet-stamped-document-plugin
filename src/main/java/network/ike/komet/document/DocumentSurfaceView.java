@@ -882,9 +882,27 @@ public final class DocumentSurfaceView {
         show(shown, true);
     }
 
-    /** What a block drew, and what its drawing read: its place among its parent's blocks and every line and block in it. */
+    /**
+     * What a block drew, and what its drawing read: its place among its parent's blocks, every line and block in it, and,
+     * for a block of a kind that reads as a run, the blocks of the run before it.
+     */
     private record Drawn(int depth, int ordinal, String section, List<StoredLine> lines, List<StoredBlock> blocks, List<Area> areas,
-                         int notesFrom, int notesTo) { }
+                         int notesFrom, int notesTo, String run) { }
+
+    /** The blocks of a run as one text, by which a block that follows them is known to read the same run as before. */
+    private static String runText(List<StructuredBlockKind.Source> before) {
+        StringBuilder run = new StringBuilder();
+        for (StructuredBlockKind.Source earlier : before) {
+            run.append("\n\u0000").append(earlier.parameters()).append('\n').append(earlier.content());
+        }
+        return run.toString();
+    }
+
+    /** The run a block continues, as one text: empty for a block that begins a run, or is of a kind that does not read as one. */
+    private static String runBefore(StoredDocument document, StoredBlock block) {
+        return StructuredBlocks.kindOf(block).filter(StructuredBlockKind::readsAsRun).isPresent()
+                ? runText(StructuredBlocks.runBefore(document, block)) : "";
+    }
 
     /** By showing and block: what each block drew in the Reading view the last time, while {@link #drawnUnder} holds. */
     private final Map<String, Drawn> drawn = new HashMap<>();
@@ -1600,9 +1618,12 @@ public final class DocumentSurfaceView {
         boolean includes = under(member, reads(member), block, lines, held);
         String key = showing(member) + ':' + block.nid();
         String under = section == null ? "" : section;
+        // a statement names its group only when the statement before it is about another, so it reads the run before it
+        String run = runBefore(reads(member), block);
         Drawn last = drawn.get(key);
         if (keeping && last != null && !includes && last.depth() == depth && last.ordinal() == ordinal && last.section().equals(under)
-                && last.notesFrom() == readingNotes.last() && same(last.lines(), lines) && same(last.blocks(), held)) {
+                && last.notesFrom() == readingNotes.last() && same(last.lines(), lines) && same(last.blocks(), held)
+                && last.run().equals(run)) {
             for (Area area : last.areas()) {
                 area.member = member;
                 target.add(area);
@@ -1621,7 +1642,7 @@ public final class DocumentSurfaceView {
         if (includes || readingNotes.names() != names) {
             drawn.remove(key);                                    // a note counted by name is read by the blocks after it
         } else {
-            drawn.put(key, new Drawn(depth, ordinal, under, lines, held, List.copyOf(target.subList(from, target.size())), notesFrom, readingNotes.last()));
+            drawn.put(key, new Drawn(depth, ordinal, under, lines, held, List.copyOf(target.subList(from, target.size())), notesFrom, readingNotes.last(), run));
         }
     }
 
@@ -2646,11 +2667,8 @@ public final class DocumentSurfaceView {
         }
         StructuredBlockKind.Source source = StructuredBlocks.source(document, block);
         // a kind whose blocks read as a run draws each knowing the blocks of the run before it
-        List<StructuredBlockKind.Source> before = kind.get().printsAsRun() ? StructuredBlocks.runBefore(document, block) : List.of();
-        StringBuilder run = new StringBuilder();
-        for (StructuredBlockKind.Source earlier : before) {
-            run.append("\n\u0000").append(earlier.parameters()).append('\n').append(earlier.content());
-        }
+        List<StructuredBlockKind.Source> before = kind.get().readsAsRun() ? StructuredBlocks.runBefore(document, block) : List.of();
+        String run = runText(before);
         // keyed by the caption too: a figure inserted before this one renumbers it, with the same source
         return printed.computeIfAbsent(source.parameters() + "\n" + captions.text(block) + "\n" + source.content() + run, key -> {
             try {
@@ -6544,8 +6562,11 @@ public final class DocumentSurfaceView {
         Node view;
         try {
             // a write back is an uncommitted edit of the block's lines, as the structured editor's Save is
-            view = kind.get().view(source, new StructuredBlockKind.Context(host.view(), host.viewProperties(), blocks, st.base(),
-                    area.editable ? text -> host.saveEdit(block, text) : null));
+            StructuredBlockKind.Context context = new StructuredBlockKind.Context(host.view(), host.viewProperties(), blocks, st.base(),
+                    area.editable ? text -> host.saveEdit(block, text) : null);
+            // a kind whose blocks read as a run draws each knowing the blocks of the run before it
+            view = kind.get().readsAsRun() ? kind.get().view(source, StructuredBlocks.runBefore(document, block), context)
+                    : kind.get().view(source, context);
         } catch (RuntimeException failure) {
             LOG.warn("The {} block {} could not be read; it is shown as its text", kind.get().name(), block.nid(), failure);
             host.status("The " + kind.get().name() + " block could not be read; it is shown as its text: " + failure.getMessage());

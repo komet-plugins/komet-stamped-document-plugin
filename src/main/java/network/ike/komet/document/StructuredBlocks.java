@@ -257,7 +257,7 @@ public final class StructuredBlocks {
     /**
      * The blocks of a block's kind that stand directly before it among its parent's members, with
      * nothing but blank lines between: the run the block continues, which a kind that
-     * {@link StructuredBlockKind#printsAsRun() prints as a run} draws it by. A paragraph, a
+     * {@link StructuredBlockKind#readsAsRun() reads as a run} draws it by. A paragraph, a
      * heading or a block of another kind ends the run.
      *
      * @param document the block's document

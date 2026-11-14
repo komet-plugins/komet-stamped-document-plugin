@@ -87,21 +87,37 @@ public interface StructuredBlockKind {
     }
 
     /**
-     * Whether blocks of this kind that stand one directly after another read as a run on a page:
-     * a list of statements, where what a block says once the next one need not say again. A
-     * surface then gives each block the blocks of the run before it, through
-     * {@link #figures(Source, List, Context)}.
+     * Whether blocks of this kind that stand one directly after another read as a run, on the
+     * surface and on a page: a list of statements, where what a block says once the next one
+     * need not say again. A surface then gives each block the blocks of the run before it,
+     * through {@link #view(Source, List, Context)} and {@link #figures(Source, List, Context)},
+     * and draws a block again when the run before it has changed.
      *
      * @return true for a kind whose blocks read as a run; false by default
      */
-    default boolean printsAsRun() {
+    default boolean readsAsRun() {
         return false;
+    }
+
+    /**
+     * The control that shows the block when blocks of its kind stand directly before it, with
+     * nothing between: the block's own control, drawn knowing what the run has said already. A
+     * surface asks this only of a kind that {@link #readsAsRun() reads as a run}.
+     *
+     * @param source  the block's source
+     * @param before  the sources of the blocks of this kind directly before it, in document
+     *                order, the nearest last; empty for a block that begins a run
+     * @param context what the surface offers
+     * @return the control
+     */
+    default Node view(Source source, List<Source> before, Context context) {
+        return view(source, context);
     }
 
     /**
      * What the block is on a page when blocks of its kind stand directly before it, with nothing
      * between: the block's own figures, drawn knowing what the run has said already. A surface
-     * asks this only of a kind that {@link #printsAsRun() prints as a run}.
+     * asks this only of a kind that {@link #readsAsRun() reads as a run}.
      *
      * @param source  the block's source
      * @param before  the sources of the blocks of this kind directly before it, in document
