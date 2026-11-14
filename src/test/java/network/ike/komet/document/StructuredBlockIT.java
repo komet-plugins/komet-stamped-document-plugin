@@ -24,11 +24,14 @@ import dev.ikm.tinkar.coordinate.Coordinates;
 import dev.ikm.tinkar.coordinate.view.calculator.ViewCalculator;
 import dev.ikm.tinkar.entity.load.LoadEntitiesFromProtobufFile;
 import javafx.application.Platform;
+import javafx.event.ActionEvent;
 import javafx.scene.Node;
 import javafx.scene.Parent;
+import javafx.scene.Scene;
 import javafx.scene.control.Button;
 import javafx.scene.control.Label;
 import javafx.scene.control.TextArea;
+import javafx.scene.control.TextField;
 import network.ike.komet.document.HeadlessFx;
 import network.ike.komet.document.surface.BlockFactory;
 import network.ike.komet.document.surface.DocumentSurface;
@@ -54,6 +57,8 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -105,8 +110,78 @@ class StructuredBlockIT {
             ----
             """;
 
+    private static final String FORM_STYLE = "test-form";
+    private static final String FORM_DOCUMENT = """
+            :topic-id: structured-form
+            = Structured form
+
+            [test-form]
+            ----
+            one first
+            ----
+
+            [test-form]
+            ----
+            one second
+            ----
+
+            [test-form]
+            ----
+            one third
+            ----
+            """;
+
     @TempDir
     Path root;
+
+    /**
+     * A kind whose control is a form that shows its own edits: a field that saves its text. Its blocks read as a
+     * run, and each reads one thing of the run before it, the first word of the block directly before.
+     */
+    private static final StructuredBlockKind FORM_KIND = new StructuredBlockKind() {
+        @Override
+        public String style() {
+            return FORM_STYLE;
+        }
+
+        @Override
+        public String name() {
+            return "test form";
+        }
+
+        @Override
+        public boolean readsAsRun() {
+            return true;
+        }
+
+        @Override
+        public boolean showsOwnEdits() {
+            return true;
+        }
+
+        @Override
+        public String readOfRun(List<Source> before) {
+            return before.isEmpty() ? "" : before.getLast().content().split(" ")[0];
+        }
+
+        @Override
+        public Node view(Source source, Context context) {
+            return view(source, List.of(), context);
+        }
+
+        @Override
+        public Node view(Source source, List<Source> before, Context context) {
+            TextField field = new TextField(source.content());
+            field.setUserData(readOfRun(before));
+            field.setOnAction(e -> context.save().accept(source.withContent(field.getText())));
+            return field;
+        }
+
+        @Override
+        public Optional<Editor> editor(Source source, Context context) {
+            return Optional.empty();
+        }
+    };
 
     /** A kind whose blocks read as a run: its control says what the block holds and what the run before it holds. */
     private static final StructuredBlockKind RUN_KIND = new StructuredBlockKind() {
@@ -196,12 +271,14 @@ class StructuredBlockIT {
         new LoadEntitiesFromProtobufFile(PB_STARTER_DATA).compute();
         StructuredBlocks.register(KIND);
         StructuredBlocks.register(RUN_KIND);
+        StructuredBlocks.register(FORM_KIND);
     }
 
     @AfterAll
     void teardown() {
         StructuredBlocks.unregister(STYLE);
         StructuredBlocks.unregister(RUN_STYLE);
+        StructuredBlocks.unregister(FORM_STYLE);
         PrimitiveData.stop();
     }
 
@@ -327,8 +404,103 @@ class StructuredBlockIT {
                 "each block's control is made with the blocks of the run directly before it");
     }
 
+    @Test
+    void aFormThatSavedItsBlocksEditStaysAsItStandsWhenTheBlockIsReadAgain() throws Exception {
+        // a document, a topic and a day of its own: one store contains every document of this class
+        String file = "structured-form.adoc";
+        Path dir = repository("structured-form", file, FORM_DOCUMENT, "2026-03-03T12:00:00");
+        PublicId anchor = GitDocumentMaterializer.materialize(dir, dir.resolve(file)).anchor();
+        StoredDocument document = GitDocumentMaterializer.load(anchor, true).orElseThrow();
+        List<Long> order = document.lines().stream().map(GitDocumentMaterializer.StoredLine::nid).toList();
+        List<Long> forms = document.blocks().values().stream()
+                .filter(block -> block.kind() == Block.Kind.LISTING && block.parameters().startsWith("[" + FORM_STYLE))
+                .sorted(java.util.Comparator.comparingInt((StoredBlock block) -> order.indexOf(block.members().getFirst())))
+                .map(StoredBlock::nid).toList();
+        assertEquals(3, forms.size());
+
+        AtomicReference<String> saved = new AtomicReference<>();
+        AtomicReference<StoredBlock> savedTo = new AtomicReference<>();
+        DocumentSurfaceView surface = onFx(() -> {
+            DocumentSurface documentSurface = new DocumentSurface(new BlockFactory(Calculators.View.Default(), 13));
+            new Scene(documentSurface, 700, 500);
+            DocumentSurfaceView view = new DocumentSurfaceView(host(saved, savedTo, new ArrayList<>()), documentSurface);
+            view.show(DocumentAssembly.single(document, file));
+            // the scroll pane has its content in the scene once it has a skin, and only then are the blocks there
+            documentSurface.applyCss();
+            documentSurface.layout();
+            return view;
+        });
+        TextField first = field(surface, forms.get(0));
+        TextField second = field(surface, forms.get(1));
+        TextField third = field(surface, forms.get(2));
+        assertEquals(List.of("", "one", "one"), List.of(first.getUserData(), second.getUserData(), third.getUserData()));
+
+        // a person types in the first form, and the form saves its text: the keyboard is in it, the caret after four letters
+        onFx(() -> {
+            first.requestFocus();
+            first.setText("one first, changed");
+            first.positionCaret(4);
+            first.getOnAction().handle(new ActionEvent());
+            return null;
+        });
+        assertEquals("[test-form]\n----\none first, changed\n----", saved.get());
+        assertEquals(forms.get(0), savedTo.get().nid());
+        assertSame(first, onFx(() -> first.getScene().getFocusOwner()), "the test's field has the keyboard");
+
+        StoredDocument edited = readAgain(surface, anchor, forms.get(0), saved.get(), file);
+        assertSame(first, field(surface, forms.get(0)), "the form that saved the edit is the form the block is shown with");
+        assertEquals("one first, changed", onFx(first::getText));
+        assertSame(first, onFx(() -> first.getScene().getFocusOwner()), "the keyboard is where it was");
+        assertEquals(4, (int) onFx(first::getCaretPosition), "and the caret with it");
+        assertSame(second, field(surface, forms.get(1)), "the block after it reads nothing that changed, and stays as it was drawn");
+        assertSame(third, field(surface, forms.get(2)));
+
+        // the form's next save is of the block as the document now has it; it changes the word the next block reads
+        onFx(() -> {
+            first.setText("two first");
+            first.getOnAction().handle(new ActionEvent());
+            return null;
+        });
+        assertSame(edited.blocks().get(forms.get(0)), savedTo.get(), "a later save is of the block as it was read again");
+        readAgain(surface, anchor, forms.get(0), saved.get(), file);
+        assertSame(first, field(surface, forms.get(0)), "the form stays through every save of its own");
+        TextField secondAgain = field(surface, forms.get(1));
+        assertNotSame(second, secondAgain, "the block after it reads the word that changed, and is made again");
+        assertEquals("two", secondAgain.getUserData());
+        assertSame(third, field(surface, forms.get(2)), "the block after that reads the block before it, which did not change");
+
+        // an edit that is not the form's own is one the form does not show: the block is made again
+        readAgain(surface, anchor, forms.get(0), "[test-form]\n----\ntwo first, by another hand\n----", file);
+        TextField firstAgain = field(surface, forms.get(0));
+        assertNotSame(first, firstAgain, "an edit from elsewhere draws the block's control again");
+        assertEquals("two first, by another hand", onFx(firstAgain::getText));
+        DocumentEditor.cancel(anchor);
+    }
+
+    private static TextField field(DocumentSurfaceView surface, long block) throws Exception {
+        return (TextField) onFx(() -> surface.structuredViewOfBlock(block).orElseThrow());
+    }
+
+    /** Saves a block's text as a pending edit, reads the document again and shows it as a card does after a save. */
+    private static StoredDocument readAgain(DocumentSurfaceView surface, PublicId anchor, long block, String text, String file) throws Exception {
+        DocumentEditor.editBlock(anchor, block, text, Coordinates.Edit.Default());
+        StoredDocument pending = GitDocumentMaterializer.load(anchor, true).orElseThrow();
+        onFx(() -> {
+            surface.showChanged(DocumentAssembly.single(pending, file));
+            return null;
+        });
+        // the keyboard is given back once the block's new row stands in the scene
+        onFx(() -> null);
+        return pending;
+    }
+
     /** A host that keeps what the surface asks it to save and what it reports. */
     private static DocumentSurfaceView.Host host(AtomicReference<String> saved, List<String> statuses) {
+        return host(saved, new AtomicReference<>(), statuses);
+    }
+
+    /** A host that keeps what the surface asks it to save, the block it is asked to save it to, and what it reports. */
+    private static DocumentSurfaceView.Host host(AtomicReference<String> saved, AtomicReference<StoredBlock> savedTo, List<String> statuses) {
         return new DocumentSurfaceView.Host() {
             @Override
             public ViewCalculator view() {
@@ -352,6 +524,7 @@ class StructuredBlockIT {
             @Override
             public void saveEdit(StoredBlock edited, String text) {
                 saved.set(text);
+                savedTo.set(edited);
             }
 
             @Override

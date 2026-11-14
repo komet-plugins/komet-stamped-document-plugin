@@ -714,6 +714,8 @@ public final class DocumentSurfaceView {
         StructuredBlockKind structured;
         StructuredBlockKind.Source structuredSource;
         Node structuredView;
+        /** The control and the block it writes to, which a reading of the control's own edit hands on to the block's next area. */
+        Live live;
         /** The kind's editor while one is open on this area. */
         StructuredBlockKind.Editor structuredEditor;
         /** A table row's cells in the Reading view, each a text of its own in the row's grid; none for any other area. */
@@ -884,25 +886,54 @@ public final class DocumentSurfaceView {
 
     /**
      * What a block drew, and what its drawing read: its place among its parent's blocks, every line and block in it, and,
-     * for a block of a kind that reads as a run, the blocks of the run before it.
+     * for a block of a kind that reads as a run, what its kind reads of the run before it.
      */
     private record Drawn(int depth, int ordinal, String section, List<StoredLine> lines, List<StoredBlock> blocks, List<Area> areas,
                          int notesFrom, int notesTo, String run) { }
 
-    /** The blocks of a run as one text, by which a block that follows them is known to read the same run as before. */
-    private static String runText(List<StructuredBlockKind.Source> before) {
-        StringBuilder run = new StringBuilder();
-        for (StructuredBlockKind.Source earlier : before) {
-            run.append("\n\u0000").append(earlier.parameters()).append('\n').append(earlier.content());
-        }
-        return run.toString();
+    /**
+     * What a block reads of the run it continues, as its kind says it: empty for a block that begins a run, or is of a
+     * kind that does not read as one. An edit of one block of a run draws again only the blocks for which this changes.
+     */
+    private static String runBefore(StoredDocument document, StoredBlock block) {
+        return StructuredBlocks.kindOf(block).filter(StructuredBlockKind::readsAsRun)
+                .map(kind -> kind.readOfRun(StructuredBlocks.runBefore(document, block))).orElse("");
     }
 
-    /** The run a block continues, as one text: empty for a block that begins a run, or is of a kind that does not read as one. */
-    private static String runBefore(StoredDocument document, StoredBlock block) {
-        return StructuredBlocks.kindOf(block).filter(StructuredBlockKind::readsAsRun).isPresent()
-                ? runText(StructuredBlocks.runBefore(document, block)) : "";
+    /**
+     * A structured block's control, and the block it writes to. The control outlives a reading of the document when the
+     * reading is of the control's own edit: the block is drawn again, with its lines as they now are, around the same
+     * control, so a form a person is working in stays open, as it stands, where it stands.
+     */
+    private static final class Live {
+        Node view;
+        /** The block the control writes to, as the document was last read. */
+        StoredBlock block;
+        /** The block's text as the control saved it, each save not yet read back. */
+        final java.util.ArrayDeque<String> saved = new java.util.ArrayDeque<>();
+
+        Live(StoredBlock block) {
+            this.block = block;
+        }
+
+        /** Whether a block's source is one the control saved, and so shows already; the saves up to it are then read. */
+        boolean saved(StructuredBlockKind.Source source) {
+            String text = String.join("\n", source.lines()).strip();
+            if (saved.stream().noneMatch(each -> each.strip().equals(text))) {
+                return false;
+            }
+            while (!saved.removeFirst().strip().equals(text)) {
+                // an earlier save, which a later one of the same control replaced before it was read back
+            }
+            return true;
+        }
     }
+
+    /** What the block being drawn again drew the last time, while it is drawn: a control that saved the block's text is found here. */
+    private Drawn replacing;
+    /** The node of the document that had the keyboard before this reading, and its selection when it is a text field. */
+    private Node refocus;
+    private int[] reselected;
 
     /** By showing and block: what each block drew in the Reading view the last time, while {@link #drawnUnder} holds. */
     private final Map<String, Drawn> drawn = new HashMap<>();
@@ -1005,7 +1036,10 @@ public final class DocumentSurfaceView {
 
     private void show(DocumentAssembly shown, boolean keep) {
         hidePopover();
+        refocus = null;
+        reselected = null;
         if (keep) {
+            parkFocus();
             // a block that is kept must be as a reader's block is: one left open for editing, or with a note being
             // written beside it, would stay so with nothing to close it
             cancelEdit();
@@ -1104,6 +1138,7 @@ public final class DocumentSurfaceView {
             }
         }
         selectAgain();
+        giveFocusBack();
     }
 
     // ── what a conditional leaves out (the Passages left out layer) ───────────
@@ -1638,7 +1673,13 @@ public final class DocumentSurfaceView {
         int from = target.size();
         int notesFrom = readingNotes.last();
         int names = readingNotes.names();
-        draw(member, block, depth, ordinal, section);
+        // a block drawn again for an edit its own control saved is drawn around that control
+        replacing = keeping ? last : null;
+        try {
+            draw(member, block, depth, ordinal, section);
+        } finally {
+            replacing = null;
+        }
         if (includes || readingNotes.names() != names) {
             drawn.remove(key);                                    // a note counted by name is read by the blocks after it
         } else {
@@ -2668,7 +2709,7 @@ public final class DocumentSurfaceView {
         StructuredBlockKind.Source source = StructuredBlocks.source(document, block);
         // a kind whose blocks read as a run draws each knowing the blocks of the run before it
         List<StructuredBlockKind.Source> before = kind.get().readsAsRun() ? StructuredBlocks.runBefore(document, block) : List.of();
-        String run = runText(before);
+        String run = kind.get().readOfRun(before);
         // keyed by the caption too: a figure inserted before this one renumbers it, with the same source
         return printed.computeIfAbsent(source.parameters() + "\n" + captions.text(block) + "\n" + source.content() + run, key -> {
             try {
@@ -6559,23 +6600,40 @@ public final class DocumentSurfaceView {
             return;
         }
         StructuredBlockKind.Source source = StructuredBlocks.source(document, block);
+        // the block read again as its own control saved it: the control shows that already, and goes on as it stands
+        Live live = controlThatSaved(kind.get(), block, source);
         Node view;
-        try {
-            // a write back is an uncommitted edit of the block's lines, as the structured editor's Save is
-            StructuredBlockKind.Context context = new StructuredBlockKind.Context(host.view(), host.viewProperties(), blocks, st.base(),
-                    area.editable ? text -> host.saveEdit(block, text) : null);
-            // a kind whose blocks read as a run draws each knowing the blocks of the run before it
-            view = kind.get().readsAsRun() ? kind.get().view(source, StructuredBlocks.runBefore(document, block), context)
-                    : kind.get().view(source, context);
-        } catch (RuntimeException failure) {
-            LOG.warn("The {} block {} could not be read; it is shown as its text", kind.get().name(), block.nid(), failure);
-            host.status("The " + kind.get().name() + " block could not be read; it is shown as its text: " + failure.getMessage());
-            return;
+        if (live != null) {
+            view = live.view;
+            if (view.getParent() instanceof javafx.scene.layout.Pane row) {
+                row.getChildren().remove(view);
+            }
+            live.block = block;
+        } else {
+            Live made = new Live(block);
+            try {
+                // a write back is an uncommitted edit of the block's lines, as the structured editor's Save is
+                StructuredBlockKind.Context context = new StructuredBlockKind.Context(host.view(), host.viewProperties(), blocks, st.base(),
+                        area.editable ? text -> {
+                            made.saved.add(text);
+                            host.saveEdit(made.block, text);
+                        } : null);
+                // a kind whose blocks read as a run draws each knowing the blocks of the run before it
+                view = kind.get().readsAsRun() ? kind.get().view(source, StructuredBlocks.runBefore(document, block), context)
+                        : kind.get().view(source, context);
+            } catch (RuntimeException failure) {
+                LOG.warn("The {} block {} could not be read; it is shown as its text", kind.get().name(), block.nid(), failure);
+                host.status("The " + kind.get().name() + " block could not be read; it is shown as its text: " + failure.getMessage());
+                return;
+            }
+            made.view = view;
+            live = made;
+            view.getStyleClass().add("stamped-document-structured-block");
         }
+        area.live = live;
         area.structured = kind.get();
         area.structuredSource = source;
         area.structuredView = view;
-        view.getStyleClass().add("stamped-document-structured-block");
         view.setOnMouseClicked(e -> {
             if (e.getClickCount() == 2 && area.editable && editing == null) {
                 startEdit(area);
@@ -6584,6 +6642,74 @@ public final class DocumentSurfaceView {
         });
         area.holder.getChildren().add(area.holder.getChildren().indexOf(area.area) + 1, view);
         showStructured(area, true);
+    }
+
+    /**
+     * The control a block was last drawn with, when the block is being drawn again for an edit that control saved and
+     * its kind {@link StructuredBlockKind#showsOwnEdits() shows its own edits}: the block's lines are new, and what the
+     * control shows is what they say.
+     */
+    private Live controlThatSaved(StructuredBlockKind kind, StoredBlock block, StructuredBlockKind.Source source) {
+        if (replacing == null || !kind.showsOwnEdits()) {
+            return null;
+        }
+        for (Area was : replacing.areas()) {
+            if (was.live != null && was.structured == kind && was.block != null && was.block.nid() == block.nid() && was.live.saved(source)) {
+                return was.live;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Takes the keyboard off a node of the document before the document is drawn again, and remembers the node. A
+     * node that has the keyboard and leaves the scene, as the control of a block drawn again does, hands the keyboard
+     * to whichever node is next, and the scroll pane follows it there: the view would move to a place the reader did
+     * not choose. The keyboard waits on the surface itself, which is nowhere in the text.
+     */
+    private void parkFocus() {
+        javafx.scene.Scene scene = surface.getScene();
+        Node owner = scene == null ? null : scene.getFocusOwner();
+        if (owner == surface) {
+            return;
+        }
+        for (Node at = owner; at != null; at = at.getParent()) {
+            if (at == surface) {
+                refocus = owner;
+                reselected = owner instanceof javafx.scene.control.TextInputControl text ? new int[] {text.getAnchor(), text.getCaretPosition()} : null;
+                surface.holdingPlace(surface::requestFocus);
+                return;
+            }
+        }
+    }
+
+    /**
+     * Gives the keyboard back to the node that had it before the document was drawn again, where that node still
+     * stands in the document: in a block that was kept, or in a control kept across the reading of its own edit. A
+     * text field has its caret and selection back too. The view stays where it stood.
+     */
+    private void giveFocusBack() {
+        Node owner = refocus;
+        int[] selected = reselected;
+        refocus = null;
+        reselected = null;
+        if (owner == null) {
+            return;
+        }
+        Runnable give = () -> {
+            // only while the keyboard still waits where it was put: a person who has moved it since keeps it there
+            if (owner.getScene() == null || owner.getScene().getFocusOwner() != surface) {
+                return;
+            }
+            surface.holdingPlace(() -> {
+                owner.requestFocus();
+                if (selected != null && owner instanceof javafx.scene.control.TextInputControl text) {
+                    text.selectRange(Math.min(selected[0], text.getLength()), Math.min(selected[1], text.getLength()));
+                }
+            });
+        };
+        give.run();
+        javafx.application.Platform.runLater(give);                // a row built on the next pulse joins the scene then
     }
 
     /** Shows a structured block's control (true) or its text (false). */

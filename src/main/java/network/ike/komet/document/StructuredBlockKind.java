@@ -91,7 +91,7 @@ public interface StructuredBlockKind {
      * surface and on a page: a list of statements, where what a block says once the next one
      * need not say again. A surface then gives each block the blocks of the run before it,
      * through {@link #view(Source, List, Context)} and {@link #figures(Source, List, Context)},
-     * and draws a block again when the run before it has changed.
+     * and draws a block again when {@link #readOfRun(List) what it reads of the run} has changed.
      *
      * @return true for a kind whose blocks read as a run; false by default
      */
@@ -127,6 +127,37 @@ public interface StructuredBlockKind {
      */
     default List<DecisionFigure> figures(Source source, List<Source> before, Context context) {
         return figures(source, context);
+    }
+
+    /**
+     * Whether the control this kind makes shows by itself an edit it saves through
+     * {@link Context#save()}: a form a person fills in, which reads as they left it once the edit
+     * is saved. A surface then keeps that control when the block is read again as the control
+     * saved it, and draws the block again around it, so the form stays open, as it stands, where
+     * it stands. A kind whose control waits to be made again to show what it saved says false.
+     *
+     * @return true for a kind whose control shows its own edits; false by default
+     */
+    default boolean showsOwnEdits() {
+        return false;
+    }
+
+    /**
+     * What a block's drawing reads of the run before it, as one text. A surface draws a block
+     * again when this text changes and keeps the block's drawing while it does not, so a kind
+     * that reads less than the whole run says so here: then an edit of one block of a run draws
+     * again only the blocks that read what the edit changed, and the rest stay as they stand.
+     *
+     * @param before the sources of the blocks of this kind directly before the block, in
+     *               document order, the nearest last; empty for a block that begins a run
+     * @return what the block's control and figures read of them; the whole run by default
+     */
+    default String readOfRun(List<Source> before) {
+        StringBuilder run = new StringBuilder();
+        for (Source earlier : before) {
+            run.append("\n\u0000").append(earlier.parameters()).append('\n').append(earlier.content());
+        }
+        return run.toString();
     }
 
     /**

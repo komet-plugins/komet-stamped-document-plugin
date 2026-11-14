@@ -403,6 +403,28 @@ public final class DocumentSurface extends BorderPane {
         keepPlace();
     };
 
+    /**
+     * Runs an action that moves the keyboard among the surface's nodes, and leaves the surface where it stood. A
+     * scroll pane follows the keyboard to the node that takes it, and a node that has the keyboard and leaves the
+     * scene hands it to whichever node is next; a caller that only takes the keyboard off a node, or puts it back
+     * where it was, moves the reader nowhere.
+     *
+     * @param action what moves the keyboard
+     */
+    public void holdingPlace(Runnable action) {
+        double v = scroll.getVvalue();
+        double h = scroll.getHvalue();
+        boolean keeping = keepingPlace;
+        keepingPlace = true;                                         // what the scroll pane does meanwhile is not the reader's move
+        try {
+            action.run();
+        } finally {
+            scroll.setVvalue(v);
+            scroll.setHvalue(h);
+            keepingPlace = keeping;
+        }
+    }
+
     /** A block's top in the stack, or NaN for a block that is not laid out there: one that is gone, or hidden by a fold. */
     private double topOf(DocumentBlock block) {
         Node node = block == null ? null : block.stackNode();
