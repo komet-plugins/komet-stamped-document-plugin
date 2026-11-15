@@ -164,6 +164,8 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
     /** The working tree a document was last opened from, committed or exported into. */
     private static final String PREF_WORKING_TREE = "network.ike.komet.document.workingTree";
     private static final String PREF_VIEW = "network.ike.komet.document.view";
+    /** How large the card draws its document, as a zoom: 1 is the document's own size. */
+    private static final String PREF_ZOOM = "network.ike.komet.document.zoom";
     /** Whether the Repository panel stands open on this card. */
     private static final String PREF_REPOSITORY_OPEN = "network.ike.komet.document.repositoryOpen";
     private static final String PREF_GRAPH_MODE = "network.ike.komet.document.graphMode";
@@ -244,6 +246,22 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
      * later save of the card.
      */
     private final StackPane center = new StackPane();
+    /** The Graph view or the pages, over the document area, magnified as the document area's body is. */
+    private final network.ike.komet.document.surface.ZoomPane over = new network.ike.komet.document.surface.ZoomPane();
+    /** How large the document is drawn in every view of the card: 1 is its own size. */
+    private double zoom = 1;
+    /** What the More menu's zoom row says the zoom is. */
+    private final Label zoomNow = new Label("100%");
+    /** The room the document's body has at its own size, which the card keeps as the zoom changes; not known until a zoom asks. */
+    private double ownWidth = -1;
+    private double ownHeight = -1;
+    /** The body's size as the last zoom gave it, to tell a size the person has given the card since. */
+    private double givenWidth = -1;
+    private double givenHeight = -1;
+    /** How far a pinch has gone since it last stepped the zoom. */
+    private double pinched = 1;
+    /** How far a scroll with Command down has gone since it last stepped the zoom. */
+    private double zoomScrolled;
     private final Label statusLine = new Label("Choose a document the store holds, or open a committed .adoc file.");
     /** The documents the store holds; a combo box so an empty one can say so rather than show a blank. */
     private final ComboBox<String> documents = new ComboBox<>();
@@ -726,6 +744,8 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
                 item("Find… (⌘F)", "stampedDocumentFind", "Find text in the document: Return goes to the next match, Shift-Return to the one before", this::showFind),
                 item("Find and Replace… (⌥⌘F)", "stampedDocumentFindReplace", "Find text and put other words in its place, one match at a time or all of them", this::showReplace),
                 new SeparatorMenuItem(),
+                zoomItem(),
+                new SeparatorMenuItem(),
                 item("Show in Navigator", "stampedDocumentShowInNavigator", "Select the document's file in the journal's Documents tray", this::showInNavigator),
                 item("Show in Finder", "stampedDocumentShowInFinder", "Show the document's file in the Finder", this::showInFinder),
                 new SeparatorMenuItem(),
@@ -858,6 +878,163 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
         button.setFocusTraversable(false);
         button.setOnAction(e -> action.run());
         return button;
+    }
+
+    /**
+     * Which way a key steps the zoom when Command is down.
+     *
+     * @param key the key pressed
+     * @return 1 for larger, -1 for smaller, 0 for the document's own size, {@code null} for any other key
+     */
+    private static Integer zoomKey(javafx.scene.input.KeyCode key) {
+        return switch (key) {
+            case EQUALS, PLUS, ADD -> 1;
+            case MINUS, SUBTRACT -> -1;
+            case DIGIT0, NUMPAD0 -> 0;
+            default -> null;
+        };
+    }
+
+    /**
+     * The More menu's zoom row: smaller, what the zoom is, larger, and the document's own size.
+     * The menu stays open while its buttons are pressed, so the zoom is stepped to where it is wanted.
+     */
+    private javafx.scene.control.CustomMenuItem zoomItem() {
+        Label name = new Label("Zoom");
+        Button smaller = new Button("\u2212");
+        smaller.setId("stampedDocumentZoomOut");
+        smaller.setTooltip(new Tooltip("Draw the document smaller (\u2318\u2212)"));
+        smaller.setOnAction(e -> zoomTo(network.ike.komet.document.surface.ZoomPane.step(zoom, -1)));
+        Button larger = new Button("+");
+        larger.setId("stampedDocumentZoomIn");
+        larger.setTooltip(new Tooltip("Draw the document larger (\u2318+)"));
+        larger.setOnAction(e -> zoomTo(network.ike.komet.document.surface.ZoomPane.step(zoom, 1)));
+        zoomNow.setId("stampedDocumentZoomNow");
+        zoomNow.setMinWidth(44);
+        zoomNow.setAlignment(javafx.geometry.Pos.CENTER);
+        Button own = new Button("Actual size");
+        own.setId("stampedDocumentZoomActual");
+        own.setTooltip(new Tooltip("Draw the document at its own size (\u23180)"));
+        own.setOnAction(e -> zoomTo(1));
+        HBox row = new HBox(6, name, smaller, zoomNow, larger, own);
+        row.setAlignment(javafx.geometry.Pos.CENTER_LEFT);
+        javafx.scene.control.CustomMenuItem item = new javafx.scene.control.CustomMenuItem(row, false);
+        item.setId("stampedDocumentZoom");
+        return item;
+    }
+
+    /**
+     * Draws the document larger or smaller in every view of the card, the Reading view's text
+     * and the Page layout's pages alike, keeps the reader's place, and remembers the zoom for
+     * the card.
+     *
+     * @param to the zoom: 1 is the document's own size
+     */
+    private void zoomTo(double to) {
+        double wanted = network.ike.komet.document.surface.ZoomPane.clamp(to);
+        if (wanted == zoom) {
+            return;
+        }
+        double from = zoom;
+        showZoom(wanted);
+        growWith(from, zoom);
+        preferences().putDouble(PREF_ZOOM, zoom);
+        syncPreferences();
+        statusLine.setText("Zoom " + network.ike.komet.document.surface.ZoomPane.percent(zoom));
+    }
+
+    /**
+     * Grows or shrinks the card's window with the zoom, so the document keeps the room it had at
+     * its own size: a line of text holds the words it held, a page still fits across, and nothing
+     * wraps anew. The window's own parts, its toolbar and its footer, keep their size; the
+     * document's body takes the change. The width follows the zoom freely. The height follows it
+     * no further than the journal shows, so the card's footer is not pushed out of view; a card
+     * already taller than that is left as tall as it is.
+     *
+     * <p>The room is what the body has now, at the zoom it had, so a size the person gave the
+     * card since is the one kept. Where a height was held back, the room it would have had is
+     * remembered, and is given back as the zoom comes down.
+     *
+     * @param from the zoom the document was drawn at
+     * @param to   the zoom it is drawn at now
+     */
+    private void growWith(double from, double to) {
+        javafx.scene.layout.Region window = fxObject();
+        double bodyWidth = center.getWidth();
+        double bodyHeight = over.getParent() != null ? over.getHeight() : documentArea.surface().bodyHeight();
+        if (bodyWidth <= 0 || bodyHeight <= 0 || window.getWidth() <= 0 || window.getHeight() <= 0 || from <= 0) {
+            return;                                                    // not laid out yet: there is no room to keep
+        }
+        // a body that is not the size the last zoom gave it was sized by the person since
+        if (ownWidth <= 0 || Math.abs(bodyWidth - givenWidth) > 2) {
+            ownWidth = bodyWidth / from;
+        }
+        if (ownHeight <= 0 || Math.abs(bodyHeight - givenHeight) > 2) {
+            ownHeight = bodyHeight / from;
+        }
+        double width = Math.rint(ownWidth * to);
+        double height = heightAt(ownHeight, to, bodyHeight, journalRoom(window.getHeight() - bodyHeight));
+        resizeWindow(window, window.getWidth() + width - bodyWidth, window.getHeight() + height - bodyHeight);
+        givenWidth = width;
+        givenHeight = height;
+    }
+
+    /**
+     * The height a zoomed body is given: the room it has at its own size, at the zoom, and no
+     * more than the journal shows, unless it is taller than that already.
+     *
+     * @param own     the body's height at its own size
+     * @param zoom    the zoom it is drawn at
+     * @param has     the height it has now
+     * @param journal the height the journal can show of it
+     * @return the height, in whole px
+     */
+    static double heightAt(double own, double zoom, double has, double journal) {
+        return Math.rint(Math.min(own * zoom, Math.max(has, journal)));
+    }
+
+    /**
+     * The height the journal can show of the document's body: its viewport, less what the card
+     * has around the body and a little clear room.
+     *
+     * @param around the height of the card's own parts, above and below the body
+     * @return the height, or no limit when the card stands in nothing that scrolls
+     */
+    private double journalRoom(double around) {
+        for (Node at = fxObject().getParent(); at != null; at = at.getParent()) {
+            if (at instanceof javafx.scene.control.ScrollPane journal && journal.getViewportBounds().getHeight() > 0) {
+                return Math.max(0, journal.getViewportBounds().getHeight() - around - 24);
+            }
+        }
+        return Double.MAX_VALUE;
+    }
+
+    /** Gives the card's window a size, raising a standing cap as a drawer's opening does: the gesture outranks the cap. */
+    private static void resizeWindow(javafx.scene.layout.Region window, double width, double height) {
+        if (window.getMaxWidth() > 0 && width > window.getMaxWidth()) {
+            window.setMaxWidth(width);
+        }
+        if (window.getMaxHeight() > 0 && height > window.getMaxHeight()) {
+            window.setMaxHeight(height);
+        }
+        window.setPrefWidth(width);
+        window.setPrefHeight(height);
+        window.resize(width, height);
+    }
+
+    /** Draws the document at a zoom, keeping the reader's place, without remembering it or saying so. */
+    private void showZoom(double wanted) {
+        zoom = network.ike.komet.document.surface.ZoomPane.clamp(wanted);
+        zoomNow.setText(network.ike.komet.document.surface.ZoomPane.percent(zoom));
+        Optional<PageStackView.Anchor> page = pageStack != null && over.getContent() == pageStack ? pageStack.anchor() : Optional.empty();
+        documentArea.surface().setZoom(zoom);
+        over.setZoom(zoom);
+        // the pages' viewport has another height at another zoom: the page the reader was on is put back once it is laid out
+        page.ifPresent(place -> Platform.runLater(() -> {
+            if (pageStack != null && over.getContent() == pageStack) {
+                pageStack.restore(place);
+            }
+        }));
     }
 
     /** Command-F, or the overflow menu's Find…: opens the bar with its text selected, and finds that text again. */
@@ -1128,10 +1305,36 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
             }
         }
         setCardContent(host);
+        // a pinch, or a scroll with Command down, steps the zoom as the keys do
+        center.addEventFilter(javafx.scene.input.ZoomEvent.ZOOM_STARTED, e -> pinched = 1);
+        center.addEventFilter(javafx.scene.input.ZoomEvent.ZOOM, e -> {
+            pinched *= e.getZoomFactor();
+            if (pinched >= 1.12 || pinched <= 0.89) {
+                zoomTo(network.ike.komet.document.surface.ZoomPane.step(zoom, pinched > 1 ? 1 : -1));
+                pinched = 1;
+            }
+            e.consume();
+        });
+        center.addEventFilter(javafx.scene.input.ScrollEvent.SCROLL, e -> {
+            if (e.isShortcutDown() && e.getDeltaY() != 0 && !e.isInertia()) {
+                zoomScrolled += e.getDeltaY();
+                if (Math.abs(zoomScrolled) >= 40) {
+                    zoomTo(network.ike.komet.document.surface.ZoomPane.step(zoom, zoomScrolled > 0 ? 1 : -1));
+                    zoomScrolled = 0;
+                }
+                e.consume();
+            }
+        });
+        showZoom(preferences().getDouble(PREF_ZOOM, 1));
         // Find has no button: the toolbar has no room for one. The keys work wherever the focus is in the card.
         fxObject().addEventFilter(javafx.scene.input.KeyEvent.KEY_PRESSED, e -> {
             if (e.isShortcutDown() && !e.isAltDown() && e.getCode() == javafx.scene.input.KeyCode.F) {
                 showFind();
+                e.consume();
+            } else if (e.isShortcutDown() && !e.isAltDown() && zoomKey(e.getCode()) != null) {
+                // Command-plus, Command-minus and Command-zero, as a browser's
+                int by = zoomKey(e.getCode());
+                zoomTo(by == 0 ? 1 : network.ike.komet.document.surface.ZoomPane.step(zoom, by));
                 e.consume();
             } else if (e.isShortcutDown() && e.isAltDown() && e.getCode() == javafx.scene.input.KeyCode.F) {
                 showReplace();
@@ -1748,8 +1951,9 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
     private void showOverArea(Node view) {
         Node area = documentArea.fxObject();
         center.getChildren().removeIf(child -> child != area);
+        over.setContent(view);
         if (view != null) {
-            center.getChildren().add(view);
+            center.getChildren().add(over);
         }
         area.setVisible(view == null);
         area.setManaged(view == null);

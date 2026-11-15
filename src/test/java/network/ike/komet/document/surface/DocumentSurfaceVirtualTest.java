@@ -235,6 +235,52 @@ class DocumentSurfaceVirtualTest {
                 "and stood lower than they were expected to: the document is shorter by what they were misjudged by");
     }
 
+    @Test
+    void aZoomedSurfaceLaysItsBlocksOutInLessRoomAndKeepsTheReadersPlace() throws Exception {
+        AtomicInteger built = new AtomicInteger();
+        DocumentSurface surface = onFx(() -> {
+            DocumentSurface s = new DocumentSurface(null);
+            List<DocumentBlock> blocks = new ArrayList<>();
+            for (int i = 0; i < 400; i++) {
+                blocks.add(block(i, built));
+            }
+            new Scene(s, 600, 500);
+            s.setBlocks(blocks);
+            return s;
+        });
+        settle(surface);
+        onFx(() -> {
+            surface.revealBlock(200);
+            return null;
+        });
+        settle(surface);
+        assertEquals(1, onFx(surface::getZoom), 0.001, "a surface is drawn at its own size until asked otherwise");
+        int at = onFx(() -> surface.viewpoint().blockIndex());
+        double own = onFx(() -> surface.block(at).stackNode().getBoundsInParent().getWidth());
+
+        onFx(() -> {
+            surface.setZoom(1.5);
+            return null;
+        });
+        settle(surface);
+        pulses();
+        assertEquals(1.5, onFx(surface::getZoom), 0.001);
+        double zoomed = onFx(() -> surface.block(at).stackNode().getBoundsInParent().getWidth());
+        assertTrue(zoomed < own * 0.72, "a block is laid out in the room the zoom leaves, so its text wraps to fit: " + own + " then " + zoomed);
+        double drawn = onFx(() -> surface.block(at).stackNode().localToScene(surface.block(at).stackNode().getBoundsInLocal()).getWidth());
+        assertEquals(zoomed * 1.5, drawn, 0.5, "and is drawn half as large again");
+        assertEquals((double) at, (double) onFx(() -> surface.viewpoint().blockIndex()), 1.0, "the block at the top of the view is still there");
+
+        onFx(() -> {
+            surface.setZoom(1);
+            return null;
+        });
+        settle(surface);
+        pulses();
+        assertEquals(own, onFx(() -> surface.block(at).stackNode().getBoundsInParent().getWidth()), 0.5, "its own size again");
+        assertEquals((double) at, (double) onFx(() -> surface.viewpoint().blockIndex()), 1.0);
+    }
+
     private static long count(DocumentSurface surface) {
         long n = 0;
         for (int i = 0; i < surface.blockCount(); i++) {

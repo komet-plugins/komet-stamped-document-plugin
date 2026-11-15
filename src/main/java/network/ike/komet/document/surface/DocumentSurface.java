@@ -87,6 +87,8 @@ public final class DocumentSurface extends BorderPane {
     private static final double TURN_SPACING = 10;
 
     private final ScrollPane scroll = new ScrollPane();
+    /** The scrolling body, magnified or reduced as the reader asks; the header and the footer keep their size. */
+    private final ZoomPane zoomed = new ZoomPane(scroll);
     private final VBox stack = new VBox(BLOCK_SPACING);
     private final StackPane header = new StackPane();
     private final StackPane footer = new StackPane();
@@ -131,7 +133,7 @@ public final class DocumentSurface extends BorderPane {
             getStylesheets().add(css.toExternalForm());
         }
         setTop(header);
-        setCenter(scroll);
+        setCenter(zoomed);
         setBottom(new VBox(horizontal.bar(), footer));
         // A sideways gesture moves every unwrapped area together, through the one bar. Left to the areas, the one
         // under the pointer would move alone. A gesture is taken as going one way: mostly sideways, or mostly down.
@@ -1087,6 +1089,106 @@ public final class DocumentSurface extends BorderPane {
                 return null;
             }
         }
+    }
+
+    /**
+     * How large the surface's body is drawn: 1 is its own size. Everything in the body grows or
+     * shrinks together, and is laid out again in the room that leaves, so text wraps to fit.
+     *
+     * @return the zoom
+     */
+    public double getZoom() {
+        return zoomed.getZoom();
+    }
+
+    /**
+     * The height the surface's body has on the screen: what is left of the surface between its
+     * header and its footer, which is the part a zoom magnifies. A host that grows with the zoom
+     * grows by this.
+     *
+     * @return the body's height, in px; 0 before the surface is laid out
+     */
+    public double bodyHeight() {
+        return zoomed.getHeight();
+    }
+
+    /**
+     * Draws the surface's body larger or smaller, keeping the reader's place: the block at the
+     * top of the view is at the top of it afterwards.
+     *
+     * @param zoom how large the body is drawn, brought within {@link ZoomPane#LEAST} and {@link ZoomPane#GREATEST}
+     */
+    public void setZoom(double zoom) {
+        if (ZoomPane.clamp(zoom) == zoomed.getZoom()) {
+            return;
+        }
+        Viewpoint place = viewpoint();
+        List<Held> held = heldAtTop();
+        zoomed.setZoom(zoom);
+        // the block first, which builds what stands there; then the line that was at the top, to where it was
+        restoreViewpoint(place, () -> putBack(held));
+    }
+
+    /** A node that stood across the top edge of the view, and how far down it the edge was, as a part of its height. */
+    private record Held(Node node, double fraction) {
+    }
+
+    /**
+     * What stands across the top edge of the view, from the block down to the line of text: each
+     * node the edge passes through, the innermost first. Text wraps anew when its room changes, so
+     * a block's height says little of where a line in it has gone; the line itself says it.
+     */
+    private List<Held> heldAtTop() {
+        List<Held> held = new ArrayList<>();
+        double contentHeight = stack.getBoundsInLocal().getHeight();
+        double top = scroll.getVvalue() * Math.max(0, contentHeight - scroll.getViewportBounds().getHeight());
+        Node at = stack;
+        while (at instanceof javafx.scene.Parent parent) {
+            Node next = null;
+            for (Node child : parent.getChildrenUnmodifiable()) {
+                if (!child.isVisible()) {
+                    continue;
+                }
+                Bounds bounds = inStack(child);
+                if (bounds != null && bounds.getHeight() > 0 && bounds.getMinY() <= top && bounds.getMaxY() > top) {
+                    next = child;
+                    held.addFirst(new Held(child, (top - bounds.getMinY()) / bounds.getHeight()));
+                    break;
+                }
+            }
+            if (next == null) {
+                break;
+            }
+            at = next;
+        }
+        return held;
+    }
+
+    /** Scrolls so the innermost held node that still stands in the stack is across the top edge of the view as it was. */
+    private void putBack(List<Held> held) {
+        for (Held was : held) {
+            Bounds bounds = inStack(was.node());
+            if (bounds == null || bounds.getHeight() <= 0) {
+                continue;                                            // let go, or laid out anew as another node
+            }
+            double y = bounds.getMinY() + was.fraction() * bounds.getHeight();
+            double range = stack.getBoundsInLocal().getHeight() - scroll.getViewportBounds().getHeight();
+            scroll.setVvalue(range <= 0 ? 0 : Math.clamp(y / range, 0, 1));
+            return;
+        }
+    }
+
+    /** A node's bounds in the stack's own coordinates, or {@code null} when it does not stand in the stack now. */
+    private Bounds inStack(Node node) {
+        if (node.getScene() == null || stack.getScene() == null) {
+            return null;
+        }
+        for (Node up = node; up != stack; up = up.getParent()) {
+            if (up == null) {
+                return null;
+            }
+        }
+        return stack.sceneToLocal(node.localToScene(node.getBoundsInLocal()));
     }
 
     /**
