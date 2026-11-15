@@ -425,11 +425,30 @@ public interface StructuredBlockKind {
      * @param save   saves the block's whole new text, attribute line and fences included, as an
      *               uncommitted edit of the document; null where the surface may not edit, and
      *               a control then offers no write back
+     * @param element the nid of the stored block the control is drawn for, by which what the
+     *               block states takes its identity in the knowledge base; empty where the
+     *               block is not a stored document's, as on a page or in a preview
      */
     record Context(ViewCalculator view, dev.ikm.komet.framework.view.ViewProperties viewProperties, BlockContext blocks, double base,
-                   java.util.function.Consumer<String> save) {
+                   java.util.function.Consumer<String> save, java.util.OptionalLong element) {
         /** The default base size, when the surface gives none. */
         public static final double DEFAULT_BASE = 14;
+
+        /** A context for a block that is not a stored document's. */
+        public Context(ViewCalculator view, dev.ikm.komet.framework.view.ViewProperties viewProperties, BlockContext blocks, double base,
+                       java.util.function.Consumer<String> save) {
+            this(view, viewProperties, blocks, base, save, java.util.OptionalLong.empty());
+        }
+
+        /**
+         * This context, for the stored block a control is drawn for.
+         *
+         * @param nid the stored block's nid
+         * @return the context
+         */
+        public Context about(long nid) {
+            return new Context(view, viewProperties, blocks, base, save, java.util.OptionalLong.of(nid));
+        }
 
         /** A context with no interactive view: the concepts a block shows carry no status or popout. */
         public Context(ViewCalculator view, BlockContext blocks, double base, java.util.function.Consumer<String> save) {

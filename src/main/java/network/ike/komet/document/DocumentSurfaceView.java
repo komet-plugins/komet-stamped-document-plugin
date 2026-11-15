@@ -6617,7 +6617,7 @@ public final class DocumentSurfaceView {
                         area.editable ? text -> {
                             made.saved.add(text);
                             host.saveEdit(made.block, text);
-                        } : null);
+                        } : null).about(block.nid());
                 // a kind whose blocks read as a run draws each knowing the blocks of the run before it
                 view = kind.get().readsAsRun() ? kind.get().view(source, StructuredBlocks.runBefore(document, block), context)
                         : kind.get().view(source, context);
