@@ -57,6 +57,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * footnote is a mark in the text with its words beneath the block. What is not prose, a listing
  * and the header's attribute lines, stays as written, and every character keeps its source line.
  * A table's own lines, its attributes, title and delimiters, are not drawn: its caption is.
+ * Nor are the lines of a picture that is shown, its title and its image line: its caption is.
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class ReadingInlineIT {
@@ -410,6 +411,34 @@ class ReadingInlineIT {
         assertEquals(1, shown.size(), "the Reading view shows the picture the tree holds, and none for the file it does not");
         assertEquals(200, shown.getFirst().getImage().getWidth(), 0.5);
 
+        // the picture stands in the place of the lines that name it: its title and its image line are its source, not drawn
+        List<String> read = onFx(() -> drawnLines(body));
+        for (String source : List.of(".A chart of two bars", "image::{charts}", "Two bars, the left one taller")) {
+            assertTrue(read.stream().noneMatch(t -> t.contains(source)), "a picture's own lines are its source, not drawn: " + source + " in " + read);
+        }
+        assertTrue(read.contains("🖼 image::images/missing.png[]"), "a picture that is not found is still its lines, marked as a picture's: " + read);
+        List<String> pictured = onFx(() -> shown.getFirst().getParent().getChildrenUnmodifiable().stream()
+                .filter(node -> node.isVisible() && node.isManaged())
+                .map(node -> node == shown.getFirst() ? "the picture" : node instanceof javafx.scene.control.Label label ? label.getText() : node.getClass().getSimpleName())
+                .toList());
+        assertEquals(List.of("the picture", "Figure 1. A chart of two bars"), pictured, "the picture, and its caption straight beneath it");
+
+        // the lines are the block's still: Find reaches words that are only in them, and shows them by the picture
+        int pictureBlock = onFx(() -> {
+            for (int b = 0; b < body.blockCount(); b++) {
+                if (!body.block(b).node().lookupAll(".stamped-document-picture").isEmpty()) {
+                    return b;
+                }
+            }
+            return -1;
+        });
+        for (String words : List.of("the left one taller", "chart of two bars")) {
+            List<DocumentSurfaceView.Match> found = onFx(() -> view.find(words));
+            assertEquals(1, found.size(), "words of a picture's lines are found once: " + words + " " + found);
+            assertEquals(pictureBlock, found.getFirst().blockIndex(), "in the picture's block");
+            assertFalse(found.getFirst().selectable(), "and shown by the picture, there being no drawn words to select: " + found);
+        }
+
         network.ike.komet.document.surface.print.settings.PrintSettings settings = network.ike.komet.document.surface.print.settings.PrintSettings.DEFAULT;
         List<network.ike.komet.document.print.LayoutOracle.Unit> units = onFx(() -> view.pageUnits(settings.theme()));
         List<network.ike.komet.document.print.LayoutOracle.Unit> figures = units.stream()
@@ -429,6 +458,111 @@ class ReadingInlineIT {
                 "and names the one it could not find");
         String typst = network.ike.komet.document.print.TypstWriter.write(model, network.ike.komet.document.print.TypstWriter.PageSetup.DEFAULT);
         assertTrue(typst.contains("image(\"" + network.ike.komet.document.print.TypstWriter.pictureName(drawn.picture().file()) + "\", width: 150pt, height: 75pt)"), typst);
+
+        // the Source view shows the picture's lines as they are written
+        List<String> written = onFx(() -> {
+            view.setView(DocumentSurfaceView.View.SOURCE);
+            return drawnLines(body);
+        });
+        for (String source : List.of(".A chart of two bars", "image::{charts}/images/chart.png[\"Two bars, the left one taller\"]", "image::images/missing.png[]")) {
+            assertTrue(written.contains(source), "the Source view shows a picture's lines: " + source + " in " + written);
+        }
+    }
+
+    private static final String UNTITLED = """
+            :topic-id: reading-untitled-picture
+            = Reading Untitled Pictures
+
+            Before the pictures.
+
+            image::images/plain.png["A picture with no title"]
+
+            .The chart that has a title
+            image::images/plain.png["The same picture, titled"]
+
+            image::images/absent.png[]
+
+            After them.
+            """;
+
+    @Test
+    void aPictureWrittenWithNoTitleHasNoCaptionAndTakesNoNumber() throws Exception {
+        Path dir = Files.createDirectories(root.resolve("untitled"));
+        git(dir, "init", "-q", "-b", "main");
+        git(dir, "config", "user.name", "author");
+        git(dir, "config", "user.email", "author@example.test");
+        Path file = dir.resolve("untitled.adoc");
+        Files.writeString(file, UNTITLED);
+        Path plain = Files.createDirectories(dir.resolve("images")).resolve("plain.png");
+        javax.imageio.ImageIO.write(new java.awt.image.BufferedImage(120, 60, java.awt.image.BufferedImage.TYPE_INT_RGB), "png", plain.toFile());
+        git(dir, "add", "untitled.adoc", "images/plain.png");
+        git(dir, "commit", "-q", "--no-gpg-sign", "-m", "The document");
+        PublicId anchor = GitDocumentMaterializer.materialize(dir, file).anchor();
+        StoredDocument document = GitDocumentMaterializer.load(anchor, true).orElseThrow();
+        DocumentAssembly assembly = DocumentAssembly.single(document, "untitled.adoc");
+
+        DocumentSurfaceView.Host plainHost = host();
+        DocumentSurfaceView.Host inTree = (DocumentSurfaceView.Host) java.lang.reflect.Proxy.newProxyInstance(getClass().getClassLoader(),
+                new Class<?>[] {DocumentSurfaceView.Host.class},
+                (proxy, method, args) -> method.getName().equals("workingTrees") ? List.of(dir) : method.invoke(plainHost, args));
+        DocumentSurface body = onFx(() -> new DocumentSurface(new BlockFactory(Calculators.View.Default(), 13)));
+        DocumentSurfaceView view = onFx(() -> {
+            DocumentSurfaceView made = new DocumentSurfaceView(inTree, body);
+            made.show(assembly);
+            return made;
+        });
+
+        // the Reading view: each picture's block as what stands in it, the picture and any caption
+        List<List<String>> pictured = new ArrayList<>();
+        List<String> captions = new ArrayList<>();
+        onFx(() -> {
+            for (int b = 0; b < body.blockCount(); b++) {
+                Node block = body.block(b).node();
+                block.lookupAll(".stamped-document-caption").forEach(caption -> captions.add(((javafx.scene.control.Label) caption).getText()));
+                for (Node picture : block.lookupAll(".stamped-document-picture")) {
+                    pictured.add(picture.getParent().getChildrenUnmodifiable().stream().filter(node -> node.isVisible() && node.isManaged())
+                            .map(node -> node == picture ? "the picture" : node instanceof javafx.scene.control.Label label ? label.getText() : node.getClass().getSimpleName())
+                            .toList());
+                }
+            }
+            return null;
+        });
+        assertEquals(List.of(List.of("the picture"), List.of("the picture", "Figure 1. The chart that has a title")), pictured,
+                "a picture written with no title stands alone, and the titled one after it is the first figure");
+        assertEquals(List.of("Figure 1. The chart that has a title"), captions,
+                "no picture is captioned with its file's path, found or not: " + captions);
+        assertTrue(onFx(() -> drawnLines(body)).contains("🖼 image::images/absent.png[]"), "a picture that is not found is still its line");
+        assertEquals(List.of("Figure 1. The chart that has a title"), onFx(() -> view.captions().all().stream().map(Captions.Caption::text).toList()),
+                "so the list of figures has the one titled picture");
+
+        // the pages and the PDF: the same number, and no path for a caption
+        network.ike.komet.document.print.DocumentModel model = onFx(() -> network.ike.komet.document.print.StoredDocumentModel.of(assembly, view.printing()));
+        assertEquals(List.of("", "Figure 1. The chart that has a title"), model.blocks().stream()
+                .filter(network.ike.komet.document.print.DocumentModel.Drawn.class::isInstance)
+                .map(block -> ((network.ike.komet.document.print.DocumentModel.Drawn) block).caption()).toList(),
+                "the print model captions the titled picture alone");
+        assertEquals(List.of("images/absent.png|"), model.blocks().stream()
+                .filter(network.ike.komet.document.print.DocumentModel.Image.class::isInstance)
+                .map(block -> (network.ike.komet.document.print.DocumentModel.Image) block).map(image -> image.target() + "|" + image.title()).toList(),
+                "a picture that is not found is named by its target once, not twice");
+        String typst = network.ike.komet.document.print.TypstWriter.write(model, network.ike.komet.document.print.TypstWriter.PageSetup.DEFAULT);
+        assertTrue(typst.contains("caption: [Figure 1. The chart that has a title]"), typst);
+        assertFalse(typst.contains("Figure 2"), "no second figure is numbered: " + typst);
+    }
+
+    /** Every paragraph a view draws: the text of each block whose text control is shown. */
+    private static List<String> drawnLines(DocumentSurface body) {
+        List<String> lines = new ArrayList<>();
+        for (int b = 0; b < body.blockCount(); b++) {
+            StyledTextModel model = body.block(b).model();
+            jfx.incubator.scene.control.richtext.RichTextArea text = body.block(b).richText();
+            if (model != null && text != null && text.isVisible()) {
+                for (int p = 0; p < model.size(); p++) {
+                    lines.add(model.getPlainText(p));
+                }
+            }
+        }
+        return lines;
     }
 
     private static final String CONDITIONAL = """

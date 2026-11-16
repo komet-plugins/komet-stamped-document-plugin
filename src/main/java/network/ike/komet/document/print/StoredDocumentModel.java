@@ -211,7 +211,7 @@ public final class StoredDocumentModel {
 
                 @Override
                 public String caption(StoredDocument document, StoredBlock block) {
-                    return block.title().isEmpty() ? "" : captions.text(block);
+                    return network.ike.komet.document.Captions.title(document, block).isEmpty() ? "" : captions.text(block);
                 }
 
                 @Override
@@ -795,7 +795,8 @@ public final class StoredDocumentModel {
             case IMAGE -> {
                 String target = own.stream().map(StoredLine::text).map(IMAGE_MACRO::matcher).filter(Matcher::matches)
                         .map(m -> m.group(1)).findFirst().orElse("");
-                out.add(new Image(target, title(block), keyOf(block)));
+                // an image written with no title has its target for one, which is said already
+                out.add(new Image(target, valued(network.ike.komet.document.Captions.title(document, block), block), keyOf(block)));
             }
             case OPAQUE -> {
                 // Comments, attribute entries and passthrough print nothing; an include line whose child

@@ -1941,15 +1941,20 @@ public final class DocumentSurfaceView {
                 if (print && nesting == 0) {
                     modelOrdinal++;
                 }
-                // in the Reading view a picture that is found is shown, and the lines that name it stand beneath it small and
-                // grey; one that is not found is its lines, marked as a picture's
+                // In the Reading view a picture that is found is shown, with its caption beneath it. The lines that name it,
+                // its title and its image line, are its source, which the Source view shows: they stay the area's, not
+                // drawn, so the margins, Find and the left-out layer still reach them. A picture that is not found is its
+                // lines, marked as a picture's.
                 Optional<javafx.scene.image.Image> shown = print ? Optional.<javafx.scene.image.Image>empty()
                         : pictureOf(document, block).flatMap(this::pictureImage);
                 Area area = add(member, block, own, shown.isPresent() ? paragraphs(own, "", st.smallGrey(), null)
                         : paragraphs(own, " ", st.prose(), t -> "🖼 " + t), depth, false, section);
                 if (area != null && !print) {
-                    title(area, block);
-                    // the picture itself above the lines that name it, no wider than the text beside it
+                    // an image written with no title has its target for one, which is no caption
+                    if (!Captions.title(document, block).isEmpty()) {
+                        title(area, block);
+                    }
+                    // the picture itself in the place of the lines that name it, no wider than the text beside it
                     pictureOf(document, block).ifPresent(picture -> shown.ifPresent(image -> {
                         javafx.scene.image.ImageView view = new javafx.scene.image.ImageView(image);
                         view.setPreserveRatio(true);
@@ -1957,6 +1962,11 @@ public final class DocumentSurfaceView {
                         view.setFitWidth(Math.min(picture.width() / DocumentPictures.PIXEL, 520));
                         view.getStyleClass().add("stamped-document-picture");
                         area.holder.getChildren().add(Math.max(0, area.holder.getChildren().indexOf(area.area)), view);
+                        // lines a conditional parts are drawn apart, each passage under its condition: those stay as written
+                        if (area.parts == null && area.area != null) {
+                            area.area.setVisible(false);
+                            area.area.setManaged(false);
+                        }
                     }));
                 }
             }
@@ -2493,9 +2503,9 @@ public final class DocumentSurfaceView {
         return block.kind() == Block.Kind.DIAGRAM || block.kind() == Block.Kind.IMAGE || StructuredBlocks.kindOf(block).isPresent();
     }
 
-    /** The caption of a block as the document reads it, {@code Table 2. Title}; empty for a block with no title. */
-    public String printCaption(StoredBlock block) {
-        return block.title().isEmpty() ? "" : captions.text(block);
+    /** The caption of a block as the document reads it, {@code Table 2. Title}; empty for a block written with no title. */
+    public String printCaption(StoredDocument document, StoredBlock block) {
+        return Captions.title(document, block).isEmpty() ? "" : captions.text(block);
     }
 
     /** @return the captions of the shown assembly */
@@ -2513,7 +2523,7 @@ public final class DocumentSurfaceView {
 
             @Override
             public String caption(StoredDocument document, StoredBlock block) {
-                return printCaption(block);
+                return printCaption(document, block);
             }
 
             @Override
@@ -2689,9 +2699,7 @@ public final class DocumentSurfaceView {
                 return List.of();
             }
             // an image written with no title has its target for one, which is no caption
-            boolean titled = block.members().stream().map(document::line).flatMap(Optional::stream).map(line -> IMAGE_LINE.matcher(line.text().strip()))
-                    .filter(java.util.regex.Matcher::matches).noneMatch(image -> image.group(1).strip().equals(block.title()));
-            String caption = titled ? captions.text(block) : "";
+            String caption = printCaption(document, block);
             return printed.computeIfAbsent("image\n" + picture.get().file() + "\n" + caption + "\n" + block.nid(), key -> {
                 network.ike.komet.document.DecisionFigure bare = new network.ike.komet.document.DecisionFigure(
                         picture.get().width(), picture.get().height(), "image", List.of());

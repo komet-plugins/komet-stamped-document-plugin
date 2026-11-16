@@ -99,6 +99,31 @@ class CaptionsTest {
     }
 
     @Test
+    void anImageWrittenWithNoTitleHasNoCaptionAndTakesNoNumber() {
+        StoredDocument document = StoredFixture.parse("""
+                = Pictures
+
+                image::images/first.png["A picture with no title"]
+
+                .The chart that has a title
+                image::images/second.png["A picture with one"]
+
+                .images/third.png
+                image::images/third.png[]
+                """);
+        Captions captions = Captions.of(DocumentAssembly.single(document, "doc.adoc"), CaptionsTest::figure);
+        StoredBlock untitled = document.blocks().values().stream().filter(b -> b.title().equals("images/first.png")).findFirst().orElseThrow();
+        assertEquals(Block.Kind.IMAGE, untitled.kind(), "the parser names an image written with no title by its target");
+        assertEquals("", Captions.title(document, untitled), "which is not a title it was written with");
+        assertTrue(captions.of(untitled.nid()).isEmpty(), "so it has no caption");
+        assertEquals(List.of("Figure 1. The chart that has a title", "Figure 2. images/third.png"),
+                captions.all().stream().map(Captions.Caption::text).toList(),
+                "and takes no number: the titled picture after it is the first figure, and a title that is written counts whatever it says");
+        StoredBlock titled = document.blocks().values().stream().filter(b -> b.title().equals("The chart that has a title")).findFirst().orElseThrow();
+        assertEquals("The chart that has a title", Captions.title(document, titled));
+    }
+
+    @Test
     void headingsAreGatheredWithTheirLevels() {
         StoredDocument document = StoredFixture.parse(TEXT);
         Captions captions = Captions.of(DocumentAssembly.single(document, "doc.adoc"), CaptionsTest::figure);

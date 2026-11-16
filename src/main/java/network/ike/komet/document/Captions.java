@@ -31,6 +31,8 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.function.Predicate;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * The captions of an assembly: every titled figure and every titled table, numbered in reading
@@ -38,7 +40,8 @@ import java.util.function.Predicate;
  * the Reading view, on the page and in the PDF, and the lists of figures and tables have their
  * entries. A figure's caption stands under it and a table's above it, as the convention has it;
  * a block with no title has no caption, and is not counted, so a small working table stays out
- * of the list. The headings are gathered on the same walk, for the table of contents.
+ * of the list; nor has an image written with no title, though the parser names it by its target
+ * ({@link #title}). The headings are gathered on the same walk, for the table of contents.
  *
  * <p>The walk is over what each showing reads ({@link DocumentAssembly#read}): a section or a
  * table that a conditional leaves out is not numbered and not listed. A title is kept as it
@@ -102,6 +105,40 @@ public final class Captions {
     }
 
     private static final Captions NONE = new Captions(Map.of(), List.of(), List.of());
+
+    /** {@code .Title}, the line that titles the block beneath it. */
+    private static final Pattern BLOCK_TITLE_LINE = Pattern.compile("^\\.([^\\s.].*)$");
+    /** {@code image::target[attributes]}, the line of an image block that names its file. */
+    private static final Pattern IMAGE_LINE = Pattern.compile("^image::([^\\[]*)\\[(.*)\\]$");
+
+    /**
+     * The title a block is written with. A block's title is that, except an image block's that
+     * was written with none: the parser gives such a block its target for a title, so that it has
+     * a name, and a file's path is nothing to caption, to number or to list.
+     *
+     * @param document the block's document, as it is read
+     * @param block    the block
+     * @return its title as written, or an empty string for a block written with none
+     */
+    public static String title(StoredDocument document, StoredBlock block) {
+        if (block.kind() != Block.Kind.IMAGE || block.title().isEmpty()) {
+            return block.title();
+        }
+        boolean target = false;
+        for (long nid : block.members()) {
+            Optional<StoredLine> line = document.line(nid);
+            if (line.isEmpty()) {
+                continue;
+            }
+            String text = line.get().text().strip();
+            if (BLOCK_TITLE_LINE.matcher(text).matches()) {
+                return block.title();
+            }
+            Matcher image = IMAGE_LINE.matcher(text);
+            target |= image.matches() && image.group(1).strip().equals(block.title());
+        }
+        return target ? "" : block.title();
+    }
 
     private final Map<Long, Caption> byBlock;
     private final List<Caption> all;
@@ -298,7 +335,7 @@ public final class Captions {
                     headings.add(new Heading(level, title(member, block), block.nid(), member, number(level)));
                 }
             }
-            if (!block.title().isEmpty() && block.kind() != Block.Kind.SECTION && block.kind() != Block.Kind.DOCUMENT) {
+            if (!Captions.title(document, block).isEmpty() && block.kind() != Block.Kind.SECTION && block.kind() != Block.Kind.DOCUMENT) {
                 Kind kind = block.kind() == Block.Kind.TABLE ? Kind.TABLE : isFigure.test(block) ? Kind.FIGURE : null;
                 if (kind != null) {
                     if (!byBlock.containsKey(block.nid())) {
