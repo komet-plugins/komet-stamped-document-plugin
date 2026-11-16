@@ -655,6 +655,89 @@ class DocumentGraphViewTest {
         });
     }
 
+    // ── find (IKE-Network/ike-issues#1383) ──
+
+    @Test
+    void findReadsEachRowsWholeTextAndShowsTheRowThatHoldsIt() throws Exception {
+        StoredDocument document = DocumentGraphTest.stored(TEXT);
+        DocumentAssembly assembly = DocumentAssembly.single(document, "docs/one.adoc");
+        Card card = new Card();
+        onFx(() -> {
+            DocumentGraphView graph = new DocumentGraphView(card);
+            graph.show(assembly);
+            List<TreeItem<Row>> claims = graph.find("CLAIM");
+            assertEquals(List.of("First claim.", "Second claim.", "Third claim."),
+                    claims.stream().map(i -> DocumentGraphView.words((NodeRow) i.getValue())).toList(),
+                    "whatever its case, each line that holds it, in the tree's order; the paragraph above them is not counted again");
+            assertTrue(claims.stream().allMatch(i -> i.getValue().node().kind() == Kind.LINE));
+            assertTrue(graph.find("   ").isEmpty(), "blank finds nothing");
+            assertTrue(graph.find("claim. Second").isEmpty(), "in Latest mode the rows are lines, and a match falls within one");
+
+            TreeItem<Row> second = graph.find("second claim").getFirst();
+            TreeItem<Row> paragraph = second.getParent();
+            assertFalse(paragraph.isExpanded(), "the line's block opens collapsed");
+            card.acts.clear();
+            graph.showMatch(second);
+            assertTrue(paragraph.isExpanded(), "showing a match opens the rows above it");
+            assertEquals(List.of(second), List.copyOf(graph.tree().getSelectionModel().getSelectedItems()), "and selects it");
+            Node line = second.getValue().node();
+            assertEquals(new LineSelection(line.first(), line.last()), card.selection, "which selects its line, as a click on it does");
+            assertEquals(1, graph.startAt(graph.find("claim")), "the match shown is where Find begins again");
+            graph.tree().getSelectionModel().clearSelection();
+            assertEquals(0, graph.startAt(graph.find("claim")), "with no row selected, at the first");
+        });
+    }
+
+    @Test
+    void findReadsTheDocumentsWordsNotTheStoresFieldsAndTheDeepestRowThatHoldsThem() throws Exception {
+        StoredDocument document = DocumentGraphTest.stored(TEXT);
+        DocumentAssembly assembly = DocumentAssembly.single(document, "docs/one.adoc");
+        long first = document.lines().get(4).nid();
+        Card card = new Card();
+        card.facts = node -> node.nid() == first
+                ? Optional.of(new NodeFacts(first, PublicIds.of(UUID.randomUUID()), "S", "Prose element pattern", "Prose element",
+                        List.of(new Property("Prose content", "First claim, read whole beyond the row's preview.", 0)), 42L, "The document"))
+                : node.block() != null && node.blockKind() == Block.Kind.PARAGRAPH
+                ? Optional.of(new NodeFacts(node.nid(), PublicIds.of(UUID.randomUUID()), "S", "Document block pattern", "Document element",
+                        List.of(new Property("Document element kind", "Document paragraph", 7L), new Property("Document element members", "2 components", 0)),
+                        42L, "The document"))
+                : Optional.empty();
+        onFx(() -> {
+            DocumentGraphView graph = new DocumentGraphView(card);
+            graph.show(assembly);
+            List<TreeItem<Row>> whole = graph.find("beyond the row's preview");
+            assertEquals(1, whole.size(), "the line row, by its text as the store holds it; its property row is not read again: " + whole);
+            assertEquals(first, whole.getFirst().getValue().node().nid());
+            assertTrue(graph.find("Document paragraph").isEmpty(), "a node's properties are the store's fields, not the document's words");
+            assertTrue(graph.find("Prose element").isEmpty(), "nor is the meaning a row names its node by");
+        });
+
+        StoredDocument elements = DocumentGraphTest.stored("""
+                = The Title
+
+                == One
+
+                A *strong* claim
+                over two lines.
+                """);
+        DocumentAssembly elementsAssembly = DocumentAssembly.single(elements, "docs/one.adoc");
+        Card elementsCard = new Card();
+        onFx(() -> {
+            DocumentGraphView graph = new DocumentGraphView(elementsCard);
+            graph.setMode(DocumentGraphView.Mode.DOCBOOK);
+            graph.show(elementsAssembly);
+            TreeItem<Row> paragraph = firstOf(graph.tree().getRoot(), Block.Kind.PARAGRAPH);
+            List<TreeItem<Row>> strong = graph.find("strong");
+            assertEquals(1, strong.size(), "once, where it is deepest: " + strong);
+            assertFalse(strong.getFirst() == paragraph, "not the paragraph, whose text holds it too");
+            assertTrue(strong.getFirst().getValue().node().kind() == Kind.INLINE || strong.getFirst().getValue().node().kind() == Kind.TEXT);
+            List<TreeItem<Row>> across = graph.find("strong claim over two");
+            assertEquals(List.of(paragraph), across, "words that run from one row into the next are found in the row that holds them both");
+            graph.showMatch(across.getFirst());
+            assertEquals(List.of(paragraph), List.copyOf(graph.tree().getSelectionModel().getSelectedItems()));
+        });
+    }
+
     // ── conditional directives: Elements mode is the document as it reads ──
 
     @Test

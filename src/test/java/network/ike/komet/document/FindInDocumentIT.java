@@ -24,8 +24,12 @@ import dev.ikm.tinkar.entity.load.LoadEntitiesFromProtobufFile;
 import javafx.application.Platform;
 import network.ike.komet.document.GitDocumentMaterializer.StoredBlock;
 import network.ike.komet.document.GitDocumentMaterializer.StoredDocument;
+import network.ike.komet.document.print.DocumentFonts;
+import network.ike.komet.document.print.GreedyFxOracle;
+import network.ike.komet.document.print.LayoutOracle;
 import network.ike.komet.document.surface.BlockFactory;
 import network.ike.komet.document.surface.DocumentSurface;
+import network.ike.komet.document.surface.print.settings.PrintSettings;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
@@ -42,6 +46,7 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -50,7 +55,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * Find in a document: a text is found wherever it stands in the view shown, whatever its case, in
  * reading order; in the Reading view that is the text of the blocks and the captions of figures
  * and tables, which are labels and no block's text; in the Source view it is the lines as
- * written. The graph is another drawing of the lines and is not read.
+ * written; in the Page layout it is what the pages print, a match shown as the words selected on
+ * the line it begins on (IKE-Network/ike-issues#1383). The Graph view reads its own rows
+ * ({@code DocumentGraphViewTest}).
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class FindInDocumentIT {
@@ -77,6 +84,8 @@ class FindInDocumentIT {
 
     /** The text of each block the view asked to have saved. */
     private static final List<String> SAVED = new ArrayList<>();
+    /** Each page the view asked its card to scroll to, with the place on it, as {@code page@y}. */
+    private static final List<String> REVEALED = new ArrayList<>();
 
     @TempDir
     Path root;
@@ -184,7 +193,98 @@ class FindInDocumentIT {
             view.setView(DocumentSurfaceView.View.GRAPH);
             return null;
         });
-        assertTrue(onFx(() -> view.find("sensitivity")).isEmpty(), "the graph is not read");
+        assertTrue(onFx(() -> view.find("sensitivity")).isEmpty(), "the Graph view reads its own rows, not the surface");
+
+        // ── the Page layout: what the pages print, a match selected on the line it begins on ──
+        DocumentFonts.loadForJavaFx();
+        LayoutOracle.Geometry wide = new LayoutOracle.Geometry(612, 792, 72, 72, 468, 648);
+        layOut(view, wide);
+        List<DocumentSurfaceView.Match> onPages = onFx(() -> view.find("SENSITIVITY"));
+        assertEquals(2, onPages.size(), "whatever its case, once in each paragraph, as the Reading view finds it: " + onPages);
+        assertTrue(onPages.get(0).before(onPages.get(1)), "in the order the pages print them");
+        REVEALED.clear();
+        onFx(() -> {
+            view.showMatch(onPages.get(0));
+            return null;
+        });
+        assertEquals("Sensitivity", onFx(view::selectedWords), "the words are selected on the line, as drawn");
+        assertEquals(1, REVEALED.size(), "and the page is scrolled to that line: " + REVEALED);
+        assertTrue(REVEALED.getFirst().startsWith("0@"), "on the first page: " + REVEALED);
+        onFx(() -> {
+            view.showMatch(onPages.get(1));
+            return null;
+        });
+        assertEquals("sensitivity", onFx(view::selectedWords), "the next match takes the place of the one before");
+
+        // the pages are laid again, as on Typst's lines: the match shown is selected again where it now stands
+        layOut(view, wide);
+        assertEquals("sensitivity", onFx(view::selectedWords), "the match is kept across a new layout of the lines");
+
+        List<DocumentSurfaceView.Match> captionOnPage = onFx(() -> view.find("quantities in question"));
+        assertEquals(1, captionOnPage.size(), "a caption is printed, and found: " + captionOnPage);
+        assertTrue(captionOnPage.getFirst().selectable(), "its words are set on a line of their own, and selected there");
+        List<DocumentSurfaceView.Match> rowOnPage = onFx(() -> view.find("hazard"));
+        assertEquals(1, rowOnPage.size(), "a table row's words are found: " + rowOnPage);
+        assertFalse(rowOnPage.getFirst().selectable(), "and shown by the row, which draws its cells");
+        REVEALED.clear();
+        onFx(() -> {
+            view.showMatch(rowOnPage.getFirst());
+            return null;
+        });
+        assertFalse(onFx(view::wordsSelected), "no words are selected in a row");
+        assertEquals(1, REVEALED.size(), "but the page is scrolled to it: " + REVEALED);
+        assertFalse(onFx(() -> view.replaceMatch(onPages.get(0), "acuity")), "the pages are drawn from the lines: words are replaced in the Reading and Source views");
+
+        // a narrow measure breaks the paragraph over lines: a match the break parts is selected as far as its first line holds it
+        layOut(view, new LayoutOracle.Geometry(300, 792, 72, 72, 120, 648));
+        String across = "second paragraph names the sensitivity again, and the wear test";
+        List<DocumentSurfaceView.Match> parted = onFx(() -> view.find(across));
+        assertEquals(1, parted.size(), "found whole in the unit, wherever the lines break it: " + parted);
+        onFx(() -> {
+            view.showMatch(parted.getFirst());
+            return null;
+        });
+        String selected = onFx(view::selectedWords);
+        assertFalse(selected.isEmpty(), "the part on the first line is selected");
+        assertTrue(selected.length() < across.length() && across.startsWith(selected.strip()),
+                "only that part, from where the match begins: '" + selected + "'");
+
+        onFx(() -> {
+            view.clearMatch();
+            return null;
+        });
+        assertFalse(onFx(view::wordsSelected), "closing the bar takes the words found away");
+    }
+
+    /**
+     * Where a page line's text stands in its unit paragraph: where the oracle began it, or just past a
+     * separator it would begin on; a hyphen the oracle added at a break is not the paragraph's.
+     */
+    @Test
+    void aPageLineIsPlacedInItsParagraph() {
+        String paragraph = "Data composes across systems.";
+        assertArrayEquals(new int[] {0, 5}, DocumentSurfaceView.placeOfLine(paragraph, "Data ", 0), "the first line, as the oracle began it");
+        assertArrayEquals(new int[] {5, 5}, DocumentSurfaceView.placeOfLine(paragraph, "compo-", 5), "a hyphen the oracle added is not counted");
+        assertArrayEquals(new int[] {14, 15}, DocumentSurfaceView.placeOfLine(paragraph, "across systems.", 13),
+                "a line the oracle began on the space between words begins past it");
+        assertArrayEquals(new int[] {0, 9}, DocumentSurfaceView.placeOfLine("well-made rules", "well-made", 0),
+                "a hyphen of the text's own is the paragraph's");
+        assertArrayEquals(new int[] {0, 4}, DocumentSurfaceView.placeOfLine("Data", "Data composes", 0),
+                "a line that does not match is kept where the oracle put it, no longer than the paragraph");
+
+        assertEquals(5, DocumentSurfaceView.indexOfIgnoringCase(paragraph, "COMPOSES", 0), "whatever its case");
+        assertEquals(-1, DocumentSurfaceView.indexOfIgnoringCase(paragraph, "composes", 6), "from where it is asked");
+        assertEquals(-1, DocumentSurfaceView.indexOfIgnoringCase(paragraph, "", 0), "empty is never found");
+    }
+
+    /** Lays the Page layout's lines out for a measure, with the greedy oracle, and builds the first page's lines. */
+    private static void layOut(DocumentSurfaceView view, LayoutOracle.Geometry geometry) throws Exception {
+        onFx(() -> {
+            view.setView(DocumentSurfaceView.View.PAGE_LAYOUT);
+            List<LayoutOracle.Unit> units = view.pageUnits(PrintSettings.DEFAULT.theme());
+            view.layoutLines(new GreedyFxOracle(DocumentFonts.SERIF, DocumentFonts.MONO).layout(units, geometry), units);
+            return view.linesOn(0, geometry.contentLeft(), geometry.contentWidth(), geometry.bandHeight());
+        });
     }
 
     private static DocumentSurfaceView.Host host() {
@@ -222,6 +322,11 @@ class FindInDocumentIT {
 
             @Override
             public void showingMember(DocumentAssembly.Member member) {
+            }
+
+            @Override
+            public void revealPage(int page, double y) {
+                REVEALED.add(page + "@" + y);
             }
         };
     }

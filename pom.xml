@@ -71,7 +71,7 @@
         <!-- Main-line Komet BOM; manages the tinkar-core and komet versions. Matches ike-komet-wsr. -->
         <komet-bom.version>3.0.12-SNAPSHOT</komet-bom.version>
         <!-- stamp-adoc-core (ike-issues#468); komet-desktop stages the same version into plugins/. -->
-        <stamp-adoc-core.version>1.2.0-SNAPSHOT</stamp-adoc-core.version>
+        <stamp-adoc-core.version>1.3.0-SNAPSHOT</stamp-adoc-core.version>
         <!-- The IKE starter set: its generated bindings, and the data the integration tests load. -->
         <ike-starter-set.version>1-SNAPSHOT</ike-starter-set.version>
         <!-- komet-bom does not manage the gRPC plugin; the property lets a release retarget it. -->

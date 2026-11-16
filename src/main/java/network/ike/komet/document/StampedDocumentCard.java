@@ -688,6 +688,7 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
             syncPreferences();
             if (graph != null) {
                 graph.setMode(is);
+                find(false);                                       // the tree is built again: its rows are found again
             }
         });
         layerMenu.setId("stampedDocumentLayerMenu");
@@ -734,6 +735,7 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
             syncPreferences();
             if (graph != null) {
                 graph.setSentences(is);
+                find(false);
             }
         });
         layerMenu.getItems().addAll(new SeparatorMenuItem(), sentencesItem);
@@ -807,6 +809,8 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
 
     private final HBox replaceBar = new HBox(6);
     private final javafx.scene.control.TextField replaceField = new javafx.scene.control.TextField();
+    private final Button replaceOne = findButton("Replace", "stampedDocumentReplace", "Put these words in place of the match shown, and go to the next (Return)", this::replaceFound);
+    private final Button replaceEvery = findButton("Replace All", "stampedDocumentReplaceAll", "Put these words in place of every match, as edits you can commit or discard", this::replaceAll);
     /** What a replacement does once its edit is saved and the document is read again; null when none is under way. */
     private Runnable afterRead;
     private int replaced;
@@ -815,14 +819,18 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
     private final HBox findBar = new HBox(6);
     private final javafx.scene.control.TextField findField = new javafx.scene.control.TextField();
     private final Label findCount = new Label();
-    /** The matches of the text in the bar, in reading order, and which of them is shown. */
+    /** The matches of the text in the bar, in reading order, in the Reading, Source and Page layout views. */
     private List<DocumentSurfaceView.Match> findMatches = List.of();
+    /** In the Graph view, the rows that hold the text, in the tree's order. */
+    private List<javafx.scene.control.TreeItem<DocumentGraphView.Row>> graphMatches = List.of();
+    /** Which match is shown, among those of the view shown; -1 for none. */
     private int findAt = -1;
 
     /**
      * The bar Command-F opens beneath the Repository line: a field, where the match shown stands
      * among the matches, the match before, the next, and close. It finds as the text is typed,
-     * from where the reader is; Return goes on to the next match and Shift-Return back.
+     * from where the reader is, in whichever view is shown; Return goes on to the next match and
+     * Shift-Return back.
      */
     private void buildFindBar() {
         findBar.setId("stampedDocumentFindBar");
@@ -857,8 +865,6 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
         replaceField.setId("stampedDocumentReplaceField");
         replaceField.setPromptText("Replace with");
         HBox.setHgrow(replaceField, javafx.scene.layout.Priority.ALWAYS);
-        Button one = findButton("Replace", "stampedDocumentReplace", "Put these words in place of the match shown, and go to the next (Return)", this::replaceFound);
-        Button all = findButton("Replace All", "stampedDocumentReplaceAll", "Put these words in place of every match, as edits you can commit or discard", this::replaceAll);
         replaceField.setOnAction(e -> replaceFound());
         replaceField.addEventFilter(javafx.scene.input.KeyEvent.KEY_PRESSED, e -> {
             if (e.getCode() == javafx.scene.input.KeyCode.ESCAPE) {
@@ -866,7 +872,7 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
                 e.consume();
             }
         });
-        replaceBar.getChildren().setAll(replaceField, one, all);
+        replaceBar.getChildren().setAll(replaceField, replaceOne, replaceEvery);
         replaceBar.setVisible(false);
         replaceBar.setManaged(false);
     }
@@ -1142,6 +1148,7 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
         findBar.setVisible(false);
         findBar.setManaged(false);
         findMatches = List.of();
+        graphMatches = List.of();
         findAt = -1;
         if (surface != null) {
             surface.clearMatch();
@@ -1149,9 +1156,12 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
     }
 
     /**
-     * Finds the bar's text in the view shown. With {@code show}, the first match at or after the
-     * block at the top of the viewport is shown; without, the matches are counted again and the
-     * reader stays put, as after the document is read again.
+     * Finds the bar's text in the view shown: the Reading view's blocks and captions, the Source
+     * view's lines, what the Page layout's pages print, or the Graph view's rows. With
+     * {@code show}, the first match at or after where the reader is is shown; without, the
+     * matches are counted again and the reader stays put, as after the document is read again
+     * or the view changes. Replacing works through the source of the lines, so the replace row
+     * is open in the Reading and Source views alone: the pages and the graph are drawn from them.
      */
     private void find(boolean show) {
         if (surface == null || !findBar.isVisible()) {
@@ -1159,14 +1169,20 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
         }
         String text = findField.getText() == null ? "" : findField.getText();
         DocumentSurfaceView.View view = surface.view();
-        if (view == DocumentSurfaceView.View.PAGE_LAYOUT || view == DocumentSurfaceView.View.GRAPH) {
+        boolean drawn = view == DocumentSurfaceView.View.PAGE_LAYOUT || view == DocumentSurfaceView.View.GRAPH;
+        replaceField.setDisable(drawn);
+        replaceOne.setDisable(drawn);
+        replaceEvery.setDisable(drawn);
+        replaceField.setPromptText(drawn ? "Replace works in the Reading and Source views" : "Replace with");
+        if (view == DocumentSurfaceView.View.GRAPH) {
             findMatches = List.of();
-            findAt = -1;
-            findCount.setText("Find reads the Reading and Source views");
-            return;
+            graphMatches = graph.find(text);
+        } else {
+            graphMatches = List.of();
+            findMatches = surface.find(text);
         }
-        findMatches = surface.find(text);
-        if (findMatches.isEmpty()) {
+        int found = foundCount();
+        if (found == 0) {
             findAt = -1;
             findCount.setText(text.isBlank() ? "" : "No matches");
             surface.clearMatch();
@@ -1174,32 +1190,56 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
         }
         if (!show) {
             findAt = -1;
-            findCount.setText(findMatches.size() == 1 ? "1 match" : findMatches.size() + " matches");
+            findCount.setText(found == 1 ? "1 match" : found + " matches");
             return;
         }
-        int top = surface.topBlock();
-        findAt = 0;
+        findAt = firstShown();
+        showFindMatch();
+    }
+
+    /** @return how many matches the view shown has */
+    private int foundCount() {
+        return graphMatches.isEmpty() ? findMatches.size() : graphMatches.size();
+    }
+
+    /**
+     * The match to show first: in the Graph view the first at or after the row selected; else
+     * the first at or after the block at the top of the viewport, or on the pages the unit of
+     * the line at the top; the first of all when none stands there.
+     */
+    private int firstShown() {
+        if (!graphMatches.isEmpty()) {
+            return graph.startAt(graphMatches);
+        }
+        int top = surface.view() == DocumentSurfaceView.View.PAGE_LAYOUT
+                ? (pageStack == null ? 0 : pageStack.anchor().map(PageStackView.Anchor::unit).orElse(0))
+                : surface.topBlock();
         for (int i = 0; i < findMatches.size(); i++) {
             if (findMatches.get(i).blockIndex() >= top) {
-                findAt = i;
-                break;
+                return i;
             }
         }
-        showFindMatch();
+        return 0;
     }
 
     /** Goes to the next match, or the one before, around the ends. */
     private void stepFind(int by) {
-        if (findMatches.isEmpty() || surface == null) {
+        int found = foundCount();
+        if (found == 0 || surface == null) {
             return;
         }
-        findAt = findAt < 0 ? (by > 0 ? 0 : findMatches.size() - 1) : Math.floorMod(findAt + by, findMatches.size());
+        findAt = findAt < 0 ? (by > 0 ? 0 : found - 1) : Math.floorMod(findAt + by, found);
         showFindMatch();
     }
 
+    /** Shows the match {@link #findAt} names, in the view shown, and where it stands among the matches. */
     private void showFindMatch() {
-        surface.showMatch(findMatches.get(findAt));
-        findCount.setText((findAt + 1) + " of " + findMatches.size());
+        if (!graphMatches.isEmpty()) {
+            graph.showMatch(graphMatches.get(findAt));
+        } else {
+            surface.showMatch(findMatches.get(findAt));
+        }
+        findCount.setText((findAt + 1) + " of " + foundCount());
     }
 
     private static MenuItem item(String text, String id, String tooltip, Runnable action) {
@@ -1344,6 +1384,9 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
                 e.consume();
             }
         });
+        // The keys are heard only while the focus is in the card: a press on its tab, its toolbar or its footer would
+        // leave the focus with the journal's workspace (IKE-Network/ike-issues#1383).
+        CardFocus.keepOnPress(fxObject());
         String remembered = preferences().get(PREF_WORKING_TREE, "");
         if (!remembered.isEmpty() && Files.isDirectory(Path.of(remembered))) {
             repoRoot = Path.of(remembered);
@@ -1933,6 +1976,7 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
             graph.show(assembly);
             showOverArea(graph.node());
             host.setBottom(footer);                                    // the footer stays with the surface, which is not in the scene now
+            find(false);                                               // a tree built again has other rows to find
             return;
         }
         graph.show(null);
@@ -2222,6 +2266,7 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
         pageIndicator.setManaged(true);
         showPageIndicator();
         surface.renderSelection();
+        find(false);                                                   // the pages' units are built again: their matches are counted again
         settle(generation, settings, greedy);
     }
 
@@ -2850,6 +2895,7 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
                 return new Materialized(result.name(), result.anchor(), "Materialized '" + result.name() + "': " + result.commits() + " commit(s) written, " + result.lines()
                         + " line(s), " + result.blocks() + " block version(s), " + result.references() + " reference(s), "
                         + result.annotations() + " annotation(s)."
+                        + (result.note().isEmpty() ? "" : " " + result.note())
                         + (settlement.settled() || settlement.rebased() ? " Edit in Komet: " + describe(settlement) : "")
                         + VertexMaterializer.fallbackNote());
             } catch (IOException e) {

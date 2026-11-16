@@ -272,7 +272,115 @@ class VertexMaterializerIT {
         assertEquals(1, whole.annotations().size(), "the line the sentence holds whole is judged too");
     }
 
+    /**
+     * A store whose sentences an earlier sentence splitter wrote (IKE-Network/ike-issues#1382): the
+     * next open finds that the stored sentences differ from what this build's splitter finds for
+     * the same commit, drops the document and materializes it again from git, under the same
+     * identities, and says so. A store that agrees is left alone.
+     */
+    @Test
+    void aStoreAnEarlierSplitterWroteIsRebuiltFromGit() throws Exception {
+        Path dir = Files.createDirectories(root.resolve("resegmented"));
+        git(dir, "init", "-q", "-b", "main");
+        Path file = dir.resolve("topic.adoc");
+        commit(dir, file, "= Resegmented\n\n**Lead.** Body one. Body two.\n", "alice", "2026-06-01T00:00:00Z", "topic");
+        GitDocumentMaterializer.Result first = GitDocumentMaterializer.materialize(dir, file);
+        assertEquals("", first.note());
+        List<String> current = List.of("**Lead.**", "Body one.", "Body two.", "Resegmented");
+        assertEquals(current, storedSentences(first.anchor()));
+
+        storeAsAnEarlierSplitter(first.anchor(), "**Lead.**", "Body one.");
+        assertEquals(List.of("**Lead.** Body one.", "Body two.", "Resegmented"), storedSentences(first.anchor()),
+                "the store as an earlier splitter left it");
+
+        GitDocumentMaterializer.Result reopened = GitDocumentMaterializer.materialize(dir, file);
+        assertTrue(reopened.note().startsWith("Rebuilt from git"), reopened.note());
+        assertEquals(first.anchor(), reopened.anchor(), "the document comes back under the same identity");
+        assertEquals(1, reopened.commits(), "its one commit written again");
+        assertEquals(current, storedSentences(reopened.anchor()));
+        long lead = sentenceNid(reopened.anchor(), "**Lead.**");
+        assertEquals(1, activeVersions(lead), "the earlier splitter's version went with the drop");
+
+        GitDocumentMaterializer.Result again = GitDocumentMaterializer.materialize(dir, file);
+        assertEquals("", again.note(), "a store that agrees is not rebuilt");
+        assertEquals(0, again.commits());
+    }
+
+    /**
+     * A commit the store has not recorded, on a store an earlier splitter wrote
+     * (IKE-Network/ike-issues#1382): the document is rebuilt, so the commit's sentences are never
+     * written over stale ones and no block lists a sentence the store does not hold.
+     */
+    @Test
+    void aNewCommitIsNotWrittenOverAnEarlierSplittersSentences() throws Exception {
+        Path dir = Files.createDirectories(root.resolve("resegmented-then-revised"));
+        git(dir, "init", "-q", "-b", "main");
+        Path file = dir.resolve("topic.adoc");
+        String v1 = "= Revised\n\n**Lead.** Body one. Body two.\n";
+        commit(dir, file, v1, "alice", "2026-06-01T00:00:00Z", "topic");
+        GitDocumentMaterializer.Result first = GitDocumentMaterializer.materialize(dir, file);
+        storeAsAnEarlierSplitter(first.anchor(), "**Lead.**", "Body one.");
+        commit(dir, file, v1 + "\n_Next._ More.\n", "bob", "2026-06-02T00:00:00Z", "add a paragraph");
+
+        GitDocumentMaterializer.Result reopened = GitDocumentMaterializer.materialize(dir, file);
+        assertTrue(reopened.note().startsWith("Rebuilt from git"), reopened.note());
+        assertEquals(2, reopened.commits(), "both commits written, the first again");
+        assertEquals(List.of("**Lead.**", "Body one.", "Body two.", "More.", "Revised", "_Next._"), storedSentences(reopened.anchor()));
+    }
+
     // ── helpers ───────────────────────────────────────────────────────────────
+
+    /** Every sentence the store holds for a document, footnotes' included, sorted. */
+    private static List<String> storedSentences(PublicId anchor) {
+        List<String> texts = new ArrayList<>();
+        for (List<GitDocumentMaterializer.StoredSentence> block : GitDocumentMaterializer.load(anchor).orElseThrow().sentences().values()) {
+            collect(block, texts);
+        }
+        texts.sort(null);
+        return texts;
+    }
+
+    private static void collect(List<GitDocumentMaterializer.StoredSentence> sentences, List<String> texts) {
+        for (GitDocumentMaterializer.StoredSentence sentence : sentences) {
+            texts.add(sentence.text());
+            for (GitDocumentMaterializer.StoredInline inline : sentence.inlines()) {
+                collect(inline.notes(), texts);
+            }
+        }
+    }
+
+    private static long sentenceNid(PublicId anchor, String text) {
+        return GitDocumentMaterializer.load(anchor).orElseThrow().sentences().values().stream().flatMap(List::stream)
+                .filter(s -> s.text().equals(text)).findFirst().orElseThrow().nid();
+    }
+
+    /**
+     * Leaves the store as a splitter that missed the end after {@code lead} would have: a later
+     * version of that sentence holding both texts, and the second sentence retired, under the
+     * stamp coordinates the materializer wrote them with.
+     */
+    private static void storeAsAnEarlierSplitter(PublicId anchor, String lead, String next) {
+        long leadNid = sentenceNid(anchor, lead);
+        long nextNid = sentenceNid(anchor, next);
+        SemanticEntityVersion version = latestVersion(leadNid);
+        dev.ikm.tinkar.entity.StampEntity<?> stamp = version.stamp();
+        SemanticEntity<?> semantic = EntityHandle.get(leadNid).expectSemantic();
+        PublicId pattern = PrimitiveData.publicId(semantic.patternNid());
+        PublicId referenced = PrimitiveData.publicId(semantic.referencedComponentNid());
+        dev.ikm.tinkar.terms.EntityProxy.Concept author = dev.ikm.tinkar.terms.EntityProxy.Concept.make(stamp.authorNid());
+        dev.ikm.tinkar.terms.EntityProxy.Concept module = dev.ikm.tinkar.terms.EntityProxy.Concept.make(stamp.moduleNid());
+        dev.ikm.tinkar.terms.EntityProxy.Concept path = dev.ikm.tinkar.terms.EntityProxy.Concept.make(stamp.pathNid());
+        long time = version.time() + 1;
+        PublicId leadId = PrimitiveData.publicId(leadNid);
+        try (dev.ikm.tinkar.entity.transaction.StampedWriter writer = dev.ikm.tinkar.entity.transaction.StampedWriter.open(
+                "an earlier splitter", State.ACTIVE, time, author, module, path)) {
+            writer.semantic(leadId, pattern, referenced, VertexMaterializer.value(leadId.asUuidArray()[0], IkeConcept.SENTENCE,
+                    java.util.Map.of(IkeConcept.SEGMENT_TEXT, lead + " " + next)));
+            writer.restamp(State.INACTIVE, time, author, module, path);
+            writer.semantic(PrimitiveData.publicId(nextNid), pattern, referenced, latest(nextNid));
+            writer.commit();
+        }
+    }
 
     private void commit(Path dir, Path file, String text, String author, String date, String message) throws Exception {
         Files.writeString(file, text);

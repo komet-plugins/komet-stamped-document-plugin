@@ -103,6 +103,9 @@ import java.util.Optional;
  * {@link DocumentGraph#docbook the DocBook projection}: elements and their attributes as a
  * DocBook editor's structure view shows them, a paragraph's lines joined into text and inline
  * elements; a node with no entity of its own selects the lines it came from.
+ *
+ * <p>The card's Find reads the tree's rows ({@link #find}): each node row by the whole text it
+ * stands for, a match shown by opening the rows above it and selecting it (IKE-Network/ike-issues#1383).
  */
 final class DocumentGraphView {
 
@@ -488,6 +491,125 @@ final class DocumentGraphView {
         } finally {
             applying = false;
         }
+    }
+
+    // ── find ──────────────────────────────────────────────────────────────────
+
+    /**
+     * The rows that hold a text, whatever its case, in the tree's order from the root, rows under
+     * collapsed ones among them. A node row is read by the whole text it stands for
+     * ({@link #words}), not the preview it draws. Where rows nest, the match is the deepest row
+     * that holds the words, so a paragraph does not repeat what its sentences show, and words
+     * that run from one row into the next are found in the row that holds them both. A version
+     * is a line's history, not a part of it: a line and its versions are each read for
+     * themselves. Property and edge rows are not read; they say what the store holds of a node.
+     *
+     * @param text the text to find; blank finds nothing
+     * @return the matching rows
+     */
+    List<TreeItem<Row>> find(String text) {
+        List<TreeItem<Row>> found = new ArrayList<>();
+        if (text == null || text.isBlank() || tree.getRoot() == null) {
+            return found;
+        }
+        find(tree.getRoot(), text, found);
+        return found;
+    }
+
+    /**
+     * Collects the matches at and under a row, in the tree's order.
+     *
+     * @return whether the row, or a row under it other than a version, holds the text
+     */
+    private static boolean find(TreeItem<Row> item, String text, List<TreeItem<Row>> found) {
+        if (!(item.getValue() instanceof NodeRow row)) {
+            return false;
+        }
+        int at = found.size();                                   // the row's own place, before its children's matches
+        boolean below = false;
+        for (TreeItem<Row> child : item.getChildren()) {
+            if (find(child, text, found) && child.getValue().node().kind() != Kind.VERSION) {
+                below = true;
+            }
+        }
+        // read as the row draws it, a line break a space: what is typed in the bar has none
+        boolean own = DocumentSurfaceView.indexOfIgnoringCase(words(row).replaceAll("\\s+", " "), text, 0) >= 0;
+        if (own && !below) {
+            found.add(at, item);
+        }
+        return own || below;
+    }
+
+    /**
+     * The text a node row stands for, whole, which Find reads: in Elements mode the element's
+     * text; a version's text; the node's first text property as the store holds it, which the
+     * row previews; a line's text; or the node's label, where the store cannot say what it is.
+     *
+     * @param row the row
+     * @return its text; empty for a node that shows none, as a block whose store facts hold no text
+     */
+    static String words(NodeRow row) {
+        DocumentGraph.Node node = row.node();
+        if (node.markup() != null) {
+            return node.markup().text();
+        }
+        if (node.kind() == Kind.VERSION && node.version() != null) {
+            return node.version().text();
+        }
+        if (row.facts() != null) {
+            return row.facts().primary().map(Property::value).orElse("");
+        }
+        if (node.line() != null) {
+            return node.line().text();
+        }
+        return node.label();
+    }
+
+    /**
+     * Where among the matches to begin: the first at or after the row selected, so the match
+     * shown is kept while more of its words are typed; the first when no row is selected.
+     *
+     * @param matches the matches of {@link #find}
+     * @return the index among them
+     */
+    int startAt(List<TreeItem<Row>> matches) {
+        TreeItem<Row> selected = tree.getSelectionModel().getSelectedItem();
+        if (selected == null || matches.isEmpty() || tree.getRoot() == null) {
+            return 0;
+        }
+        Map<TreeItem<Row>, Integer> order = new java.util.IdentityHashMap<>();
+        number(tree.getRoot(), order);
+        int from = order.getOrDefault(selected, 0);
+        for (int i = 0; i < matches.size(); i++) {
+            if (order.getOrDefault(matches.get(i), -1) >= from) {
+                return i;
+            }
+        }
+        return 0;
+    }
+
+    /** Numbers every row at and under one in the tree's order, collapsed or not. */
+    private static void number(TreeItem<Row> item, Map<TreeItem<Row>, Integer> order) {
+        order.put(item, order.size());
+        for (TreeItem<Row> child : item.getChildren()) {
+            number(child, order);
+        }
+    }
+
+    /**
+     * Shows a match of {@link #find}: the rows above it open, it is selected, which selects
+     * the lines it spans as a click on it does, and it is scrolled into view.
+     *
+     * @param match the row
+     */
+    void showMatch(TreeItem<Row> match) {
+        expandAncestors(match);
+        int row = tree.getRow(match);
+        if (row < 0) {
+            return;
+        }
+        tree.getSelectionModel().clearAndSelect(row);
+        tree.scrollTo(row);
     }
 
     private static void expandAncestors(TreeItem<Row> item) {

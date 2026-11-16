@@ -2218,16 +2218,19 @@ public final class DocumentSurfaceView {
 
     /**
      * Every place a text stands in the view shown, in reading order, whatever its case: in the
-     * text of the Reading view's blocks and in the captions of its figures and tables, or in the
-     * lines of the Source view. The pages and the graph are not read: they are other drawings of
-     * the same lines, and a match is shown where the lines are text.
+     * text of the Reading view's blocks and in the captions of its figures and tables, in the
+     * lines of the Source view, or in what the Page layout's pages print ({@link #findOnPages}).
+     * The graph is read by the Graph view itself ({@link DocumentGraphView#find}).
      *
      * @param text the text to find; blank finds nothing
-     * @return the matches, each naming its block by its place in the view
+     * @return the matches, each naming its block by its place in the view, or on the pages its unit
      */
     List<Match> find(String text) {
-        if (text == null || text.isBlank() || view == View.PAGE_LAYOUT || view == View.GRAPH) {
+        if (text == null || text.isBlank() || view == View.GRAPH) {
             return List.of();
+        }
+        if (view == View.PAGE_LAYOUT) {
+            return findOnPages(text);
         }
         List<Match> found = new ArrayList<>();
         if (view != View.READING) {
@@ -2274,9 +2277,58 @@ public final class DocumentSurfaceView {
     }
 
     /**
+     * Every place a text stands on the pages, whatever its case: in each paragraph of each unit's
+     * text as the pages print it, the units in the order they are laid, so captions, front
+     * lists and footnotes are read as well as the body. A figure is drawn, not set, and is not
+     * read; a table row's words are found in its unit and shown by its row.
+     *
+     * @param text the text to find
+     * @return the matches, each naming its unit and the paragraph of the unit's text
+     */
+    private List<Match> findOnPages(String text) {
+        List<Match> found = new ArrayList<>();
+        for (int u = 0; u < units.size(); u++) {
+            Area unit = units.get(u);
+            if (unit.drawn != null) {
+                continue;
+            }
+            boolean selectable = unit.cellSpecs.isEmpty();
+            List<LineRunModel.Paragraph> paragraphs = unit.spec.paragraphs();
+            for (int p = 0; p < paragraphs.size(); p++) {
+                String drawn = LineRunModel.Spec.text(paragraphs.get(p));
+                for (int at = indexOfIgnoringCase(drawn, text, 0); at >= 0; at = indexOfIgnoringCase(drawn, text, at + text.length())) {
+                    found.add(new Match(u, -1, p, at, at + text.length(), selectable));
+                }
+            }
+        }
+        return found;
+    }
+
+    /**
+     * Where a text first stands in another at or after an offset, whatever its case, as the
+     * Reading view's search compares characters: one by one, ignoring case.
+     *
+     * @param in   the text searched
+     * @param text the text looked for; empty is never found
+     * @param from the offset to begin at
+     * @return the offset of the first match, or -1 when there is none
+     */
+    static int indexOfIgnoringCase(String in, String text, int from) {
+        if (in == null || text == null || text.isEmpty()) {
+            return -1;
+        }
+        for (int at = Math.max(0, from); at + text.length() <= in.length(); at++) {
+            if (in.regionMatches(true, at, text, 0, text.length())) {
+                return at;
+            }
+        }
+        return -1;
+    }
+
+    /**
      * One place a text was found in the view shown.
      *
-     * @param blockIndex     the block, by its place in the view
+     * @param blockIndex     the block, by its place in the view; on the pages, the unit
      * @param cell           which cell of a table row the words are in, or -1 for the block's own text
      * @param paragraphIndex the paragraph of that text, or -1 for a match shown by its block alone
      * @param start          where the words begin in the paragraph
@@ -2311,12 +2363,17 @@ public final class DocumentSurfaceView {
     /**
      * Goes to a match: opens any fold that hides its block, scrolls to it, and selects the words
      * where they are drawn, in the block's text or in a table cell's. A caption's match, and a
-     * figure's, is shown by its block alone.
+     * figure's, is shown by its block alone. On the pages, see {@link #showOnPage}.
      *
      * @param match a match of {@link #find}
      */
     void showMatch(Match match) {
-        if (view == View.PAGE_LAYOUT || view == View.GRAPH) {
+        if (view == View.GRAPH) {
+            return;
+        }
+        if (view == View.PAGE_LAYOUT) {
+            clearMatch();
+            showOnPage(match, true);
             return;
         }
         if (view == View.READING && match.blockIndex() < areas.size()) {
@@ -2467,8 +2524,135 @@ public final class DocumentSurfaceView {
         }
     }
 
-    /** Takes the selection of the last match shown away. */
+    /**
+     * The match last shown on the pages, the line area its words were selected in, and the
+     * selection made there: so the match is selected again when the pages are laid again on
+     * Typst's lines, unless the reader has selected something else meanwhile.
+     */
+    private Match pageMatch;
+    private Area pageMatchLine;
+    private jfx.incubator.scene.control.richtext.TextPos pageMatchFrom;
+    private jfx.incubator.scene.control.richtext.TextPos pageMatchTo;
+
+    /**
+     * Shows a match on the pages, as a reader's own selection of words is shown there: the page
+     * scrolls to the line the match begins on, and the words on that line are selected. A match a
+     * line break parts is selected as far as its first line holds it; a table row's is shown by
+     * its row. A line's area is built here when its page has not been shown yet, and the stack
+     * draws the selection in it once it lays the page out.
+     *
+     * @param match  a match of {@link #findOnPages}
+     * @param reveal whether to scroll to it, or only to select it where it stands
+     */
+    private void showOnPage(Match match, boolean reveal) {
+        pageMatch = null;
+        pageMatchLine = null;
+        LineAt at = lineHolding(match);
+        if (at == null) {
+            return;
+        }
+        PageLine laid = at.laid();
+        Area line = laid.area == null ? buildLine(laid) : laid.area;
+        int from = Math.max(match.start(), at.base()) - at.base();
+        int to = Math.min(match.end(), at.base() + at.length()) - at.base();
+        if (match.selectable() && line.drawing == null && line.model != null && to > from) {
+            selectWordsHere(line, 0, from, to - from);
+            pageMatch = match;
+            pageMatchLine = line;
+            pageMatchFrom = exactAnchor;
+            pageMatchTo = exactCaret;
+        }
+        if (reveal) {
+            host.revealPage(laid.page, laid.baseline - (laid.unitArea.drawn != null ? laid.drawnHeight : metrics(laid.style())[0]));
+        }
+    }
+
+    /**
+     * A page line and where its text stands in its unit paragraph's drawn text.
+     *
+     * @param laid   the line
+     * @param base   where the line's text begins in the paragraph
+     * @param length how much of the line's text is the paragraph's: all of it, less a hyphen the oracle added at a break
+     */
+    private record LineAt(PageLine laid, int base, int length) { }
+
+    /**
+     * The line a match on the pages begins on: among the laid lines of its unit's paragraph, the
+     * last that begins at or before the match, or the next when the match begins in the space a
+     * break took; for a table row, its first line.
+     *
+     * @return the line, or {@code null} when no laid line holds the match
+     */
+    private LineAt lineHolding(Match match) {
+        if (match.blockIndex() < 0 || match.blockIndex() >= units.size()) {
+            return null;
+        }
+        Area unit = units.get(match.blockIndex());
+        if (match.paragraphIndex() < 0 || match.paragraphIndex() >= unit.spec.paragraphs().size()) {
+            return null;
+        }
+        String paragraph = LineRunModel.Spec.text(unit.spec.paragraphs().get(match.paragraphIndex()));
+        LineAt chosen = null;
+        for (PageLine laid : pageLines) {
+            if (laid.unit != match.blockIndex() || laid.spec.paragraphs().isEmpty()) {
+                continue;
+            }
+            if (!unit.cellSpecs.isEmpty()) {
+                return new LineAt(laid, 0, 0);                    // a row is shown by its row
+            }
+            if (laid.paragraph != match.paragraphIndex()) {
+                continue;
+            }
+            int[] place = placeOfLine(paragraph, LineRunModel.Spec.text(laid.spec.paragraphs().getFirst()), laid.from);
+            LineAt here = new LineAt(laid, place[0], place[1]);
+            if (chosen == null) {
+                chosen = here;                                    // the paragraph's first line, for a match before every line
+            } else if (here.base() <= match.start() || chosen.base() + chosen.length() <= match.start()) {
+                chosen = here;
+            }
+            if (here.base() > match.start()) {
+                break;
+            }
+        }
+        return chosen;
+    }
+
+    /**
+     * Where a page line's text stands in its unit paragraph's drawn text. A line begins where
+     * the oracle put it, or just past a separator between source lines that it would begin on,
+     * which the line does not draw; and a hyphen the oracle added where it broke a word is not
+     * the paragraph's.
+     *
+     * @param paragraph the unit paragraph's drawn text
+     * @param line      the line's drawn text
+     * @param from      where the oracle began the line in the paragraph
+     * @return {@code {base, length}}: where the line's text begins in the paragraph, and how much of it is the paragraph's
+     */
+    static int[] placeOfLine(String paragraph, String line, int from) {
+        int[] lengths = line.endsWith("-") && !line.isEmpty() ? new int[] {line.length(), line.length() - 1} : new int[] {line.length()};
+        for (int base = Math.max(0, from); base <= Math.min(paragraph.length(), from + 3); base++) {
+            for (int length : lengths) {
+                if (base + length <= paragraph.length() && paragraph.regionMatches(base, line, 0, length)) {
+                    return new int[] {base, length};
+                }
+            }
+        }
+        return new int[] {Math.max(0, from), Math.max(0, Math.min(line.length(), paragraph.length() - from))};
+    }
+
+    /** @return the match last shown on the pages while its words are still the reader's selection, else {@code null} */
+    private Match pageMatchShown() {
+        return pageMatch != null && pageMatchLine != null && exactArea == pageMatchLine
+                && java.util.Objects.equals(exactAnchor, pageMatchFrom) && java.util.Objects.equals(exactCaret, pageMatchTo) ? pageMatch : null;
+    }
+
+    /** Takes the selection of the last match shown away: on the pages, the words found, which are the reader's selection there. */
     void clearMatch() {
+        if (pageMatchShown() != null) {
+            clearSelection();
+        }
+        pageMatch = null;
+        pageMatchLine = null;
         surface.clearSelection();
         if (matchedCell != null) {
             if (inWindow(matchedCell)) {
@@ -4083,6 +4267,7 @@ public final class DocumentSurfaceView {
         if (editing != null) {
             cancelEdit(editing);
         }
+        Match found = pageMatchShown();                           // a match of Find shown on a line that is laid again
         if (exactArea != null && exactArea.unit >= 0) {
             clearExact();                                         // the words were on a line that is laid again
         }
@@ -4137,6 +4322,9 @@ public final class DocumentSurfaceView {
         if (view == View.PAGE_LAYOUT) {
             render();
             selectAgain();                                        // the words a mark was written over, on the lines as laid now
+            if (found != null) {
+                showOnPage(found, false);                         // the match is selected again where it now stands; the reader's place is the card's to keep
+            }
         }
     }
 

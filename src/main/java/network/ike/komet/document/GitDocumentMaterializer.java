@@ -118,8 +118,38 @@ public final class GitDocumentMaterializer {
      * @param blocks       block versions written (new blocks and changed ones)
      * @param references   reference versions written
      * @param headSha      the HEAD the history was read from
+     * @param note         what a person is told beyond the counts: why the document was rebuilt from git, or why
+     *                     it could not be (IKE-Network/ike-issues#1382); empty otherwise
      */
-    public record Result(PublicId anchor, String name, int commits, int lines, int annotations, int blocks, int references, String headSha) { }
+    public record Result(PublicId anchor, String name, int commits, int lines, int annotations, int blocks, int references, String headSha,
+                         String note) {
+
+        /**
+         * A run with nothing to tell beyond its counts.
+         *
+         * @param anchor      the document's anchor concept id
+         * @param name        the anchor's fully qualified name
+         * @param commits     events written by this run
+         * @param lines       line elements introduced across the history
+         * @param annotations annotation semantics written
+         * @param blocks      block versions written
+         * @param references  reference versions written
+         * @param headSha     the HEAD the history was read from
+         */
+        public Result(PublicId anchor, String name, int commits, int lines, int annotations, int blocks, int references, String headSha) {
+            this(anchor, name, commits, lines, annotations, blocks, references, headSha, "");
+        }
+
+        /**
+         * The same run with a note.
+         *
+         * @param text what a person is told
+         * @return the result carrying it
+         */
+        public Result noted(String text) {
+            return new Result(anchor, name, commits, lines, annotations, blocks, references, headSha, text);
+        }
+    }
 
     /**
      * Materialize a file's whole first-parent history into the open store.

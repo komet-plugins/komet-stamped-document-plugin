@@ -177,6 +177,15 @@ public final class VertexMaterializer {
     /**
      * Materialize a file's first-parent history as semantic vertices.
      *
+     * <p>A run that skips the commits the store records first checks that the store holds the
+     * sentences this build derives for the last of them (IKE-Network/ike-issues#1382). A sentence's
+     * identity carries its position among the document's sentences at the commit that introduced it,
+     * so a change to how text is split into sentences moves identities well beyond the sentences it
+     * splits, and writing new commits over sentences an earlier splitter stored would leave both in
+     * the store. When they differ, the document is dropped and materialized again from git, which
+     * is its record, and the result's note says so. When it cannot be dropped, the run goes on as
+     * before and the note says why it was not rebuilt.
+     *
      * @param repoRoot working-tree root
      * @param file     path within it, absolute or root-relative
      * @param onlyNew  skip commits the store already records
@@ -184,6 +193,46 @@ public final class VertexMaterializer {
      * @throws IOException if the repository or the file cannot be read
      */
     public static GitDocumentMaterializer.Result materialize(Path repoRoot, Path file, boolean onlyNew) throws IOException {
+        try {
+            return write(repoRoot, file, onlyNew, onlyNew);
+        } catch (SentencesDiffer differ) {
+            try {
+                DocumentScopes.dropForRebuild(differ.anchor);
+            } catch (IllegalStateException | IllegalArgumentException | UnsupportedOperationException refused) {
+                LOG.warn("{}: {}; not rebuilt from git: {}", differ.name, differ.reason, refused.getMessage());
+                return write(repoRoot, file, onlyNew, false).noted("Its stored sentences differ from what this build's sentence "
+                        + "splitter finds (" + differ.reason + "), and it was not rebuilt from git: " + refused.getMessage());
+            }
+            LOG.info("{}: {}; rebuilding from git", differ.name, differ.reason);
+            return write(repoRoot, file, false, false).noted("Rebuilt from git: its stored sentences differed from what this "
+                    + "build's sentence splitter finds (" + differ.reason + ").");
+        }
+    }
+
+    /**
+     * Thrown before a run writes anything, when the store's sentences differ from what this build
+     * derives for the last commit the store records.
+     */
+    private static final class SentencesDiffer extends RuntimeException {
+
+        private final PublicId anchor;
+        private final String name;
+        private final String reason;
+
+        SentencesDiffer(PublicId anchor, String name, String reason) {
+            super(name + ": " + reason, null, false, false);
+            this.anchor = anchor;
+            this.name = name;
+            this.reason = reason;
+        }
+    }
+
+    /**
+     * One materialization run.
+     *
+     * @param check whether to stop with {@link SentencesDiffer} when the store's sentences differ from the derived ones
+     */
+    private static GitDocumentMaterializer.Result write(Path repoRoot, Path file, boolean onlyNew, boolean check) throws IOException {
         requirePresent(TERMS);
         GitIdentityAdapter adapter = GitIdentityAdapter.fromMailmap(repoRoot);
         String component = repoRoot.toAbsolutePath().normalize().getFileName().toString();
@@ -209,6 +258,7 @@ public final class VertexMaterializer {
             int annotations = 0;
             int narrations = 0;
             boolean segments = segmentsAvailable();
+            boolean unchecked = check && segments && patternWritten;
             int skipped = 0;
             for (CommitEvent event : history.events()) {
                 boolean contentRecorded = !event.touchesFile() || recorded.contains(event.commit().sha());
@@ -238,6 +288,10 @@ public final class VertexMaterializer {
                     }
                     skipped++;
                     continue;                                    // already in the store
+                }
+                if (unchecked) {
+                    unchecked = false;                           // before the first write: what it compares against must be what the store holds
+                    requireSentencesAsDerived(root.publicId(), name, patternId, last);
                 }
                 GitStampTerms.GitStamp stamp = GitStampTerms.GitStamp.of(adapter.coordinatesOf(event, component, branch));
                 GitStampVocabulary.seedIfAbsent(stamp);
@@ -328,6 +382,9 @@ public final class VertexMaterializer {
                     }
                     adopt(last, now);
                 }
+            }
+            if (unchecked) {
+                requireSentencesAsDerived(root.publicId(), name, patternId, last);
             }
             LOG.info("Materialized {} as vertices of '{}': {} commit(s) written, {} already recorded, {} line(s), {} block version(s), "
                     + "{} reference version(s), {} sentence version(s), {} annotation(s), {} narration(s)", path, name,
@@ -740,6 +797,63 @@ public final class VertexMaterializer {
             }
         }
         return latest;
+    }
+
+    /**
+     * Stops a run with {@link SentencesDiffer} when the store does not hold the sentences this
+     * build derives for the last commit it records (IKE-Network/ike-issues#1382): a sentence or
+     * inline element that the store lacks, has retired, or holds with other text, or a block or
+     * footnote whose stored Content lists other sentences. Only committed versions count: an edit
+     * pending in Komet is not yet the store's record.
+     *
+     * @param anchor    the document's anchor
+     * @param name      the document's name, for the report
+     * @param patternId the document's pattern
+     * @param derived   the vertices derived for the last recorded commit, by key
+     */
+    private static void requireSentencesAsDerived(PublicId anchor, String name, PublicId patternId, Map<String, Written> derived) {
+        int compared = 0;
+        int differing = 0;
+        for (Written vertex : derived.values()) {
+            Object text = vertex.value().properties().get(IkeConcept.SEGMENT_TEXT.nid());
+            Object content = vertex.value().properties().get(IkeConcept.BLOCK_CONTENT.nid());
+            if (text == null && content == null) {
+                continue;
+            }
+            compared++;
+            EntityVertex stored = committed(EntityService.get().nidForSemantic(patternId, vertex.proxy().publicId()));
+            if (stored == null
+                    || (text != null && !text.equals(stored.properties().get(IkeConcept.SEGMENT_TEXT.nid())))
+                    || (content != null && !sameIds(content, stored.properties().get(IkeConcept.BLOCK_CONTENT.nid())))) {
+                differing++;
+            }
+        }
+        if (differing > 0) {
+            throw new SentencesDiffer(anchor, name, differing + " of " + compared + " sentence, inline element and content vertices differ");
+        }
+    }
+
+    /** A semantic's latest committed version, when it is active and holds a vertex; null otherwise. */
+    private static EntityVertex committed(long nid) {
+        Entity<? extends EntityVersion> entity = EntityHandle.get(nid).entity().orElse(null);
+        if (entity == null) {
+            return null;
+        }
+        SemanticEntityVersion latest = null;
+        for (EntityVersion version : entity.versions()) {
+            if (version instanceof SemanticEntityVersion v && !v.canceled() && v.time() != Long.MAX_VALUE
+                    && (latest == null || v.time() >= latest.time())) {
+                latest = v;
+            }
+        }
+        if (latest == null || latest.state() != State.ACTIVE || !(latest.fieldValues().get(0) instanceof EntityVertex vertex)) {
+            return null;
+        }
+        return vertex;
+    }
+
+    private static boolean sameIds(Object derived, Object stored) {
+        return derived instanceof LongIdList want && stored instanceof LongIdList have && java.util.Arrays.equals(want.toArray(), have.toArray());
     }
 
     /** The commit SHAs the document's git source already records. */
