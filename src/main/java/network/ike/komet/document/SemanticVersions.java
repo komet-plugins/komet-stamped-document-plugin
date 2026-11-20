@@ -20,6 +20,7 @@ import dev.ikm.tinkar.common.service.PrimitiveData;
 import dev.ikm.tinkar.coordinate.edit.EditCoordinate;
 import dev.ikm.tinkar.coordinate.stamp.calculator.Latest;
 import dev.ikm.tinkar.coordinate.view.calculator.ViewCalculator;
+import dev.ikm.tinkar.entity.Entity;
 import dev.ikm.tinkar.entity.EntityHandle;
 import dev.ikm.tinkar.entity.EntityService;
 import dev.ikm.tinkar.entity.SemanticEntityVersion;
@@ -124,10 +125,16 @@ public final class SemanticVersions {
      * @return whether it has a visible version
      */
     public static boolean visible(long nid, ViewCalculator view) {
+        if (EntityHandle.get(nid).orNull() instanceof Entity<?> entity && entity.versions().isEmpty()) {
+            // A record left with no version at all, its versions taken back. The view is not asked:
+            // it answers a record with no version by throwing, and building what it throws reads
+            // the record's name.
+            return false;
+        }
         try {
             return view.latest(nid).isPresent();
         } catch (IllegalStateException noVersions) {
-            // a record left with no version at all, its one version cancelled
+            // its last version was taken back between the look above and the view's
             return false;
         }
     }
