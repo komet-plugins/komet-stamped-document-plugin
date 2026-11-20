@@ -167,6 +167,32 @@ class DocumentAttributesTest {
     }
 
     @Test
+    void aConditionalThatHoldsAnAttributeEntryIsThatEntryAndNoProse() {
+        String held = "ifndef::adoc[:adoc: ../../topics]";
+        assertFalse(DocumentAttributes.holdsText(held), "an entry held in brackets is not a line of prose");
+        assertTrue(DocumentAttributes.holdsText("ifndef::absent[Shown.]"), "text held in brackets is");
+        DocumentAttributes.Walk walk = new DocumentAttributes.Walk();
+        walk.line(held);
+        assertEquals("../../topics", walk.state().value("adoc").orElseThrow(), "where its condition is met, the entry is made");
+        walk.line("ifndef::adoc[:adoc: elsewhere]");
+        assertEquals("../../topics", walk.state().value("adoc").orElseThrow(), "and where it is not, nothing is");
+        walk.line("ifdef::adoc[:adoc!:]");
+        assertFalse(walk.state().defined("adoc"), "an entry held there may unset");
+        walk.line("ifndef::adoc[:adoc: runs on \\]");
+        assertTrue(read(walk, "the next line").contains("the next line"), "a value held in brackets ends there, and takes no next line");
+        assertEquals("runs on", walk.state().value("adoc").orElseThrow());
+    }
+
+    @Test
+    void theCaptionsWordsAreSetAsAsciidoctorSetsThem() {
+        assertEquals("Table", DocumentAttributes.intrinsic().value("table-caption").orElseThrow());
+        assertEquals("Figure", DocumentAttributes.intrinsic().value("figure-caption").orElseThrow());
+        DocumentAttributes.Walk walk = new DocumentAttributes.Walk();
+        walk.line(":table-caption!:");
+        assertFalse(walk.state().defined("table-caption"), "a document may unset one");
+    }
+
+    @Test
     void ifevalComparesTwoValues() {
         DocumentAttributes.Walk walk = new DocumentAttributes.Walk();
         walk.line(":level: 3");

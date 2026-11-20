@@ -54,8 +54,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * Prose in the Reading view, read as the pages read it: strong text is bold with its marks gone,
  * monospace is in the mono font, a cross reference and a link read as their words, and a
- * footnote is a mark in the text with its words beneath the block. What is not prose, a listing
- * and the header's attribute lines, stays as written, and every character keeps its source line.
+ * footnote is a mark in the text with its words beneath the block. A listing, which is not prose,
+ * stays as written; the header's attribute lines are not drawn; every character keeps its source line.
  * A table's own lines, its attributes, title and delimiters, are not drawn: its caption is.
  * Nor are the lines of a picture that is shown, its title and its image line: its caption is.
  */
@@ -254,7 +254,8 @@ class ReadingInlineIT {
         assertTrue(chips.getFirst() instanceof dev.ikm.komet.framework.controls.KonceptBadge, "the chip the rest of Komet draws: " + chips.getFirst());
 
         assertTrue(texts.stream().anyMatch(t -> t.contains("a listing keeps *its stars* and `ticks`")), "a listing is its source: " + texts);
-        assertTrue(texts.stream().anyMatch(t -> t.contains(":topic-id: reading-inline")), "the header's lines are as written: " + texts);
+        assertTrue(texts.stream().noneMatch(t -> t.contains(":topic-id: reading-inline")),
+                "the header's entries are its source, which the Source view shows, and are not drawn (IKE-Network/ike-issues#1395): " + texts);
         assertFalse(bold.contains("its stars"), "and nothing in a listing is weighted");
     }
 

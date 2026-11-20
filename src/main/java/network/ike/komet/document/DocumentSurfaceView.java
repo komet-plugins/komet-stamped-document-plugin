@@ -297,6 +297,12 @@ public final class DocumentSurfaceView {
     private static final Pattern ATTRIBUTE_LINE = Pattern.compile("^\\[(?!\\[)([^\\]]*)\\]$");
     private static final Pattern ANCHOR_LINE = Pattern.compile("^\\[\\[[^\\]]*\\]\\]$");
     private static final Pattern BLOCK_TITLE_LINE = Pattern.compile("^\\.([^\\s.].*)$");
+    /** {@code <<<}, a page break: what it asks of a page is a new one, and it has no words for any view to draw. */
+    private static final Pattern PAGE_BREAK = Pattern.compile("^<<<$");
+    /** A description item's first line, {@code Term::} with any definition written after it. */
+    private static final Pattern DESCRIPTION_TERM = Pattern.compile("^(?!\\s)(.+?)(::+)(?:\\s+(.*))?$");
+    /** How far a description's definition stands in from its term, in multiples of the base size. */
+    private static final double DEFINITION_INDENT = 1.6;
 
     /** The styles of the build in progress: the screen's, or a print theme's while the Page layout is built. */
     private Styles st = Styles.SCREEN;
@@ -718,6 +724,9 @@ public final class DocumentSurfaceView {
         Live live;
         /** The kind's editor while one is open on this area. */
         StructuredBlockKind.Editor structuredEditor;
+        /** What Escape does while an editor is open on this area, and the nodes it listens on; none otherwise. */
+        javafx.event.EventHandler<javafx.scene.input.KeyEvent> escape;
+        List<Node> escapeOver = List.of();
         /** A table row's cells in the Reading view, each a text of its own in the row's grid; none for any other area. */
         List<CellText> cells = List.of();
         /** A table row's cells as specs, one per column, an empty cell's {@code null}; none for any other area. */
@@ -1044,6 +1053,9 @@ public final class DocumentSurfaceView {
             // written beside it, would stay so with nothing to close it
             cancelEdit();
             closeComposer(false);
+        }
+        if (editing != null) {
+            releaseEscape(editing);
         }
         editing = null;
         boolean sameAsShown = keep && assembly != null && view == View.READING && !layers.contains(Layer.LEFT_OUT)
@@ -1760,6 +1772,9 @@ public final class DocumentSurfaceView {
                     } else {
                         addProse(member, block, heading, paragraphs(heading, " ", st.title(),
                                 t -> captions.heading(block, t.startsWith("= ") ? t.substring(2) : t)), depth, false, under);
+                        if (member.host()) {
+                            byline(member, block, heading, depth, under);  // the author and the date beneath the title, as the pages set them
+                        }
                     }
                 }
                 // the host's abstract, written before its first section: it stands before the lists, not where it was written
@@ -1772,8 +1787,12 @@ public final class DocumentSurfaceView {
                     }
                     frontLists(member, document);
                 }
+                // The header's other lines, its attribute entries, comments, anchor, author and revision lines, are its source,
+                // which the Source view shows: the title's block names the author and the date. Of them, the views draw the
+                // includes, each as the document it names; the Reading view keeps one the store cannot find as its line, with
+                // the note that says why, where a page leaves it out.
                 List<StoredLine> front = own.stream().filter(l -> !l.text().startsWith("= "))
-                        .filter(l -> !print || assembly.includeOf(member, l.nid()).map(DocumentAssembly.Include::resolved).orElse(false)).toList();
+                        .filter(l -> assembly.includeOf(member, l.nid()).map(include -> !print || include.resolved()).orElse(false)).toList();
                 Area frontArea = null;
                 if (!front.isEmpty()) {
                     frontArea = add(member, block, front, paragraphs(front, "", st.monoGrey(), null), depth, false, under);
@@ -1805,6 +1824,9 @@ public final class DocumentSurfaceView {
             case PARAGRAPH -> {
                 if (print && printable(own).stream().map(l -> printProse(l.text())).allMatch(String::isBlank)) {
                     return;                                      // the print model drops a paragraph of index terms alone
+                }
+                if (!print && !own.isEmpty() && own.stream().allMatch(l -> PAGE_BREAK.matcher(l.text().strip()).matches())) {
+                    return;                                      // a page break has no words, here as on the pages
                 }
                 if (print && nesting == 0 && !printable(own).isEmpty()) {
                     modelOrdinal++;
@@ -1888,6 +1910,12 @@ public final class DocumentSurfaceView {
                 nesting--;
             }
             case LIST_ITEM, BIBLIOGRAPHY_ENTRY -> {
+                Optional<Term> term = termOf(block, own);
+                if (term.isPresent()) {
+                    addProse(member, block, own, print ? termOnPage(own, term.get()) : description(own, term.get()), depth, true, section);
+                    renderChildren(member, children, depth + 1, section);
+                    return;
+                }
                 String marker = block.kind() == Block.Kind.BIBLIOGRAPHY_ENTRY ? "▪" : ordinalMarker(own, ordinal, print ? Math.max(0, listDepth - 1) : -1);
                 List<LineRunModel.Line> lines = new ArrayList<>();
                 for (int i = 0; i < own.size(); i++) {
@@ -2945,14 +2973,15 @@ public final class DocumentSurfaceView {
 
     /**
      * The lines the print model keeps of a block: not its attribute, anchor or comment lines, nor a
-     * block-title line above its content. Below content such a line is text, in the model as in
-     * Asciidoctor: {@code .For KEC} right under an {@code indexterm:} line prints as it stands.
+     * page break, nor a block-title line above its content. Below content such a line is text, in
+     * the model as in Asciidoctor: {@code .For KEC} right under an {@code indexterm:} line prints
+     * as it stands.
      */
     private static List<StoredLine> printable(List<StoredLine> lines) {
         List<StoredLine> kept = new ArrayList<>();
         for (StoredLine line : lines) {
             String t = line.text().strip();
-            if (!t.startsWith("//") && !ATTRIBUTE_LINE.matcher(t).matches() && !ANCHOR_LINE.matcher(t).matches()
+            if (!t.startsWith("//") && !ATTRIBUTE_LINE.matcher(t).matches() && !ANCHOR_LINE.matcher(t).matches() && !PAGE_BREAK.matcher(t).matches()
                     && !(kept.isEmpty() && BLOCK_TITLE_LINE.matcher(t).matches())) {
                 kept.add(line);
             }
@@ -2978,6 +3007,87 @@ public final class DocumentSurfaceView {
         for (StoredBlock child : children) {
             render(member, child, depth, ++n, section);
         }
+    }
+
+    /**
+     * A description list's item's term, as its first line writes it, {@code Term::}, and any
+     * definition written after it on that line.
+     *
+     * @param written the term
+     * @param runIn   the definition on the term's line, or an empty string
+     */
+    private record Term(String written, String runIn) { }
+
+    /**
+     * The term of a description list's item.
+     *
+     * @param block the item
+     * @param own   the item's own lines, its term's line first
+     * @return the term, or empty for an item that is not a description list's
+     */
+    private static Optional<Term> termOf(StoredBlock block, List<StoredLine> own) {
+        if (block.kind() != Block.Kind.LIST_ITEM || block.title().isEmpty() || own.isEmpty()) {
+            return Optional.empty();                             // the parser titles a description list's items alone, by their terms
+        }
+        java.util.regex.Matcher term = DESCRIPTION_TERM.matcher(own.getFirst().text());
+        if (!term.matches()) {
+            return Optional.empty();
+        }
+        return Optional.of(new Term(term.group(1).strip(), term.group(3) == null ? "" : term.group(3).strip()));
+    }
+
+    /**
+     * A description list's item as the Reading view draws it ({@code Term::} and its definition):
+     * the term on a line of its own, in bold, and the definition beneath it, standing in from the
+     * term, with no bullet and no {@code ::}. A definition written on the term's own line runs in
+     * after the bold term, as the pages set one. Every line keeps its run, so the item is selected,
+     * annotated and edited by its lines as any other.
+     *
+     * @param own  the item's own lines, its term's line first
+     * @param term the item's term
+     * @return what to draw
+     */
+    private LineRunModel.Spec description(List<StoredLine> own, Term term) {
+        List<LineRunModel.Paragraph> paragraphs = new ArrayList<>();
+        List<LineRunModel.Line> definition = new ArrayList<>();
+        if (term.runIn().isEmpty()) {
+            paragraphs.add(new LineRunModel.Paragraph(List.of(new LineRunModel.Line(own.getFirst(), term.written())), " ", st.bold()));
+        } else {
+            definition.add(new LineRunModel.Line(own.getFirst(), "**" + term.written() + "** " + term.runIn()));
+        }
+        definition.addAll(definitionLines(own));
+        if (!definition.isEmpty()) {
+            StyleAttributeMap style = term.runIn().isEmpty()
+                    ? StyleAttributeMap.builder().merge(st.prose()).setSpaceLeft(st.base() * DEFINITION_INDENT).build() : st.prose();
+            paragraphs.add(new LineRunModel.Paragraph(definition, " ", style));
+        }
+        return new LineRunModel.Spec(paragraphs);
+    }
+
+    /**
+     * A description list's item as the pages set it, and as the print model reads it
+     * ({@link network.ike.komet.document.print.ModelUnits}): the term in bold with a colon, the
+     * definition run in after it, with no bullet and no {@code ::}.
+     *
+     * @param own  the item's own lines, its term's line first
+     * @param term the item's term
+     * @return what to draw
+     */
+    private LineRunModel.Spec termOnPage(List<StoredLine> own, Term term) {
+        List<LineRunModel.Line> lines = new ArrayList<>();
+        lines.add(new LineRunModel.Line(own.getFirst(), "**" + term.written() + "**:" + (term.runIn().isEmpty() ? "" : " " + term.runIn())));
+        lines.addAll(definitionLines(own));
+        return new LineRunModel.Spec(List.of(new LineRunModel.Paragraph(lines, " ", st.prose())));
+    }
+
+    /** The lines of a description's definition after its term's line, each as prose; a continuation's {@code +} draws nothing. */
+    private static List<LineRunModel.Line> definitionLines(List<StoredLine> own) {
+        List<LineRunModel.Line> lines = new ArrayList<>();
+        for (StoredLine line : own.subList(1, own.size())) {
+            String text = prose(line.text());
+            lines.add(new LineRunModel.Line(line, text.equals("+") ? "" : text));
+        }
+        return lines;
     }
 
     /**
@@ -3637,6 +3747,19 @@ public final class DocumentSurfaceView {
                        boolean prose) {
         // the pages read every block the print model calls prose; the Reading view the blocks its caller says are
         boolean inline = print ? printsInline(block) : prose;
+        if (!print && block != null && block.kind() == Block.Kind.OPAQUE) {
+            // A block of markup, a comment, an attribute entry, a passthrough, is the document's source, which the Source view
+            // shows: the Reading view draws what the pages draw. An include among its lines is drawn as the document it names,
+            // and one the store cannot find as its line, with the note that says why.
+            List<StoredLine> includes = lines.stream().filter(l -> assembly.includeOf(member, l.nid()).isPresent()).toList();
+            if (includes.isEmpty()) {
+                return null;
+            }
+            if (includes.size() != lines.size()) {
+                spec = restrict(spec, includes);
+                lines = includes;
+            }
+        }
         List<DocumentAssembly.Part> parts = assembly.parts(member, lines);
         if (parts.size() == 1 && !parts.getFirst().included()) {
             if (print) {
@@ -6649,17 +6772,87 @@ public final class DocumentSurfaceView {
         buttons.setId("stampedDocumentEditButtons");
         area.holder.getChildren().add(area.holder.getChildren().indexOf(rta) + 1, buttons);
         cancel.setOnAction(e -> cancelEdit(area));
-        save.setOnAction(e -> {
-            StringBuilder text = new StringBuilder();
-            for (int i = 0; i < rta.getParagraphCount(); i++) {
-                if (i > 0) {
-                    text.append('\n');
-                }
-                text.append(rta.getPlainText(i));
-            }
-            host.saveEdit(area.block, text.toString());
-        });
+        save.setOnAction(e -> host.saveEdit(area.block, editorText(rta)));
+        escapeCloses(area, hint, () -> editorText(rta), rta, buttons);
         rta.requestFocus();
+    }
+
+    /** @return the text an in-place editor holds, its paragraphs as the block's lines */
+    private static String editorText(RichTextArea rta) {
+        StringBuilder text = new StringBuilder();
+        for (int i = 0; i < rta.getParagraphCount(); i++) {
+            if (i > 0) {
+                text.append('\n');
+            }
+            text.append(rta.getPlainText(i));
+        }
+        return text.toString();
+    }
+
+    /** What the hint beneath an editor says after an Escape that would discard changes. */
+    static final String ESCAPE_AGAIN = "Esc again discards your changes; Save keeps them.";
+
+    /**
+     * Lets Escape close an editor as Cancel does. With nothing changed it closes at once; with
+     * changes not saved the first Escape says so in the hint and a second discards them, so a
+     * stray key cannot lose a paragraph of work. Any other key between the two takes the warning
+     * back. The handler listens on the editor and its buttons, and goes when the edit ends.
+     *
+     * @param area    the area being edited
+     * @param hint    the line beneath the editor that the warning is said in
+     * @param content what the editor holds now, the text a save would write; it may throw for content that cannot be saved
+     * @param over    the nodes the key is listened for on
+     */
+    private void escapeCloses(Area area, Label hint, java.util.function.Supplier<String> content, Node... over) {
+        String opened = held(content);
+        String said = hint.getText();
+        String saidStyle = hint.getStyle();
+        boolean[] warned = {false};
+        javafx.event.EventHandler<javafx.scene.input.KeyEvent> escape = e -> {
+            if (e.getCode() != javafx.scene.input.KeyCode.ESCAPE) {
+                if (warned[0] && !e.getCode().isModifierKey()) {
+                    warned[0] = false;
+                    hint.setText(said);
+                    hint.setStyle(saidStyle);
+                }
+                return;
+            }
+            e.consume();
+            String now = held(content);
+            if (warned[0] || now != null && now.equals(opened)) {
+                cancelEdit(area);
+            } else {
+                warned[0] = true;
+                hint.setText(ESCAPE_AGAIN);
+                hint.setStyle("-fx-text-fill: #a32d2d;");
+            }
+        };
+        releaseEscape(area);
+        for (Node node : over) {
+            node.addEventFilter(javafx.scene.input.KeyEvent.KEY_PRESSED, escape);
+        }
+        area.escape = escape;
+        area.escapeOver = List.of(over);
+    }
+
+    /** @return what an editor holds, or {@code null} when it holds nothing that could be saved */
+    private static String held(java.util.function.Supplier<String> content) {
+        try {
+            return content.get();
+        } catch (IllegalStateException incomplete) {
+            return null;
+        }
+    }
+
+    /** Takes back what Escape does on an area whose edit has ended. */
+    private static void releaseEscape(Area area) {
+        if (area.escape != null) {
+            for (Node node : area.escapeOver) {
+                node.removeEventFilter(javafx.scene.input.KeyEvent.KEY_PRESSED, area.escape);
+            }
+        }
+        area.escape = null;
+        area.escapeOver = List.of();
     }
 
     /** The format bar of a block in edit: each button marks the editor's selection. */
@@ -6755,6 +6948,7 @@ public final class DocumentSurfaceView {
         if (area == null || editing != area) {
             return;
         }
+        releaseEscape(area);
         if (area.documentBlock != null) {
             area.documentBlock.setPinned(false);
         }
@@ -6963,6 +7157,7 @@ public final class DocumentSurfaceView {
             }
             host.saveEdit(area.block, area.structuredSource.withContent(content));
         });
+        escapeCloses(area, hint, editor::content, node, buttons);
         node.requestFocus();
     }
 

@@ -168,6 +168,32 @@ class PageListMarkersIT {
         assertEquals(items(modelled), items(units), "the surface's items read as the print model's do, which is what the Typst writer writes");
     }
 
+    @Test
+    void aLabeledListIsSetAsTermsAndDefinitionsAsThePrintModelSetsIt() throws Exception {
+        StoredDocument document = stored("list-terms", """
+                :topic-id: list-terms
+                = List Terms
+
+                Give the session he asked for::
+                From my address,
+                and pass his answers to you.
+
+                Timing:: The lists may be due within the year.
+                """, 2);
+        DocumentSurfaceView surface = onFx(() -> {
+            DocumentSurfaceView view = new DocumentSurfaceView(host(), new DocumentSurface(new BlockFactory(Calculators.View.Default(), 13)));
+            view.show(DocumentAssembly.single(document, "list-terms.adoc"));
+            return view;
+        });
+        PrintSettings settings = PrintSettings.DEFAULT;
+        DocumentModel model = StoredDocumentModel.of(document, Map.of(), onFx(surface::printing));
+        List<LayoutOracle.Unit> units = onFx(() -> surface.pageUnits(settings.theme()));
+        assertEquals(List.of("Give the session he asked for: From my address, and pass his answers to you.",
+                "Timing: The lists may be due within the year."), items(units),
+                "a term with its colon, its definition run in after it: no bullet, and no :: (IKE-Network/ike-issues#1395)");
+        assertEquals(items(ModelUnits.of(model, settings.theme().baseFontSize())), items(units), "as the print model reads it");
+    }
+
     /** A document committed on a day of its own and stored, as the card reads it: each test has its own file, topic and day. */
     private StoredDocument stored(String name, String text, int day) throws Exception {
         Path dir = Files.createDirectories(root.resolve(name));

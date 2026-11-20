@@ -616,9 +616,17 @@ public final class LineRunModel extends StyledTextModelViewOnlyBase {
         for (int index = 0; index < spec.paragraphs().size(); index++) {
             Paragraph p = spec.paragraphs().get(index);
             RichParagraph.Builder builder = RichParagraph.builder();
-            if (p.style().contains(StyleAttributeMap.TEXT_ALIGNMENT)) {
-                // Alignment is a paragraph attribute: a justified page paragraph sets it on the paragraph, not its runs.
-                builder.setParagraphAttributes(StyleAttributeMap.of(StyleAttributeMap.TEXT_ALIGNMENT, p.style().getTextAlignment()));
+            // Alignment and a left indent are paragraph attributes: a justified page paragraph, and a description's definition
+            // standing in from its term, set them on the paragraph, not its runs.
+            if (p.style().contains(StyleAttributeMap.TEXT_ALIGNMENT) || p.style().contains(StyleAttributeMap.SPACE_LEFT)) {
+                StyleAttributeMap.Builder paragraph = StyleAttributeMap.builder();
+                if (p.style().contains(StyleAttributeMap.TEXT_ALIGNMENT)) {
+                    paragraph.setTextAlignment(p.style().getTextAlignment());
+                }
+                if (p.style().contains(StyleAttributeMap.SPACE_LEFT)) {
+                    paragraph.setSpaceLeft(p.style().getSpaceLeft());
+                }
+                builder.setParagraphAttributes(paragraph.build());
             }
             StringBuilder text = new StringBuilder();
             List<LineRun> own = new ArrayList<>();

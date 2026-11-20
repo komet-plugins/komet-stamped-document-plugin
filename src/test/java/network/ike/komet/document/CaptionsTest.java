@@ -99,6 +99,67 @@ class CaptionsTest {
     }
 
     @Test
+    void aDocumentThatUnsetsTheTableCaptionCaptionsItsTablesByTheirTitlesAlone() {
+        // as the Humana brief writes it: a comment between the title and the entry, which the header still holds
+        StoredDocument document = StoredFixture.parse("""
+                = A Brief
+                :doctype: article
+                // the byline is set by hand below
+                :case-author: Someone
+                :table-caption!:
+
+                .Vehicles
+                |===
+                | Vehicle | Route
+                |===
+
+                .The flow
+                [graphviz]
+                ----
+                digraph { a -> b; }
+                ----
+                """);
+        Captions captions = Captions.of(DocumentAssembly.single(document, "doc.adoc"), CaptionsTest::figure);
+        StoredBlock table = document.blocks().values().stream().filter(b -> b.title().equals("Vehicles")).findFirst().orElseThrow();
+        assertEquals("Vehicles", captions.text(table), "the caption is the title alone");
+        assertEquals(Captions.Kind.TABLE, captions.of(table.nid()).orElseThrow().kind(), "and is still a table's, above it");
+        assertFalse(captions.of(table.nid()).orElseThrow().labeled());
+        assertEquals(List.of("Figure 1. The flow"), captions.all().stream().map(Captions.Caption::text).toList(),
+                "an unlabeled table is not listed, and a figure is numbered as before");
+    }
+
+    @Test
+    void aDocumentThatNamesTheCaptionsWordsCaptionsByThem() {
+        StoredDocument document = StoredFixture.parse("""
+                = Exhibits
+                :table-caption: Exhibit
+                :figure-caption!:
+
+                .Costs
+                |===
+                | x | y
+                |===
+
+                .The flow
+                [graphviz]
+                ----
+                digraph { a -> b; }
+                ----
+
+                .Benefits
+                |===
+                | x | y
+                |===
+                """);
+        Captions captions = Captions.of(DocumentAssembly.single(document, "doc.adoc"), CaptionsTest::figure);
+        assertEquals(List.of("Exhibit 1. Costs", "Exhibit 2. Benefits"), captions.all().stream().map(Captions.Caption::text).toList(),
+                "the value is the word, and the unlabeled figure takes no number");
+        StoredBlock figure = document.blocks().values().stream().filter(b -> b.title().equals("The flow")).findFirst().orElseThrow();
+        assertEquals("The flow", captions.text(figure));
+        assertEquals(Captions.Kind.FIGURE, captions.of(figure.nid()).orElseThrow().kind(), "a figure's caption still stands beneath it");
+    }
+
+    @Test
     void anImageWrittenWithNoTitleHasNoCaptionAndTakesNoNumber() {
         StoredDocument document = StoredFixture.parse("""
                 = Pictures

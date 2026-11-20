@@ -36,7 +36,8 @@ import java.util.Optional;
  *
  * <p>What prints: strong, emphasis and monospace, in any nesting; a link and a cross reference
  * as their text, a bare cross reference as its target's words ({@code <<anf-data-types>>}
- * prints "anf data types", as the help drawer does); a curved quotation; a visible index term
+ * prints "anf data types", as the help drawer does); a curved quotation, and the typographic
+ * apostrophe {@code `'} as a right single quotation mark; a visible index term
  * as its text; a footnote as its mark, its text going to the foot of the page. A link whose
  * target begins with {@link #INTERNAL} points into the document: a cross reference that found
  * its target is read as one before the text comes here. Anchors and concealed index terms
@@ -60,6 +61,9 @@ public record InlineText(String text, List<Run> runs, List<Note> notes, int[] of
 
     /** The mark an internal link's target begins with: {@code #b1234} names a block of the document, by its key. */
     public static final String INTERNAL = "#";
+
+    /** What Asciidoctor's typographic apostrophe, {@code `'}, reads as: a right single quotation mark. */
+    static final String APOSTROPHE = "\u2019";
 
     /** Text with no anchor in it. */
     public InlineText(String text, List<Run> runs, List<Note> notes, int[] offsets) {
@@ -412,6 +416,12 @@ public record InlineText(String text, List<Run> runs, List<Note> notes, int[] of
                 int from = bracketed ? token.start() - 1 : token.start();
                 int to = bracketed ? token.end() + 1 : token.end();
                 for (; k < from; k++) {
+                    if (apostrophe(text, k, i, span.end())) {
+                        i = take('\'', take('`', i, span.end()), span.end());
+                        emit(APOSTROPHE, style);
+                        k++;                                      // the quote goes with its backtick
+                        continue;
+                    }
                     i = take(text.charAt(k), i, span.end());
                     emit(String.valueOf(text.charAt(k)), style);
                 }
@@ -429,10 +439,38 @@ public record InlineText(String text, List<Run> runs, List<Note> notes, int[] of
                 }
             }
             for (; k < text.length(); k++) {
+                if (apostrophe(text, k, i, span.end())) {
+                    i = take('\'', take('`', i, span.end()), span.end());
+                    emit(APOSTROPHE, style);
+                    k++;                                          // the quote goes with its backtick
+                    continue;
+                }
                 i = take(text.charAt(k), i, span.end());
                 emit(String.valueOf(text.charAt(k)), style);
             }
             at = Math.max(at, i);
+        }
+
+        /**
+         * Whether a run's characters at an offset are Asciidoctor's typographic apostrophe,
+         * {@code `'}, which reads as a right single quotation mark: {@code members`'} is
+         * "members’". A backtick written escaped, {@code \`'}, is the backtick itself.
+         *
+         * @param text the run's characters
+         * @param k    the offset in them
+         * @param i    the source offset the run has been read to
+         * @param end  the run's end in the source
+         * @return whether the two characters at {@code k} are the apostrophe
+         */
+        private boolean apostrophe(String text, int k, int i, int end) {
+            if (text.charAt(k) != '`' || k + 1 >= text.length() || text.charAt(k + 1) != '\'') {
+                return false;
+            }
+            int at = i;
+            while (at < end && source.charAt(at) != '`') {
+                at++;
+            }
+            return at < end && (at == 0 || source.charAt(at - 1) != '\\');
         }
 
         /**

@@ -43,6 +43,11 @@ import java.util.regex.Pattern;
  * of the list; nor has an image written with no title, though the parser names it by its target
  * ({@link #title}). The headings are gathered on the same walk, for the table of contents.
  *
+ * <p>A caption's word is the document's {@code table-caption} or {@code figure-caption}, as
+ * Asciidoctor's is: "Table" and "Figure" unless the document sets another, and where it unsets
+ * one, {@code :table-caption!:}, a titled table is captioned by its title alone, unnumbered and
+ * left out of the list of tables.
+ *
  * <p>The walk is over what each showing reads ({@link DocumentAssembly#read}): a section or a
  * table that a conditional leaves out is not numbered and not listed. A title is kept as it
  * reads, its attribute references given their values ({@link DocumentAttributes}).
@@ -51,18 +56,28 @@ public final class Captions {
 
     /** What a captioned block is. */
     public enum Kind {
-        FIGURE("Figure"),
-        TABLE("Table");
+        FIGURE("Figure", "figure-caption"),
+        TABLE("Table", "table-caption");
 
         private final String word;
+        private final String attribute;
 
-        Kind(String word) {
+        Kind(String word, String attribute) {
             this.word = word;
+            this.attribute = attribute;
         }
 
-        /** @return the word the caption begins with */
+        /** @return the word the caption begins with, unless the document sets another */
         public String word() {
             return word;
+        }
+
+        /**
+         * @return the attribute that names the caption's word, as Asciidoctor's: set to a value, the
+         *         value is the word; unset, {@code :table-caption!:}, the caption is the title alone
+         */
+        public String attribute() {
+            return attribute;
         }
     }
 
@@ -70,21 +85,28 @@ public final class Captions {
      * One caption.
      *
      * @param kind   what the block is
-     * @param number its number among its kind, from 1
+     * @param word   the word its label begins with, {@code Figure}; empty where the document unsets
+     *               its kind's caption attribute, and the caption is its title alone
+     * @param number its number among its kind, from 1; 0 for a caption with no label
      * @param title  the block's title
      * @param block  the block's nid
      * @param member the document the block is in
      */
-    public record Caption(Kind kind, int number, String title, long block, DocumentAssembly.Member member) {
+    public record Caption(Kind kind, String word, int number, String title, long block, DocumentAssembly.Member member) {
 
-        /** @return the caption's label, {@code Figure 3} */
-        public String label() {
-            return kind.word() + " " + number;
+        /** @return whether the caption has a label, its word and number, before its title */
+        public boolean labeled() {
+            return !word.isEmpty();
         }
 
-        /** @return the caption as it is read, {@code Figure 3. The control structure} */
+        /** @return the caption's label, {@code Figure 3}; empty for a caption with none */
+        public String label() {
+            return labeled() ? word + " " + number : "";
+        }
+
+        /** @return the caption as it is read, {@code Figure 3. The control structure}, or its title alone */
         public String text() {
-            return label() + ". " + title;
+            return labeled() ? label() + ". " + title : title;
         }
     }
 
@@ -339,10 +361,16 @@ public final class Captions {
                 Kind kind = block.kind() == Block.Kind.TABLE ? Kind.TABLE : isFigure.test(block) ? Kind.FIGURE : null;
                 if (kind != null) {
                     if (!byBlock.containsKey(block.nid())) {
-                        // a figure or a table its file shows twice is one: counted and listed where it is first shown
-                        Caption caption = new Caption(kind, kind == Kind.FIGURE ? ++figures : ++tables, title(member, block), block.nid(), member);
+                        // a figure or a table its file shows twice is one: counted and listed where it is first shown. Where the
+                        // document unsets its kind's caption attribute, :table-caption!:, the caption is its title alone, not
+                        // counted and not listed; set to a value, the value is its word
+                        String word = assembly.attributes(member, block).value(kind.attribute()).map(String::strip).orElse("");
+                        int number = word.isEmpty() ? 0 : kind == Kind.FIGURE ? ++figures : ++tables;
+                        Caption caption = new Caption(kind, word, number, title(member, block), block.nid(), member);
                         byBlock.put(block.nid(), caption);
-                        all.add(caption);
+                        if (caption.labeled()) {
+                            all.add(caption);
+                        }
                     }
                     if (kind == Kind.TABLE) {
                         return;                                          // a table's rows and cells are its own

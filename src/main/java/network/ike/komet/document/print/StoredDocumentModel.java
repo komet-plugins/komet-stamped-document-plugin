@@ -83,6 +83,8 @@ public final class StoredDocumentModel {
     private static final Pattern CONCEALED_TERM = Pattern.compile("\\(\\(\\([^()]+\\)\\)\\)\\s*");
     /** A line comment, which is not a block comment's delimiter: it prints nothing, inside a paragraph as outside one. */
     private static final Pattern LINE_COMMENT = Pattern.compile("^//(?!//).*$");
+    /** {@code <<<}, a page break: it has no words to print. */
+    private static final Pattern PAGE_BREAK = Pattern.compile("^<<<$");
     private static final Pattern FLOW_TERM = Pattern.compile("\\(\\(([^()]+)\\)\\)");
 
     /**
@@ -939,8 +941,8 @@ public final class StoredDocumentModel {
     }
 
     /**
-     * The lines of a paragraph-like block that are content: not an anchor, title, attribute or
-     * delimiter line. Each is given as it reads, its attribute references as their values.
+     * The lines of a paragraph-like block that are content: not an anchor, title, attribute,
+     * delimiter or page-break line. Each is given as it reads, its attribute references as their values.
      */
     private List<String> contentLines(List<StoredLine> own) {
         List<String> lines = new ArrayList<>();
@@ -948,7 +950,8 @@ public final class StoredDocumentModel {
         for (StoredLine line : own) {
             String text = line.text();
             if (ANCHOR_LINE.matcher(text).matches() || ATTRIBUTE_LINE.matcher(text).matches() || DELIMITER.matcher(text).matches()
-                    || (BLOCK_TITLE.matcher(text).matches() && lines.isEmpty()) || LINE_COMMENT.matcher(text.strip()).matches()) {
+                    || (BLOCK_TITLE.matcher(text).matches() && lines.isEmpty()) || LINE_COMMENT.matcher(text.strip()).matches()
+                    || PAGE_BREAK.matcher(text.strip()).matches()) {
                 continue;                                         // a comment among a paragraph's lines prints nothing, a tag line included
             }
             lines.add(references.line(line.nid(), text));

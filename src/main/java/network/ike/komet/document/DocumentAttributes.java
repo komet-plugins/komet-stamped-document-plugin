@@ -105,6 +105,10 @@ public final class DocumentAttributes {
         for (String[] character : characters) {
             values.put(character[0], new Value(character[1], false));
         }
+        // the words captions begin with, set as Asciidoctor sets them, so a document can change or unset them
+        for (Captions.Kind kind : Captions.Kind.values()) {
+            values.put(kind.attribute(), new Value(kind.word(), false));
+        }
         return new DocumentAttributes(Map.copyOf(values), PrintStyles.NONE);
     }
 
@@ -228,14 +232,17 @@ public final class DocumentAttributes {
     /**
      * Whether a line is a conditional that holds its text in its brackets,
      * {@code ifdef::draft[Not yet reviewed.]}: where its condition is met it is a line of prose,
-     * that text, and not a directive.
+     * that text, and not a directive. One that holds an attribute entry,
+     * {@code ifndef::adoc[:adoc: ../topics]}, holds no prose: where its condition is met it is
+     * that entry ({@link Walk#line}).
      *
      * @param line the line
      * @return whether the line is such a conditional
      */
     public static boolean holdsText(String line) {
         Matcher held = CONDITIONAL.matcher(line);
-        return held.matches() && (held.group(1).equals("ifdef") || held.group(1).equals("ifndef")) && !held.group(3).isEmpty();
+        return held.matches() && (held.group(1).equals("ifdef") || held.group(1).equals("ifndef")) && !held.group(3).isEmpty()
+                && !ENTRY.matcher(held.group(3)).matches();
     }
 
     /** @return a reading of one block's lines: the references of each line given their values */
@@ -481,8 +488,18 @@ public final class DocumentAttributes {
                     return false;
                 }
                 if (!directive.equals("ifeval") && !brackets.isEmpty()) {
-                    // the text is in the brackets: the line is read when the condition is met, and opens nothing
-                    return met() && state.reads(directive, conditional.group(2).strip(), brackets);
+                    // the text is in the brackets: the line is read when the condition is met, and opens nothing; an attribute
+                    // entry held there is entered, as the line it stands for would be
+                    boolean read = met() && state.reads(directive, conditional.group(2).strip(), brackets);
+                    Matcher held = ENTRY.matcher(brackets);
+                    if (read && continued == null && held.matches()) {
+                        continued = held.group(2);
+                        continuedUnsets = !held.group(1).isEmpty() || !held.group(3).isEmpty();
+                        value.setLength(0);
+                        // a value held in brackets ends there: it cannot run on to the next line
+                        enter(held.group(4) == null ? "" : held.group(4).strip().replaceFirst("\\s*\\\\$", ""));
+                    }
+                    return read;
                 }
                 conditionals.addLast(met() && state.reads(directive, conditional.group(2).strip(), brackets));
                 return false;

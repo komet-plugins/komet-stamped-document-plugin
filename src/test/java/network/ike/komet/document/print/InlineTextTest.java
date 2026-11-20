@@ -40,6 +40,19 @@ class InlineTextTest {
     }
 
     @Test
+    void theTypographicApostropheReadsAsARightSingleQuote() {
+        InlineText read = InlineText.of("Diabetic members`' eyes, and the guidelines`' *disagreements*.");
+        assertEquals("Diabetic members\u2019 eyes, and the guidelines\u2019 disagreements.", read.text());
+        int bold = read.text().indexOf("disagreements");
+        assertEquals(List.of(run(bold, bold + "disagreements".length(), false, true, false)), read.runs(),
+                "a span after it stands where its one character leaves it");
+        assertEquals(read.text().indexOf('\u2019'), read.drawnAt("Diabetic members".length()), "its backtick is where the quote is drawn");
+        assertEquals("An escaped `' stays", InlineText.of("An escaped \\`' stays").text(), "a backtick written escaped is the backtick itself");
+        assertEquals("A mono span, then it\u2019s", InlineText.of("A ``mono`` span, then it`'s").text(), "a monospace span is read as one");
+        assertEquals("\u2018quoted\u2019 stays a quotation", InlineText.of("'`quoted`' stays a quotation").text());
+    }
+
+    @Test
     void anEntryLeavesItsFootnotesOutMarkupAndAll() {
         assertEquals("Table 1. The quantities behind the tree", InlineText.withoutNotes("Table 1. The quantities behind the tree footnote:[Our estimate.]"),
                 "the note and the space its mark took");
