@@ -17,6 +17,12 @@ authors, `~/.ike/authors.properties` (KEC, 2026-11-21: Komet reads the file
 itself). With no file, or no assistant in it, every commit is written as
 before.
 
+A person can open Komet with no assistant (KEC, 2026-11-22). The dashboard
+then sets `IKE_ASSISTANT=none` in Komet's environment, beside git's
+variables. Komet still reads the file and passes the assistant over
+(`CommitAuthors.current`), so the assistant's own work is committed as the
+person. The tools Komet starts inherit the variable.
+
 The assistant's own work is a pending edit that the Komet assistant alone
 wrote (`DocumentEditor.assistantsOwn`), a document the assistant made, and a
 narration. An edit the person wrote into, alone or with the assistant on a

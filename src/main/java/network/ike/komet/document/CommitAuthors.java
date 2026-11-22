@@ -50,6 +50,12 @@ import java.util.Properties;
  * file, a file that cannot be used, or no assistant in it, every commit is written as it was before this
  * class: under git's own environment and configuration.
  *
+ * <p>A person can open Komet with no assistant (KEC, 2026-11-22: the IKE Dashboard's Open row ends with
+ * who Komet opens as, and no assistant reaches Komet as a variable beside git's). The dashboard then sets
+ * {@value #ASSISTANT_VARIABLE} to {@value #NO_ASSISTANT} in Komet's environment. Komet still reads the
+ * file itself and passes the assistant over, so a narration and the assistant's own edits are committed as
+ * the person, as with a file that names no assistant. The tools Komet starts inherit the variable.
+ *
  * <p>The author concept Komet makes from a commit is made from its author's email
  * ({@code GitIdentityAdapter.author}), so the assistant is an author concept of its own, apart from the
  * person (decision 3 of the issue).
@@ -69,6 +75,15 @@ public record CommitAuthors(Author person, Optional<Author> assistant) {
     public static final String COMMITTER_NAME = "GIT_COMMITTER_NAME";
     /** Git's variable for the email of a commit's committer. */
     public static final String COMMITTER_EMAIL = "GIT_COMMITTER_EMAIL";
+
+    /**
+     * The variable that leaves the assistant out for this Komet and the tools it starts: set to
+     * {@value #NO_ASSISTANT}, the file's assistant is passed over. The IKE Dashboard sets it
+     * ({@code OpenAs} there) and reads it the same way ({@code Authors.current}).
+     */
+    public static final String ASSISTANT_VARIABLE = "IKE_ASSISTANT";
+    /** The value of {@value #ASSISTANT_VARIABLE} that leaves the assistant out. Any other value says nothing. */
+    public static final String NO_ASSISTANT = "none";
 
     private static final String PERSON_NAME = "person.name";
     private static final String PERSON_EMAIL = "person.email";
@@ -186,15 +201,50 @@ public record CommitAuthors(Author person, Optional<Author> assistant) {
     }
 
     /**
-     * The authors the file of the user running Komet names. A file that cannot be used is reported in the
-     * log and names no one, so commits are written as before.
+     * The person alone, with no assistant.
+     *
+     * @return the same person, and no assistant
+     */
+    public CommitAuthors withoutAssistant() {
+        return assistant.isEmpty() ? this : new CommitAuthors(person, Optional.empty());
+    }
+
+    /**
+     * Whether an environment leaves the assistant out.
+     *
+     * @param environment a process's environment
+     * @return {@code true} when {@value #ASSISTANT_VARIABLE} is {@value #NO_ASSISTANT}, in any case
+     */
+    public static boolean leavesAssistantOut(Map<String, String> environment) {
+        String value = environment.get(ASSISTANT_VARIABLE);
+        return value != null && value.strip().equalsIgnoreCase(NO_ASSISTANT);
+    }
+
+    /**
+     * The authors the file of the user running Komet names, as this Komet was started: with
+     * {@value #ASSISTANT_VARIABLE} set to {@value #NO_ASSISTANT} in its environment, the assistant is left
+     * out. A file that cannot be used is reported in the log and names no one, so commits are written as
+     * before.
      *
      * @return the authors, or empty with no usable file
      */
     public static Optional<CommitAuthors> current() {
-        Path file = file(Path.of(System.getProperty("user.home")));
+        return current(Path.of(System.getProperty("user.home")), System.getenv());
+    }
+
+    /**
+     * The authors a user's file names, as a process with an environment sees them.
+     *
+     * @param home        the user's home folder
+     * @param environment the process's environment
+     * @return the authors, with the assistant left out when the environment says so; empty with no usable
+     *         file
+     */
+    static Optional<CommitAuthors> current(Path home, Map<String, String> environment) {
+        Path file = file(home);
         try {
-            return read(file);
+            Optional<CommitAuthors> authors = read(file);
+            return leavesAssistantOut(environment) ? authors.map(CommitAuthors::withoutAssistant) : authors;
         } catch (IllegalArgumentException unusable) {
             LOG.warn("{} is not used, so Komet commits under git's own author: {}", file, unusable.getMessage());
             return Optional.empty();

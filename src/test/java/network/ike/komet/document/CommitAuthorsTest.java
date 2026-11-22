@@ -26,6 +26,7 @@ import java.util.Map;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -81,6 +82,39 @@ class CommitAuthorsTest {
         assertTrue(authors.assistant().isEmpty());
         assertEquals(Map.of(), authors.assistantsWork(), "no variables: git's own author and committer");
         assertEquals("", CommitAuthors.described(authors.assistantsWork()));
+    }
+
+    @Test
+    void aKometOpenedWithNoAssistantPassesTheFilesAssistantOver() throws Exception {
+        write("""
+                person.name=Ada Lovelace
+                person.email=ada@komet.ike.network
+                assistant.name=Ada's Claude
+                assistant.email=ada-claude@komet.ike.network
+                """);
+
+        CommitAuthors asStarted = CommitAuthors.current(home, Map.of()).orElseThrow();
+        assertEquals("Ada's Claude", asStarted.assistant().orElseThrow().name(), "no variable: as the file says");
+
+        CommitAuthors alone = CommitAuthors.current(home, Map.of(CommitAuthors.ASSISTANT_VARIABLE, "none")).orElseThrow();
+        assertEquals(new CommitAuthors.Author("Ada Lovelace", "ada@komet.ike.network"), alone.person());
+        assertTrue(alone.assistant().isEmpty());
+        assertEquals(Map.of(), alone.assistantsWork(), "the assistant's work is committed as the person: no variables");
+        assertEquals("", CommitAuthors.described(alone.assistantsWork()));
+    }
+
+    @Test
+    void onlyNoneLeavesTheAssistantOut() {
+        assertEquals("IKE_ASSISTANT", CommitAuthors.ASSISTANT_VARIABLE, "the name the IKE Dashboard sets");
+        assertTrue(CommitAuthors.leavesAssistantOut(Map.of("IKE_ASSISTANT", " None ")));
+        assertFalse(CommitAuthors.leavesAssistantOut(Map.of("IKE_ASSISTANT", "")));
+        assertFalse(CommitAuthors.leavesAssistantOut(Map.of("IKE_ASSISTANT", "Ada's Claude")));
+        assertFalse(CommitAuthors.leavesAssistantOut(Map.of()));
+    }
+
+    @Test
+    void withNoFileTheVariableChangesNothing() {
+        assertEquals(Optional.empty(), CommitAuthors.current(home, Map.of(CommitAuthors.ASSISTANT_VARIABLE, "none")));
     }
 
     @Test
