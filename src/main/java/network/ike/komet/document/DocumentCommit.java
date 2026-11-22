@@ -15,13 +15,16 @@
  */
 package network.ike.komet.document;
 
+import design.knowledge.stamp.adoc.git.AnnotationCommit;
 import design.knowledge.stamp.adoc.git.GitRepo;
+import design.knowledge.stamp.adoc.model.Annotation;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 
@@ -32,6 +35,11 @@ import java.util.concurrent.TimeUnit;
  * card calls {@link #write}. The one commit made without it is {@link #first}, a new document's
  * skeleton, since a document is stored from its history: it is local, and nothing is pushed. The
  * commit holds the one file and nothing else: other staged changes refuse it.
+ *
+ * <p>A commit of the assistant's own work is written with git's author and committer variables
+ * ({@link CommitAuthors#assistantsWork}): the assistant as author, the person as committer
+ * (IKE-Network/ike-issues#1399). With none, a commit names whom git's environment and configuration
+ * name, as before. {@link #annotate} writes an annotation commit, such as a narration, the same way.
  *
  * <p>{@link #draftMessage} is the first draft of the message, from what the edit changed, for
  * the person to rewrite.
@@ -105,7 +113,7 @@ public final class DocumentCommit {
 
     /**
      * Commits one file, as it stands in the working tree, with the person's message and signing
-     * choice.
+     * choice, under git's own author and committer.
      *
      * @param repoRoot the working tree root
      * @param path     the file's repository-relative path
@@ -115,6 +123,24 @@ public final class DocumentCommit {
      * @throws IOException if git cannot be run
      */
     public static Result write(Path repoRoot, String path, String message, boolean sign) throws IOException {
+        return write(repoRoot, path, message, sign, Map.of());
+    }
+
+    /**
+     * Commits one file, as it stands in the working tree, with the person's message and signing
+     * choice, under the author and committer the variables name.
+     *
+     * @param repoRoot  the working tree root
+     * @param path      the file's repository-relative path
+     * @param message   the commit message, subject first
+     * @param sign      whether to sign ({@code -S}) or not ({@code --no-gpg-sign}); never implicit
+     * @param variables git's author and committer variables for this commit ({@link CommitAuthors#assistantsWork});
+     *                  none to commit under git's own
+     * @return what git did
+     * @throws IOException if git cannot be run
+     */
+    public static Result write(Path repoRoot, String path, String message, boolean sign, Map<String, String> variables)
+            throws IOException {
         if (message == null || message.isBlank()) {
             return new Result(false, "", "A commit needs a message.");
         }
@@ -128,7 +154,7 @@ public final class DocumentCommit {
         args.add("-");
         args.add("--");
         args.add(path);
-        Run run = git(repoRoot, args, message);
+        Run run = git(repoRoot, args, message, variables);
         if (!run.ok()) {
             return new Result(false, "", run.output().isEmpty() ? "git commit exited " + run.exit() : run.output());
         }
@@ -148,7 +174,23 @@ public final class DocumentCommit {
      * @throws IOException if git cannot be run
      */
     public static Result first(Path repoRoot, String path, String message) throws IOException {
-        return addAndWrite(repoRoot, path, message, false);
+        return first(repoRoot, path, message, Map.of());
+    }
+
+    /**
+     * Commits a new file, the first commit of a document Komet made, unsigned, under the author and
+     * committer the variables name: the assistant's, for a document the assistant made.
+     *
+     * @param repoRoot  the working tree root
+     * @param path      the new file's repository-relative path
+     * @param message   the commit message, subject first
+     * @param variables git's author and committer variables for this commit ({@link CommitAuthors#assistantsWork});
+     *                  none to commit under git's own
+     * @return what git did
+     * @throws IOException if git cannot be run
+     */
+    public static Result first(Path repoRoot, String path, String message, Map<String, String> variables) throws IOException {
+        return addAndWrite(repoRoot, path, message, false, variables);
     }
 
     /**
@@ -165,11 +207,50 @@ public final class DocumentCommit {
      */
     public static Result workingFile(Path repoRoot, String path, String message, boolean sign) throws IOException {
         return git(repoRoot, List.of("ls-files", "--error-unmatch", "--", path)).ok()
-                ? write(repoRoot, path, message, sign) : addAndWrite(repoRoot, path, message, sign);
+                ? write(repoRoot, path, message, sign) : addAndWrite(repoRoot, path, message, sign, Map.of());
+    }
+
+    /**
+     * Writes the empty commit that records annotations, as {@link AnnotationCommit#write} does, under the
+     * author and committer the variables name. A narration is one: the commit narrator's own work, so with
+     * an assistant it is the assistant's commit, under the person (IKE-Network/ike-issues#1399). With no
+     * variables it is {@link AnnotationCommit#write} itself, unchanged.
+     *
+     * @param repoRoot    the working tree root
+     * @param annotations the annotations
+     * @param text        the annotation text, the commit body; blank for none
+     * @param sign        whether to sign the commit
+     * @param variables   git's author and committer variables for this commit ({@link CommitAuthors#assistantsWork});
+     *                    none to commit under git's own
+     * @return the outcome
+     * @throws IOException if the index cannot be read or git cannot be started
+     */
+    public static AnnotationCommit.Result annotate(Path repoRoot, List<Annotation> annotations, String text, boolean sign,
+                                                   Map<String, String> variables) throws IOException {
+        if (variables.isEmpty()) {
+            return AnnotationCommit.write(repoRoot, annotations, text, sign);
+        }
+        if (annotations.isEmpty()) {
+            throw new IllegalArgumentException("nothing to annotate");
+        }
+        Run staged = git(repoRoot, List.of("diff", "--cached", "--name-only"));
+        if (!staged.ok() || !staged.output().isBlank()) {
+            return new AnnotationCommit.Result(false, "", staged.ok()
+                    ? "The index has staged changes. Commit or unstage them first, so the annotation commit records nothing but the annotation."
+                    : staged.output());
+        }
+        Run run = git(repoRoot, AnnotationCommit.arguments(annotations, text, sign), null, variables);
+        if (!run.ok()) {
+            return new AnnotationCommit.Result(false, "", run.output().isEmpty() ? "git commit exited " + run.exit() : run.output());
+        }
+        try (GitRepo repo = GitRepo.open(repoRoot)) {
+            return new AnnotationCommit.Result(true, repo.headRevision(), run.output());
+        }
     }
 
     /** Adds an untracked file and commits it; a commit that fails leaves it untracked again. */
-    private static Result addAndWrite(Path repoRoot, String path, String message, boolean sign) throws IOException {
+    private static Result addAndWrite(Path repoRoot, String path, String message, boolean sign, Map<String, String> variables)
+            throws IOException {
         Optional<Result> staged = otherStaged(repoRoot, path);
         if (staged.isPresent()) {
             return staged.get();
@@ -178,7 +259,7 @@ public final class DocumentCommit {
         if (!added.ok()) {
             return new Result(false, "", added.output().isEmpty() ? "git add exited " + added.exit() : added.output());
         }
-        Result committed = write(repoRoot, path, message, sign);
+        Result committed = write(repoRoot, path, message, sign, variables);
         if (!committed.ok()) {
             git(repoRoot, List.of("reset", "--quiet", "--", path));
         }
@@ -204,13 +285,15 @@ public final class DocumentCommit {
     }
 
     private static Run git(Path repoRoot, List<String> args) throws IOException {
-        return git(repoRoot, args, null);
+        return git(repoRoot, args, null, Map.of());
     }
 
-    private static Run git(Path repoRoot, List<String> args, String input) throws IOException {
+    private static Run git(Path repoRoot, List<String> args, String input, Map<String, String> variables) throws IOException {
         List<String> command = new ArrayList<>(List.of("git"));
         command.addAll(args);
-        Process process = new ProcessBuilder(command).directory(repoRoot.toFile()).redirectErrorStream(true).start();
+        ProcessBuilder builder = new ProcessBuilder(command).directory(repoRoot.toFile()).redirectErrorStream(true);
+        builder.environment().putAll(variables);
+        Process process = builder.start();
         if (input != null) {
             process.getOutputStream().write(input.getBytes(StandardCharsets.UTF_8));
         }

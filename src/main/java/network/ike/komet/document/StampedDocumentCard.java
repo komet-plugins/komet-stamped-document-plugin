@@ -4517,6 +4517,10 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
      * re-reads the commit into the store and settles the edit. The bar at the bottom of the card
      * calls this with the message typed there; public for automation.
      *
+     * <p>An edit the assistant alone wrote ({@link DocumentEditor#assistantsOwn}) is the assistant's
+     * work: when the file of authors names an assistant, the commit has the assistant as git author and
+     * the person as committer ({@link CommitAuthors}, IKE-Network/ike-issues#1399).
+     *
      * @param typed the commit's message, in a line; blank to take the draft written from what the edit changed
      * @param sign  whether to sign the commit
      */
@@ -4546,19 +4550,21 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
             return;
         }
         String text = PendingEditBar.messageOr(typed, DocumentCommit.draftMessage(pending.path(), committed.lines(), pending.lines()));
+        Map<String, String> authors = DocumentEditor.assistantsOwn(anchor) ? CommitAuthors.assistantsWorkNow() : Map.of();
         statusLine.setText("Writing and committing " + pending.path() + " …");
         pendingBar.setDisable(true);                               // one commit at a time: Enter twice is one commit
         CompletableFuture.supplyAsync(() -> {
             try {
                 Path file = GitDocumentExporter.writeTo(pending, root);
-                DocumentCommit.Result result = DocumentCommit.write(root, pending.path(), text, sign);
+                DocumentCommit.Result result = DocumentCommit.write(root, pending.path(), text, sign, authors);
                 if (!result.ok()) {
                     return new Committed(false, "Not committed: " + result.output()
                             + " The file in the working tree holds your edit; the edit is still pending in Komet.");
                 }
                 GitDocumentMaterializer.materialize(root, file, true);
                 DocumentCommits.committed(new DocumentCommits.Committed(root, pending.path(), result.sha()));
-                return new Committed(true, "Committed " + result.sha().substring(0, 7) + " (" + (sign ? "signed" : "unsigned") + "); "
+                return new Committed(true, "Committed " + result.sha().substring(0, 7) + CommitAuthors.described(authors)
+                        + " (" + (sign ? "signed" : "unsigned") + "); "
                         + describe(DocumentEditor.settle(anchor)));
             } catch (IOException e) {
                 throw new UncheckedIOException(e);

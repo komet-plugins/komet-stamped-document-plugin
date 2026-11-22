@@ -16,6 +16,8 @@
 package network.ike.komet.document;
 
 import design.knowledge.stamp.adoc.dialect.Block;
+import design.knowledge.stamp.adoc.identity.GitIdentityAdapter;
+import design.knowledge.stamp.adoc.model.Person;
 import dev.ikm.komet.actions.KometAction;
 import dev.ikm.komet.actions.KometActionInput;
 import dev.ikm.komet.actions.KometActionResult;
@@ -47,6 +49,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -406,6 +410,78 @@ class DocumentEditingIT {
         assertEquals("N", gitOut(dir, "log", "-1", "--format=%G?"), "unsigned, as chosen");
         assertEquals(2, GitDocumentMaterializer.load(anchor).orElseThrow().manifestVersions(),
                 "one manifest version per commit that changed the file; the cancelled pending one is not counted");
+    }
+
+    // ── whose commit the pending edit is (IKE-Network/ike-issues#1399) ──────────────
+
+    /** Invented authors: a person and the assistant they direct. */
+    private static final CommitAuthors AUTHORS = new CommitAuthors(
+            new CommitAuthors.Author("Ada Lovelace", "ada@komet.ike.network"),
+            Optional.of(new CommitAuthors.Author("Ada's Claude", "ada-claude@komet.ike.network")));
+
+    @Test
+    void anEditTheAssistantAloneWroteIsCommittedAsTheAssistantsUnderThePerson() throws Exception {
+        Path dir = repository("assistant-own");
+        Path file = dir.resolve("editing.adoc");
+        PublicId anchor = GitDocumentMaterializer.materialize(dir, file).anchor();
+        DocumentEditor.editBlock(anchor, blockStartingWith(anchor, Block.Kind.PARAGRAPH, "Another paragraph."),
+                "Another paragraph, the assistant's.\n", assistant());
+
+        assertEquals(Set.of(IkeConcept.KOMET_ASSISTANT.nid()), DocumentEditor.pendingAuthors(anchor));
+        assertTrue(DocumentEditor.assistantsOwn(anchor), "the assistant alone wrote the edit");
+        GitDocumentExporter.Exported pending = GitDocumentExporter.export(anchor, true).orElseThrow();
+        GitDocumentExporter.writeTo(pending, dir);
+        DocumentCommit.Result result = DocumentCommit.write(dir, pending.path(), "Edit editing.adoc\n", false, AUTHORS.assistantsWork());
+        assertTrue(result.ok(), result.output());
+        GitDocumentMaterializer.materialize(dir, file, true);
+        assertTrue(DocumentEditor.settle(anchor).carried());
+
+        assertEquals("Ada's Claude <ada-claude@komet.ike.network> | Ada Lovelace <ada@komet.ike.network>",
+                gitOut(dir, "log", "-1", "--format=%an <%ae> | %cn <%ce>"), "the assistant's commit, under the person");
+        GitDocumentMaterializer.StoredLine line = GitDocumentMaterializer.load(anchor).orElseThrow().lines().stream()
+                .filter(l -> l.text().equals("Another paragraph, the assistant's.")).findFirst().orElseThrow();
+        GitIdentityAdapter adapter = GitIdentityAdapter.raw();
+        assertEquals(PublicIds.of(adapter.author(new Person("Ada's Claude", "ada-claude@komet.ike.network")).uuid()),
+                line.introduced().author().publicId(), "the line's STAMP names the assistant's own author concept");
+        assertFalse(PublicId.equals(PublicIds.of(adapter.author(new Person("Ada Lovelace", "ada@komet.ike.network")).uuid()),
+                line.introduced().author().publicId()), "not the person's");
+    }
+
+    @Test
+    void anEditThePersonWroteIsThePersons() throws Exception {
+        Path dir = repository("person-own");
+        PublicId anchor = GitDocumentMaterializer.materialize(dir, dir.resolve("editing.adoc")).anchor();
+        DocumentEditor.editBlock(anchor, blockStartingWith(anchor, Block.Kind.PARAGRAPH, "Another paragraph."),
+                "Another paragraph, the person's.\n", edit);
+
+        assertEquals(Set.of(edit.getAuthorNidForChanges()), DocumentEditor.pendingAuthors(anchor));
+        assertFalse(DocumentEditor.assistantsOwn(anchor), "committed under git's own author, as before");
+        DocumentEditor.cancel(anchor);
+        assertEquals(Set.of(), DocumentEditor.pendingAuthors(anchor), "no edit pending, no authors");
+    }
+
+    @Test
+    void aPairedEditThePersonAndTheAssistantBothWroteIsThePersons() throws Exception {
+        Path dir = repository("paired");
+        PublicId anchor = GitDocumentMaterializer.materialize(dir, dir.resolve("editing.adoc")).anchor();
+        DocumentPairing.pair("paired-conversation", anchor);
+        try {
+            DocumentEditor.editBlock(anchor, blockStartingWith(anchor, Block.Kind.PARAGRAPH, "The first line."),
+                    "The first line, the person's.\nThe second line.\n", edit);
+            DocumentEditor.editBlock(anchor, blockStartingWith(anchor, Block.Kind.PARAGRAPH, "Another paragraph."),
+                    "Another paragraph, the assistant's.\n", assistant());
+
+            assertEquals(Set.of(edit.getAuthorNidForChanges(), IkeConcept.KOMET_ASSISTANT.nid()), DocumentEditor.pendingAuthors(anchor),
+                    "one pending edit, two authors");
+            assertFalse(DocumentEditor.assistantsOwn(anchor), "an edit both wrote is committed as the person's (KEC, 2026-11-21)");
+        } finally {
+            DocumentPairing.pair("paired-conversation", null);
+            DocumentEditor.cancel(anchor);
+        }
+    }
+
+    private EditCoordinateRecord assistant() {
+        return EditCoordinateRecord.make(IkeConcept.KOMET_ASSISTANT.nid(), edit.getDefaultModuleNid(), edit.getDefaultPathNid());
     }
 
     @Test

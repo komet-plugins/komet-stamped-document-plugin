@@ -32,6 +32,7 @@ import java.util.List;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 
 class GitStampTermsTest {
 
@@ -47,6 +48,28 @@ class GitStampTermsTest {
                 "stamp:4c39414f0e6b2c1d9a8b7c6d5e4f3a2b1c0d9e8f", "module:anf", "path:main", "path:feature/issue-42", "ünïcödé:✓")) {
             assertEquals(UuidT5Generator.get(GitIdentityAdapter.NAMESPACE, key), Uuid5.of(GitIdentityAdapter.NAMESPACE, key), key);
         }
+    }
+
+    /**
+     * A person and the assistant they direct are two author concepts (IKE-Network/ike-issues#1399, decision 3),
+     * since each is made from its own identity address; the earlier address is a third (decision 6). The
+     * addresses are KEC's and his assistant's, as the IKE Dashboard's file of authors names them.
+     */
+    @Test
+    void anAssistantIsAnAuthorConceptApartFromItsPerson() {
+        GitIdentityAdapter adapter = GitIdentityAdapter.raw();
+        Identity keith = adapter.author(new Person("Keith E Campbell", "kec@komet.ike.network"));
+        Identity assistant = adapter.author(new Person("KEC Claude", "kec-claude@komet.ike.network"));
+        Identity earlier = adapter.author(new Person("Keith E Campbell", "stamp.versioned@knowledge.design"));
+
+        assertNotEquals(keith.uuid(), assistant.uuid(), "KEC Claude is not Keith");
+        assertNotEquals(keith.uuid(), earlier.uuid(), "the earlier address stays an author of its own");
+        assertNotEquals(assistant.uuid(), earlier.uuid());
+        assertEquals(UuidT5Generator.get(GitIdentityAdapter.NAMESPACE, "author:kec-claude@komet.ike.network"), assistant.uuid(),
+                "the assistant's concept is made from its address, as Tinkar makes it");
+        assertEquals("KEC Claude", GitStampTerms.concept(assistant).description());
+        assertEquals(assistant.uuid(), adapter.author(new Person("Another name", "KEC-Claude@komet.ike.network")).uuid(),
+                "the address, not the name, is the author");
     }
 
     @Test

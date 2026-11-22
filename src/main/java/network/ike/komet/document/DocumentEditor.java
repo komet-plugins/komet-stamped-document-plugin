@@ -911,6 +911,43 @@ public final class DocumentEditor {
     }
 
     /**
+     * Every author who wrote into the document's pending edit: one, or, on a document paired with an
+     * assistant conversation, the person and the assistant. Each author who edits takes a STAMP of their
+     * own in the edit's transaction, even where they rewrote a version the other had written, so the
+     * transaction's STAMPs name them all.
+     *
+     * @param anchor the document anchor's id
+     * @return the authors' nids; empty when no edit is pending
+     */
+    public static Set<Long> pendingAuthors(PublicId anchor) {
+        Optional<Transaction> transaction = pending(anchor);
+        if (transaction.isEmpty()) {
+            return Set.of();
+        }
+        Set<Long> authors = new java.util.LinkedHashSet<>();
+        transaction.get().forEachStampInTransaction(uuid -> {
+            PublicId stamp = PublicIds.of(uuid);
+            if (PrimitiveData.get().hasPublicId(stamp)) {
+                EntityHandle.get(stamp).ifStamp(found -> authors.add(found.authorNid()));
+            }
+        });
+        return Set.copyOf(authors);
+    }
+
+    /**
+     * Whether the document's pending edit is the assistant's own work: every author who wrote into it is
+     * the Komet assistant. Committed, it has the person's assistant as git author and the person as
+     * committer (IKE-Network/ike-issues#1399); an edit the person wrote into, alone or beside the
+     * assistant, is committed as the person's (KEC, 2026-11-21).
+     *
+     * @param anchor the document anchor's id
+     * @return {@code true} when an edit is pending and the assistant alone wrote it
+     */
+    public static boolean assistantsOwn(PublicId anchor) {
+        return pendingAuthors(anchor).equals(Set.of(IkeConcept.KOMET_ASSISTANT.nid()));
+    }
+
+    /**
      * Cancels the document's pending edit, so the document reads as committed again.
      *
      * @param anchor the document anchor's id

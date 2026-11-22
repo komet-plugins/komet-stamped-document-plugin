@@ -22,6 +22,7 @@ import design.knowledge.stamp.adoc.model.Annotation;
 import design.knowledge.stamp.adoc.model.AnnotationKind;
 import design.knowledge.stamp.adoc.model.AnnotationTarget;
 import design.knowledge.stamp.adoc.model.KonceptRef;
+import design.knowledge.stamp.adoc.model.Person;
 import dev.ikm.tinkar.common.id.PublicId;
 import dev.ikm.tinkar.common.id.PublicIds;
 import dev.ikm.tinkar.common.service.PrimitiveData;
@@ -47,9 +48,12 @@ import java.nio.file.Path;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -131,6 +135,49 @@ class NarrationIT {
         assertEquals(1, EntityHandle.get(id).expectSemantic().versions().size(), "a rebuild from git adds nothing");
     }
 
+    /**
+     * A narration is the person's assistant's work (IKE-Network/ike-issues#1399, decision 4): written as the
+     * assistant's commit under the person, with no annotator of its own, its Comment is authored by the
+     * author concept made from the assistant's address, not by the person's and not by one narrator shared
+     * by everyone. The names are invented.
+     */
+    @Test
+    void anAssistantsNarrationIsAuthoredByTheAssistantsOwnConcept() throws Exception {
+        Path dir = repository("assistant");
+        Path file = dir.resolve("narrated.adoc");
+        PublicId anchor = GitDocumentMaterializer.materialize(dir, file).anchor();
+        String narrated = gitOut(dir, "rev-parse", "HEAD");
+        StampEntity<?> stamp = GitDocumentMaterializer.commitStamp(anchor, narrated).orElseThrow();
+        PublicId id = PublicIds.of(UUID.fromString("7e1d2c3b-4a59-5687-a9b8-c7d6e5f4a3b2"));
+        Annotation narration = new Annotation(AnnotationKind.COMMENT.ref(),
+                new AnnotationTarget.ChangeSet(new KonceptRef(GitIdentityAdapter.fromMailmap(dir).stamp(narrated).uuid(),
+                        narrated.substring(0, 7))),
+                null, Instant.parse("2026-11-21T18:00:00Z"), id.asUuidArray()[0]);
+        CommitAuthors authors = new CommitAuthors(new CommitAuthors.Author("Rita Reviewer", "rita@komet.ike.network"),
+                Optional.of(new CommitAuthors.Author("Rita's Claude", "rita-claude@komet.ike.network")));
+
+        AnnotationCommit.Result written = DocumentCommit.annotate(dir, List.of(narration), "Two claims, first stated.", false,
+                authors.assistantsWork());
+        assertTrue(written.ok(), written.output());
+        assertEquals("Rita's Claude <rita-claude@komet.ike.network> | Rita Reviewer <rita@komet.ike.network>",
+                gitOut(dir, "log", "-1", "--format=%an <%ae> | %cn <%ce>"), "the assistant's commit, under the person");
+        assertFalse(gitOut(dir, "log", "-1", "--format=%B").contains(" by "), "the commit's author is the annotator");
+        GitDocumentMaterializer.materialize(dir, file, true);
+
+        SemanticEntity<?> comment = EntityHandle.get(id).expectSemantic();
+        assertEquals(stamp.nid(), comment.referencedComponentNid(), "on the narrated commit's STAMP");
+        SemanticEntityVersion version = (SemanticEntityVersion) comment.versions().getFirst();
+        GitIdentityAdapter adapter = GitIdentityAdapter.raw();
+        UUID assistant = adapter.author(new Person("Rita's Claude", "rita-claude@komet.ike.network")).uuid();
+        assertEquals(PublicIds.of(assistant), version.stamp().author().publicId(), "by the assistant's own author concept");
+        assertNotEquals(PublicIds.of(adapter.author(new Person("Rita Reviewer", "rita@komet.ike.network")).uuid()),
+                version.stamp().author().publicId(), "not the person's");
+        assertNotEquals(PublicIds.of(NARRATOR), version.stamp().author().publicId(), "not one narrator shared by everyone");
+        assertEquals(Instant.parse("2026-11-21T18:00:00Z").toEpochMilli(), version.stamp().time(), "at its time");
+        assertEquals("Rita Reviewer <rita@example.test>", gitOut(dir, "log", "-1", "--format=%an <%ae>", narrated),
+                "the narrated commit stays the person's own");
+    }
+
     private Path repository(String name) throws Exception {
         Path dir = Files.createDirectories(root.resolve(name));
         git(dir, "init", "-q", "-b", "main");
@@ -144,12 +191,17 @@ class NarrationIT {
     }
 
     private static void git(Path dir, String... args) throws Exception {
+        gitOut(dir, args);
+    }
+
+    private static String gitOut(Path dir, String... args) throws Exception {
         List<String> command = new ArrayList<>(List.of("git"));
         command.addAll(List.of(args));
         Process p = new ProcessBuilder(command).directory(dir.toFile()).redirectErrorStream(true).start();
-        String out = new String(p.getInputStream().readAllBytes());
+        String out = new String(p.getInputStream().readAllBytes()).strip();
         if (p.waitFor() != 0) {
             throw new IllegalStateException("git " + String.join(" ", args) + " failed: " + out);
         }
+        return out;
     }
 }
