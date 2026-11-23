@@ -37,6 +37,7 @@ import javafx.scene.text.FontWeight;
 import jfx.incubator.scene.control.richtext.RichTextArea;
 import network.ike.komet.document.surface.MarkdownRichText;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Supplier;
@@ -58,6 +59,9 @@ public final class BlockFactory {
     private final MarkdownRichText markdown;
     /** Base body font size (px); the header label scales from it. */
     private final double base;
+    /** The colour of a turn's date and time, quieter than the name before it. */
+    static final Color TURN_TIME = Color.web("#5f6368");
+
     /** Base prose font family, or {@code null} for the platform default. */
     private final String fontFamily;
     /** Whether native block figures carry the {@code KlExpandable} expand-to-full-surface affordance. */
@@ -181,7 +185,7 @@ public final class BlockFactory {
     public List<DocumentBlock> turnBlocks(MarkdownRichText.Entry turn) {
         List<DocumentBlock> blocks = new ArrayList<>();
         if (!turn.role().label().isBlank()) {
-            blocks.add(headerBlock(turn.role()));           // a document that is no one's turn has no role header
+            blocks.add(headerBlock(turn));                  // a document that is no one's turn has no role header
         }
         for (DocumentSegment segment : markdown.toSegments(turn)) {
             switch (segment) {
@@ -210,13 +214,47 @@ public final class BlockFactory {
         return chunks;
     }
 
-    /** The coloured, bold role label that opens every turn (find parity with the old transcript). */
-    private DocumentBlock headerBlock(MarkdownRichText.Role role) {
-        Label label = new Label(role.label());
+    /**
+     * The coloured, bold role label that opens every turn (find parity with the old transcript), and
+     * after it when the turn was said, when that is known: {@code Komet Assistant: Nov 23rd, 11:42 am}
+     * (KEC 2026-11-23). The time goes beneath the label where the two do not fit beside each other.
+     */
+    private DocumentBlock headerBlock(MarkdownRichText.Entry turn) {
+        MarkdownRichText.Role role = turn.role();
+        Label label = new Label(turn.saidAt() == null ? role.label() : role.label() + ":");
         label.setFont(Font.font(fontFamily, FontWeight.BOLD, base));
         label.setTextFill(roleColor(role));
         label.getStyleClass().add("doc-turn-header");
-        return DocumentBlock.of(label, role.label());
+        if (turn.saidAt() == null) {
+            return DocumentBlock.of(label, role.label());
+        }
+        Label time = turnTime(turn.saidAt());
+        return DocumentBlock.of(heading(label, time), label.getText() + " " + time.getText());
+    }
+
+    /**
+     * When a turn was said, as the turn's heading shows it.
+     *
+     * @param saidAt when the turn was said
+     * @return a label in the plain weight of the prose
+     */
+    Label turnTime(Instant saidAt) {
+        Label time = new Label(expandableFigures ? TurnTime.onScreen(saidAt) : TurnTime.onPage(saidAt));
+        time.setFont(Font.font(fontFamily, base));
+        time.setTextFill(TURN_TIME);
+        time.getStyleClass().add("doc-turn-time");
+        return time;
+    }
+
+    /**
+     * A heading and when it was said, the time beneath the heading where they do not fit side by side.
+     *
+     * @param title the heading
+     * @param time  the time, from {@link #turnTime}
+     * @return the pane
+     */
+    HeadingPane heading(Label title, Label time) {
+        return new HeadingPane(title, time, Math.round(base * 0.4));
     }
 
     /** A prose run as a view-only, content-height {@code RichTextArea} over its own model. */

@@ -124,6 +124,19 @@ class JournalStoreIT {
     }
 
     @Test
+    void aLoadedTurnSaysWhenItWasWritten() {
+        long before = System.currentTimeMillis();
+        PublicId anchor = store.appendExchange(null, "Timed conversation", "u1", "a1");
+        List<JournalStore.TurnRecord> turns = store.load(anchor).orElseThrow();
+        long after = System.currentTimeMillis();
+        // the journal's clock runs a little ahead of the wall clock when exchanges follow each other within a millisecond
+        for (JournalStore.TurnRecord turn : turns) {
+            assertTrue(turn.time() >= before && turn.time() <= after + 1000, turn.time() + " is between " + before + " and " + after);
+        }
+        assertTrue(turns.get(0).time() < turns.get(1).time(), "the reply's STAMP is after the question's");
+    }
+
+    @Test
     void secondAppendGrowsTheManifestAsANewVersionInOrder() {
         PublicId anchor = store.appendExchange(null, "Growing conversation", "u1", "a1");
         long manifestNid = soleManifestNid(anchor);

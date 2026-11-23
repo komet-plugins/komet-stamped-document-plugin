@@ -1539,6 +1539,16 @@ public final class DocumentSurface extends BorderPane {
                 + Math.round(base) + "px;");
         javafx.scene.layout.HBox header =
                 new javafx.scene.layout.HBox(6, arrow, qBadge, title);
+        if (turn.saidAt() != null && blockFactory != null) {
+            // The header stands for the person's "You" heading, so it says when they asked: after the
+            // title, or beneath it where the two do not fit.
+            qBadge.setMinWidth(javafx.scene.layout.Region.USE_PREF_SIZE);
+            javafx.scene.control.Label asked = blockFactory.turnTime(turn.saidAt());
+            asked.setStyle("-fx-font-size: " + Math.round(base) + "px;");   // the title's font, in its plain weight
+            HeadingPane titled = blockFactory.heading(title, asked);
+            javafx.scene.layout.HBox.setHgrow(titled, Priority.ALWAYS);
+            header.getChildren().add(titled);   // the title left the header when the pane took it
+        }
         header.getStyleClass().add("claude-exchange-header");
         // A distinct band no generated content uses: light fill plus an
         // accent left rule, so exchange boundaries read at a glance.

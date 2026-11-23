@@ -47,6 +47,7 @@ import jfx.incubator.scene.control.richtext.model.RichParagraph;
 import jfx.incubator.scene.control.richtext.model.StyleAttributeMap;
 import jfx.incubator.scene.control.richtext.model.StyledTextModel;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -126,8 +127,40 @@ public final class MarkdownRichText {
      * @param role     who is speaking
      * @param content  the message text (Markdown when {@code markdown} is true)
      * @param markdown whether to render {@code content} as Markdown
+     * @param saidAt   when the turn was said; {@code null} when it was not recorded, or the entry is no one's turn
      */
-    public record Entry(Role role, String content, boolean markdown) {
+    public record Entry(Role role, String content, boolean markdown, Instant saidAt) {
+
+        /**
+         * An entry with no time.
+         *
+         * @param role     who is speaking
+         * @param content  the message text (Markdown when {@code markdown} is true)
+         * @param markdown whether to render {@code content} as Markdown
+         */
+        public Entry(Role role, String content, boolean markdown) {
+            this(role, content, markdown, null);
+        }
+
+        /**
+         * This entry, said at a time.
+         *
+         * @param at when the turn was said, or {@code null} when it is not known
+         * @return the entry
+         */
+        public Entry saidAt(Instant at) {
+            return new Entry(role, content, markdown, at);
+        }
+
+        /**
+         * This entry with its text restated as Markdown, said by whom and when it was.
+         *
+         * @param restated the text
+         * @return the entry
+         */
+        public Entry restated(String restated) {
+            return new Entry(role, restated, true, saidAt);
+        }
 
         /**
          * A person's turn: drawn as the plain text they typed, unless it carries a fenced block,
@@ -284,10 +317,16 @@ public final class MarkdownRichText {
             if (!e.role().label.isBlank()) {
                 // Coloured, bold role label on its own line.
                 RichParagraph.Builder label = RichParagraph.builder();
-                label.addSegment(e.role().label, StyleAttributeMap.builder()
+                String name = e.saidAt() == null ? e.role().label : e.role().label + ":";
+                label.addSegment(name, StyleAttributeMap.builder()
                         .setBold(true).setFontSize(base).setTextColor(e.role().color).build());
+                String time = e.saidAt() == null ? "" : " " + TurnTime.onScreen(e.saidAt());
+                if (!time.isEmpty()) {
+                    label.addSegment(time, StyleAttributeMap.builder()
+                            .setFontSize(base).setTextColor(BlockFactory.TURN_TIME).build());
+                }
                 paragraphs.add(label.build());
-                plain.add(e.role().label);
+                plain.add(name + time);
             }
 
             if (e.markdown()) {

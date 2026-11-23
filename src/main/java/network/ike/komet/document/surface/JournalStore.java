@@ -462,13 +462,24 @@ public final class JournalStore {
     // ── Load ─────────────────────────────────────────────────────────────
 
     /**
-     * One rebuilt turn: its Markdown source and whether the assistant authored it (from the turn
-     * block version's STAMP author).
+     * One rebuilt turn: its Markdown source, whether the assistant authored it, and when, both from
+     * the turn block version's STAMP.
      *
      * @param markdown          the turn's Markdown source
      * @param assistantAuthored {@code true} when the turn's author is {@link IkeConcept#KOMET_ASSISTANT}
+     * @param time              the turn's STAMP time, in epoch milliseconds; 0 when not known
      */
-    public record TurnRecord(String markdown, boolean assistantAuthored) {
+    public record TurnRecord(String markdown, boolean assistantAuthored, long time) {
+
+        /**
+         * A turn whose time is not known.
+         *
+         * @param markdown          the turn's Markdown source
+         * @param assistantAuthored whether the assistant authored it
+         */
+        public TurnRecord(String markdown, boolean assistantAuthored) {
+            this(markdown, assistantAuthored, 0);
+        }
     }
 
     /**
@@ -515,7 +526,7 @@ public final class JournalStore {
             }
             List<String> lines = new ArrayList<>();
             appendLines(stamps, proseNid, turn.get(), lines);
-            turns.add(new TurnRecord(String.join("\n", lines), turn.get().authorNid() == assistantNid));
+            turns.add(new TurnRecord(String.join("\n", lines), turn.get().authorNid() == assistantNid, turn.get().time()));
         }
         return Optional.of(turns);
     }
@@ -535,7 +546,7 @@ public final class JournalStore {
             }
             List<String> lines = new ArrayList<>();
             appendVertexLines(stamps, turnVertex, lines);
-            turns.add(new TurnRecord(String.join("\n", lines), turn.get().authorNid() == IkeConcept.KOMET_ASSISTANT.nid()));
+            turns.add(new TurnRecord(String.join("\n", lines), turn.get().authorNid() == IkeConcept.KOMET_ASSISTANT.nid(), turn.get().time()));
         }
         return turns;
     }

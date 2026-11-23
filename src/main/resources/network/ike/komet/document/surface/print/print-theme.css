@@ -36,6 +36,12 @@
     -fx-font-weight: bold;
 }
 
+/* When the turn was said, after its header: the header's font, in its plain weight. */
+.doc-turn-time {
+    -fx-padding: 10 0 3 0;
+    -fx-font-weight: normal;
+}
+
 /* Prose blocks (view-only RichTextArea): print on the white ground with no control chrome. */
 .doc-prose-block,
 .doc-prose-block .content {
