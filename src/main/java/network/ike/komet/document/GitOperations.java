@@ -15,13 +15,17 @@
  */
 package network.ike.komet.document;
 
+import design.knowledge.stamp.adoc.model.Person;
+
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
@@ -149,6 +153,16 @@ public final class GitOperations {
             return sha.substring(0, Math.min(7, sha.length()));
         }
     }
+
+    /**
+     * The people of one commit: git records who wrote the work and who committed it, and a STAMP has the first alone.
+     *
+     * @param sha       the full SHA
+     * @param time      the author time, in epoch milliseconds, as the commit's STAMP has it
+     * @param author    the author as committed, before any mailmap
+     * @param committer the committer as committed, before any mailmap
+     */
+    public record CommitPeople(String sha, long time, Person author, Person committer) { }
 
     /**
      * Reads what the panel shows; the operations that fail (no upstream, no HEAD yet) leave
@@ -524,6 +538,32 @@ public final class GitOperations {
             String[] parts = line.split("\t", 4);
             if (parts.length == 4) {
                 commits.add(new Commit(parts[0], parts[1], parts[2], parts[3]));
+            }
+        }
+        return commits;
+    }
+
+    /**
+     * The people of every commit reachable from HEAD, newest first. Signatures are not checked, whatever the
+     * person's configuration says, since checking one starts a process for each commit.
+     *
+     * @param root the working tree
+     * @return the commits; empty when the repository has none, or when git cannot read it
+     * @throws IOException if git cannot be run
+     */
+    public static List<CommitPeople> people(Path root) throws IOException {
+        Run run = git(root, "log", "--no-show-signature", "--format=%H%x1f%at%x1f%an%x1f%ae%x1f%cn%x1f%ce");
+        List<CommitPeople> commits = new ArrayList<>();
+        if (!run.ok()) {
+            return commits;
+        }
+        Map<Person, Person> known = new HashMap<>();             // a long history has few people
+        for (String line : run.output().lines().toList()) {
+            String[] parts = line.split("\u001f", -1);
+            if (parts.length == 6) {
+                commits.add(new CommitPeople(parts[0], Long.parseLong(parts[1]) * 1000,
+                        known.computeIfAbsent(new Person(parts[2], parts[3]), person -> person),
+                        known.computeIfAbsent(new Person(parts[4], parts[5]), person -> person)));
             }
         }
         return commits;

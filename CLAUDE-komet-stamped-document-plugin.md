@@ -50,6 +50,25 @@ An author concept made from now on has its address in the fully qualified
 name, "Keith E Campbell (kec@komet.ike.network)", and the name alone as its
 regular name. A concept that is there already keeps the name it has.
 
+### Who committed a commit (IKE-Network/ike-issues#1399, decision 7)
+
+A STAMP has a commit's author and not its committer. Review reads the
+committer from the repository, where it reads a commit's subject
+(`CommitSummaries`). Nothing is written to the store, and with no working
+tree no committer is shown.
+
+The committer is shown where it is not the author: "Committed by Keith E
+Campbell". A commit of an assistant's work that the responsible person did
+not commit is marked: "Committed by Ada Lovelace (ada@example.test), not by
+Keith E Campbell". An assistant is an author whose record has the reason
+Directed assistant, so with no record nothing is marked. A committer that is
+an earlier identity of the person counts as the person, and its address is
+shown. A person's own commit is never marked.
+
+A commit is found by the SHA that the store has for its STAMP. A commit that
+only annotates has none there, and a rebased one has another SHA, so these
+are found by author and author time.
+
 ## Key Classes
 
 - `CommitAuthors`: the file of authors, and the variables for a commit of
@@ -57,6 +76,10 @@ regular name. A concept that is there already keeps the name it has.
 - `ResponsiblePersons`: writes the record (`recordIfAbsent`), reads it
   (`of`), and names an author for review (`authorName`). A place in the
   card that names a STAMP's author uses `authorName`, not `StampNames`.
+- `Committers`: reads the committers of a working tree's commits (`read`,
+  one `git log` for each HEAD) and compares each with the record. A place in
+  the card that shows a STAMP's commit asks `CommitSummaries.committed`, or
+  `committerDiffers` for the mark alone.
 - `DocumentCommit`: `write`, `first` and `annotate` take those variables;
   with none, a commit is git's own, as before.
 
@@ -70,3 +93,6 @@ regular name. A concept that is there already keeps the name it has.
 - `ResponsiblePersonsIT` gives each test people of its own, with invented
   names, since a store has one concept for each author. It sets `user.home`
   for the file of authors the materializer reads.
+- `CommittersIT` writes its records with `ResponsiblePersons.recordIfAbsent`,
+  and gives each commit an hour of its own, since two commits of one author
+  in the same second are one STAMP.

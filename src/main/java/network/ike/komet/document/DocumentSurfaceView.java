@@ -78,6 +78,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
  * The two views of a stamped document and the Provenance layer over them, on the plugin's
@@ -1422,7 +1423,7 @@ public final class DocumentSurfaceView {
         for (StampEntity<?> stamp : stamps.subList(0, Math.min(HEADER_STAMPS, stamps.size()))) {
             Node icon = identicon(stamp, 14, null);
             Tooltip.install(icon, new Tooltip(ResponsiblePersons.authorName(host.view(), stamp.authorNid()) + " · " + DAY.format(Instant.ofEpochMilli(stamp.time()))
-                    + host.summaries().summary(stamp.nid()).map(summary -> "\n" + summary).orElse("")
+                    + host.summaries().lines(host.view(), stamp)
                     + "\nIntroduced what is at the top of the view"));
             headerRunStamps.getChildren().add(icon);
         }
@@ -1543,7 +1544,7 @@ public final class DocumentSurfaceView {
      */
     private static final double LEDGER_IDENTICON = 12;
 
-    /** The ledger's left column: the line's number in its file, introducing identicon, annotation mark. */
+    /** The ledger's left column: the line's number in its file, introducing identicon, annotation mark, and the committer's mark. */
     private final class LedgerDecorator implements SideDecorator {
         private final Area chunk;
 
@@ -1590,7 +1591,22 @@ public final class DocumentSurfaceView {
             mark.setFont(Font.font("System", javafx.scene.text.FontWeight.BOLD, 11));
             mark.setStyle(line == null ? "" : markStyle(line));
             row.getChildren().add(mark);
+            if (line != null) {
+                committerMark(paragraph, line).ifPresent(row.getChildren()::add);
+            }
             return row;
+        }
+
+        /** The mark of a line whose commit its person did not commit, on the first line of each run of them, as an identicon is. */
+        private Optional<Label> committerMark(int paragraph, StoredLine line) {
+            List<StampEntity<?>> marked = committedByOthers(line).toList();
+            Set<Long> above = paragraph == 0 ? Set.of() : committedByOthers(chunk.lines.get(paragraph - 1)).map(StampEntity::nid).collect(Collectors.toSet());
+            if (marked.stream().allMatch(stamp -> above.contains(stamp.nid()))) {
+                return Optional.empty();
+            }
+            return Optional.of(DocumentSurfaceView.committerMark("!", marked.stream()
+                    .flatMap(stamp -> host.summaries().committed(host.view(), stamp).stream())
+                    .map(Committers.Committed::text).distinct().collect(Collectors.joining("\n"))));
         }
     }
 
@@ -5037,6 +5053,10 @@ public final class DocumentSurfaceView {
             }
             icons.getChildren().add(identicon(stamp, 12, area));
         }
+        Label committer = committerMark(area);
+        if (committer != null) {
+            icons.getChildren().add(committer);
+        }
         if (area.lines.stream().anyMatch(DocumentSurfaceView::uncommitted)) {
             icons.getChildren().add(mark("edited", "#b26a00", "Edited in Komet, uncommitted"));
         }
@@ -5077,6 +5097,10 @@ public final class DocumentSurfaceView {
                     break;
                 }
                 icons.getChildren().add(identicon(stamp, 18, area));
+            }
+            Label committer = committerMark(area);
+            if (committer != null) {
+                icons.getChildren().add(committer);                  // with the identicons, so it stands under them in a narrow margin
             }
             marginalia.getChildren().add(icons);
         }
@@ -5125,6 +5149,43 @@ public final class DocumentSurfaceView {
         return area.introducers;
     }
 
+    /** The STAMPs of a line, the one that introduced it and the latest, whose commits are marked: an assistant's work that its person did not commit. */
+    private Stream<StampEntity<?>> committedByOthers(StoredLine line) {
+        boolean one = line.introduced() != null && line.latest() != null && line.introduced().nid() == line.latest().nid();
+        Stream<StampEntity<?>> stamps = one ? Stream.of(line.introduced()) : Stream.of(line.introduced(), line.latest());
+        return stamps.filter(host.summaries()::committerDiffers);
+    }
+
+    /** The nids of the STAMPs of an area's lines whose commits are marked. */
+    private Set<Long> committedByOthers(Area area) {
+        return area.lines.stream().flatMap(this::committedByOthers).map(StampEntity::nid).collect(Collectors.toSet());
+    }
+
+    /**
+     * The mark of an area with a commit of an assistant's work that the person responsible for it did not
+     * commit (IKE-Network/ike-issues#1399): its tooltip names who did, for each such commit, and how many of
+     * the area's lines it is about. Null when the area has none.
+     */
+    private Label committerMark(Area area) {
+        Map<String, Integer> lines = new LinkedHashMap<>();
+        for (StoredLine line : area.lines) {
+            committedByOthers(line).flatMap(stamp -> host.summaries().committed(host.view(), stamp).stream())
+                    .map(Committers.Committed::text).distinct().forEach(text -> lines.merge(text, 1, Integer::sum));
+        }
+        if (lines.isEmpty()) {
+            return null;
+        }
+        return committerMark(Committers.Committed.MARK, lines.entrySet().stream()
+                .map(e -> e.getKey() + ": " + e.getValue() + " of these " + area.lines.size() + " line(s)").collect(Collectors.joining("\n")));
+    }
+
+    private static Label committerMark(String text, String tooltip) {
+        Label mark = mark(text, Committers.Committed.MARK_COLOUR, tooltip);
+        mark.getStyleClass().add("stamped-document-committer");
+        mark.setMinWidth(javafx.scene.layout.Region.USE_PREF_SIZE);   // a mark cut to its first letter says nothing
+        return mark;
+    }
+
     /** The day a block's margin shows: its oldest STAMP's; empty when no commit holds its lines. */
     private static String dateOf(List<StampEntity<?>> stamps) {
         return stamps.isEmpty() ? "" : DAY.format(Instant.ofEpochMilli(stamps.getFirst().time()));
@@ -5136,6 +5197,8 @@ public final class DocumentSurfaceView {
      * margin is where they change. A block starts afresh, showing both, when it is the first of
      * the document or of an included file, or when what is above it is folded away; its date and
      * its STAMPs are judged apart, since two commits of one day change the one and not the other.
+     * The STAMPs are drawn too where a commit that the block above does not have is marked for its
+     * committer, as the latest of a line may be.
      */
     private void readAgainstAbove(Area area) {
         Area above = area.above;
@@ -5144,7 +5207,8 @@ public final class DocumentSurfaceView {
         area.dateRepeats = !afresh && !mine.isEmpty() && dateOf(mine).equals(dateOf(introducers(above)));
         area.stampsRepeat = !afresh && !mine.isEmpty()
                 && mine.stream().map(StampEntity::nid).collect(Collectors.toSet())
-                        .equals(introducers(above).stream().map(StampEntity::nid).collect(Collectors.toSet()));
+                        .equals(introducers(above).stream().map(StampEntity::nid).collect(Collectors.toSet()))
+                && committedByOthers(area).equals(committedByOthers(above));
         showRepeats(area);
     }
 
@@ -5307,18 +5371,23 @@ public final class DocumentSurfaceView {
         when.setStyle("-fx-text-fill: #8a93a0;");
         HBox who = new HBox(4, identicon(stamp, 12, area), when);
         who.setAlignment(Pos.CENTER_LEFT);
+        Optional<Committers.Committed> committed = host.summaries().committed(host.view(), stamp);
         Label text = new Label(annotation.text() == null ? "" : annotation.text().strip());
         text.setFont(SMALL);
         text.setWrapText(true);
         text.setMaxWidth(Double.MAX_VALUE);
         text.setStyle("-fx-text-fill: " + (annotation.kind() == AnnotationKind.REFUTATION ? "#a32d2d" : "#4b5563") + ";");
-        VBox note = new VBox(1, who, text);
+        VBox note = new VBox(1, who);
+        committed.filter(Committers.Committed::differs).ifPresent(by -> note.getChildren().add(      // under the day, which a narrow margin has no more room beside
+                committerMark(Committers.Committed.MARK, by.text())));
+        note.getChildren().add(text);
         note.setFillWidth(true);
         note.getStyleClass().add("stamped-document-note");
         note.setStyle("-fx-border-color: transparent transparent transparent " + (annotation.kind() == AnnotationKind.REFUTATION ? "#e0a0a0" : "#c8ced8")
                 + "; -fx-border-width: 0 0 0 2; -fx-padding: 1 0 1 6;");
         Tooltip.install(note, new Tooltip((annotation.kind() == AnnotationKind.REFUTATION ? "Refutation" : "Comment") + " by "
-                + ResponsiblePersons.authorName(host.view(), stamp.authorNid()) + " · " + DAY.format(Instant.ofEpochMilli(stamp.time()))));
+                + ResponsiblePersons.authorName(host.view(), stamp.authorNid()) + " · " + DAY.format(Instant.ofEpochMilli(stamp.time()))
+                + committed.map(by -> "\n" + by.text()).orElse("")));
         return note;
     }
 
@@ -5455,7 +5524,7 @@ public final class DocumentSurfaceView {
         if (area != null) {
             long introduced = area.lines.stream().filter(l -> l.introduced() != null && l.introduced().nid() == stamp.nid()).count();
             Tooltip.install(view, new Tooltip(ResponsiblePersons.authorName(host.view(), stamp.authorNid()) + " · " + DAY.format(Instant.ofEpochMilli(stamp.time()))
-                    + host.summaries().summary(stamp.nid()).map(s -> "\n" + s).orElse("")
+                    + host.summaries().lines(host.view(), stamp)
                     + "\nIntroduced " + introduced + " of these " + area.lines.size() + " line(s)"));
             view.setOnMouseEntered(e -> {
                 area.highlightedStamp = stamp.nid();

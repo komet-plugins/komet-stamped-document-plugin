@@ -15,6 +15,7 @@
  */
 package network.ike.komet.document;
 
+import design.knowledge.stamp.adoc.model.Person;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -79,6 +80,38 @@ class GitOperationsTest {
         assertEquals(1, GitOperations.state(work, Path.of("doc.adoc")).ahead(), "one commit not yet pushed");
         Files.writeString(work.resolve("new.adoc"), "new\n");
         assertEquals("untracked", GitOperations.state(work, Path.of("new.adoc")).status(), "a file git does not know");
+    }
+
+    @Test
+    void peopleReadsTheAuthorAndTheCommitterOfEveryCommitNewestFirst() throws Exception {
+        Path work = clone(bare("people.git"), "people");
+        assertEquals(List.of(), GitOperations.people(work), "a repository with no commits has none");
+        commitAs(work, "The first", "Ada\u2019s Claude", "ada-claude@example.test", "Ada Lovelace", "ada@example.test", "2026-11-01T12:00:00Z");
+        commitAs(work, "The second", "Ada Lovelace", "ada@example.test", "Ada Lovelace", "ada@example.test", "2026-11-02T12:00:00Z");
+        git(work, "config", "log.showSignature", "true");
+
+        List<GitOperations.CommitPeople> people = GitOperations.people(work);
+
+        assertEquals(2, people.size());
+        assertEquals(new Person("Ada Lovelace", "ada@example.test"), people.getFirst().author());
+        assertEquals(new Person("Ada Lovelace", "ada@example.test"), people.getFirst().committer());
+        assertEquals(new Person("Ada\u2019s Claude", "ada-claude@example.test"), people.getLast().author());
+        assertEquals(new Person("Ada Lovelace", "ada@example.test"), people.getLast().committer());
+        assertEquals(java.time.Instant.parse("2026-11-01T12:00:00Z").toEpochMilli(), people.getLast().time(), "the author time");
+        assertEquals(GitOperations.head(work).orElseThrow(), people.getFirst().sha());
+    }
+
+    private static void commitAs(Path work, String subject, String author, String authorEmail, String committer, String committerEmail,
+                                 String when) throws Exception {
+        ProcessBuilder commit = new ProcessBuilder("git", "commit", "-q", "--allow-empty", "--no-gpg-sign", "-m", subject).directory(work.toFile());
+        commit.environment().put("GIT_AUTHOR_NAME", author);
+        commit.environment().put("GIT_AUTHOR_EMAIL", authorEmail);
+        commit.environment().put("GIT_AUTHOR_DATE", when);
+        commit.environment().put("GIT_COMMITTER_NAME", committer);
+        commit.environment().put("GIT_COMMITTER_EMAIL", committerEmail);
+        Process p = commit.redirectErrorStream(true).start();
+        String out = new String(p.getInputStream().readAllBytes());
+        assertEquals(0, p.waitFor(), out);
     }
 
     @Test

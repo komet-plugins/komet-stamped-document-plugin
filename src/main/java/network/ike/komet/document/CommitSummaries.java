@@ -17,9 +17,11 @@ package network.ike.komet.document;
 
 import design.knowledge.stamp.adoc.model.StampRecord;
 import dev.ikm.tinkar.common.id.PublicId;
+import dev.ikm.tinkar.coordinate.view.calculator.ViewCalculator;
 import dev.ikm.tinkar.entity.EntityService;
 import dev.ikm.tinkar.entity.SemanticEntity;
 import dev.ikm.tinkar.entity.SemanticEntityVersion;
+import dev.ikm.tinkar.entity.StampEntity;
 import network.ike.foundation.ike.bindings.IkePattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -33,24 +35,26 @@ import java.util.Optional;
 
 /**
  * What the repository says about the commits a stamped document's STAMPs stand for: the
- * short SHA and the subject of each, read from the repository when the card has one open
- * (ike-lab-documents topic {@code dev-stamped-document-surface}). The store records only the
- * SHA, in the git-source semantic's version under each commit's STAMP; the subject is git's.
+ * short SHA, the subject and the committer of each, read from the repository when the card has one
+ * open (ike-lab-documents topic {@code dev-stamped-document-surface}). The store records only the
+ * SHA, in the git-source semantic's version under each commit's STAMP; the subject and the
+ * committer are git's.
  *
  * @param shaByStamp the commit SHA of each STAMP nid the document's git source was versioned under
  * @param records    the file's STAMP records by commit SHA, empty when no repository was read
+ * @param committers who committed the repository's commits, {@link Committers#NONE} when none was read
  */
-public record CommitSummaries(Map<Long, String> shaByStamp, Map<String, StampRecord> records) {
+public record CommitSummaries(Map<Long, String> shaByStamp, Map<String, StampRecord> records, Committers committers) {
 
     private static final Logger LOG = LoggerFactory.getLogger(CommitSummaries.class);
 
     /** Nothing known. */
-    public static final CommitSummaries NONE = new CommitSummaries(Map.of(), Map.of());
+    public static final CommitSummaries NONE = new CommitSummaries(Map.of(), Map.of(), Committers.NONE);
 
     /**
      * Reads the SHAs from the store and, when a working tree holding the file is given, the
-     * commit records from the repository. Never throws: a repository that cannot be read leaves
-     * the records empty.
+     * commit records and the committers from the repository. Never throws: a repository that cannot
+     * be read leaves them empty.
      *
      * @param anchor   the document anchor
      * @param repoRoot the working tree, or {@code null}
@@ -69,6 +73,7 @@ public record CommitSummaries(Map<Long, String> shaByStamp, Map<String, StampRec
             }
         }
         Map<String, StampRecord> records = new HashMap<>();
+        Committers committers = Committers.NONE;
         if (repoRoot != null && relative != null && Files.isRegularFile(repoRoot.resolve(relative))) {
             try {
                 GitStampBridge bridge = GitStampBridge.read(repoRoot, relative);
@@ -78,8 +83,9 @@ public record CommitSummaries(Map<Long, String> shaByStamp, Map<String, StampRec
             } catch (IOException | RuntimeException e) {
                 LOG.info("Commit summaries of {} not read from {}: {}", relative, repoRoot, e.getMessage());
             }
+            committers = Committers.read(repoRoot);
         }
-        return new CommitSummaries(Map.copyOf(shas), Map.copyOf(records));
+        return new CommitSummaries(Map.copyOf(shas), Map.copyOf(records), committers);
     }
 
     /**
@@ -96,7 +102,8 @@ public record CommitSummaries(Map<Long, String> shaByStamp, Map<String, StampRec
             shas.putAll(s.shaByStamp());
             records.putAll(s.records());
         }
-        return new CommitSummaries(Map.copyOf(shas), Map.copyOf(records));
+        return new CommitSummaries(Map.copyOf(shas), Map.copyOf(records),
+                Committers.merge(all.stream().map(CommitSummaries::committers).toList()));
     }
 
     /** @return the commit SHA the STAMP stands for, if the store recorded one */
@@ -118,5 +125,39 @@ public record CommitSummaries(Map<Long, String> shaByStamp, Map<String, StampRec
         String shortSha = sha.get().substring(0, Math.min(7, sha.get().length()));
         StampRecord record = records.get(sha.get());
         return Optional.of(record == null ? shortSha : shortSha + "  " + record.summary());
+    }
+
+    /**
+     * Who committed the STAMP's commit, as review says it.
+     *
+     * @param view  the view that names the responsible person
+     * @param stamp the STAMP
+     * @return the committer; empty when it is the author, or is not known
+     */
+    public Optional<Committers.Committed> committed(ViewCalculator view, StampEntity<?> stamp) {
+        return stamp == null ? Optional.empty() : committers.of(view, sha(stamp.nid()), stamp);
+    }
+
+    /**
+     * Whether the STAMP's commit is marked, as {@link #committed} would say.
+     *
+     * @param stamp the STAMP
+     * @return whether it is an assistant's work that its person did not commit
+     */
+    boolean committerDiffers(StampEntity<?> stamp) {
+        return stamp != null && committers.differs(sha(stamp.nid()), stamp);
+    }
+
+    /**
+     * What a tooltip says of a STAMP's commit under its author: the committer, then the short SHA and subject,
+     * each on a line of its own.
+     *
+     * @param view  the view that names the responsible person
+     * @param stamp the STAMP
+     * @return the lines, each with a line break before it; empty when nothing is known
+     */
+    String lines(ViewCalculator view, StampEntity<?> stamp) {
+        return committed(view, stamp).map(committed -> "\n" + committed.text()).orElse("")
+                + summary(stamp.nid()).map(summary -> "\n" + summary).orElse("");
     }
 }

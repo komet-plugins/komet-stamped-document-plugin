@@ -38,10 +38,11 @@ import java.util.function.Function;
 /**
  * The provenance of one line, as the hover popover and the history dialog show it
  * (ike-lab-documents topic {@code dev-stamped-document-surface}): the introducing STAMP's
- * identicon, author, date and state; the commit's short SHA and subject when the repository is
- * known; the latest STAMP when a later commit changed the line; the annotations in force,
- * each with its kind, author and text; and, greyed, an annotation a retraction withdrew, with
- * who withdrew it and when. Names come through {@link StampNames}, never a nid.
+ * identicon, author, date and state; the commit's committer when it is not the author
+ * ({@link Committers}), and its short SHA and subject, when the repository is known; the latest
+ * STAMP when a later commit changed the line; the annotations in force, each with its kind,
+ * author and text; and, greyed, an annotation a retraction withdrew, with who withdrew it and
+ * when. Names come through {@link StampNames}, never a nid.
  */
 public final class ProvenancePopover {
 
@@ -93,14 +94,14 @@ public final class ProvenancePopover {
             }
         }
         for (StoredAnnotation annotation : line.annotations()) {
-            box.getChildren().add(annotationRow(annotation, view));
+            box.getChildren().add(annotationRow(annotation, view, summaries));
         }
         return box;
     }
 
     /** @return "✓ Affirmed by Name on date: text", coloured by kind; greyed with "retracted by Name on date" once withdrawn */
-    static Label annotationRow(StoredAnnotation annotation, ViewCalculator view) {
-        Label label = new Label(annotationText(annotation, view));
+    static Label annotationRow(StoredAnnotation annotation, ViewCalculator view, CommitSummaries summaries) {
+        Label label = new Label(annotationText(annotation, view, summaries));
         label.setWrapText(true);
         label.setFont(BODY);
         label.setStyle(annotation.retracted() || annotation.kind() == null ? "-fx-text-fill: #8a8782;" : switch (annotation.kind()) {
@@ -111,9 +112,21 @@ public final class ProvenancePopover {
         return label;
     }
 
-    /** The row's words, as the popover and the tests read them. */
+    /** The row's words when no repository is read: {@link #annotationText(StoredAnnotation, ViewCalculator, CommitSummaries)} with no committers. */
     public static String annotationText(StoredAnnotation annotation, ViewCalculator view) {
-        String who = annotation.stamp() == null ? "someone" : ResponsiblePersons.authorName(view, annotation.stamp().authorNid());
+        return annotationText(annotation, view, CommitSummaries.NONE);
+    }
+
+    /**
+     * The row's words, as the popover and the tests read them.
+     *
+     * @param annotation the annotation
+     * @param view       the view that names authors
+     * @param summaries  the commit summaries of the document, which have the committers
+     * @return what it is, who recorded it and when, its text, and who withdrew it
+     */
+    public static String annotationText(StoredAnnotation annotation, ViewCalculator view, CommitSummaries summaries) {
+        String who = annotation.stamp() == null ? "someone" : people(annotation.stamp(), view, summaries);
         String when = annotation.stamp() == null ? "" : " on " + MOMENT.format(Instant.ofEpochMilli(annotation.stamp().time()));
         // any other meaning, such as Not clinical, is named by its concept (decision 9 revised)
         String head = annotation.kind() == null
@@ -126,11 +139,17 @@ public final class ProvenancePopover {
                 };
         String text = annotation.text() == null || annotation.text().isBlank() ? "" : ": " + annotation.text();
         if (annotation.retracted()) {
-            String byWhom = ResponsiblePersons.authorName(view, annotation.retractedBy().authorNid());
+            String byWhom = people(annotation.retractedBy(), view, summaries);
             return head + " by " + who + when + ", retracted by " + byWhom + " on "
                     + MOMENT.format(Instant.ofEpochMilli(annotation.retractedBy().time())) + text;
         }
         return head + " by " + who + when + text;
+    }
+
+    /** The author of a STAMP, then the committer of its commit when that is not the author. */
+    private static String people(StampEntity<?> stamp, ViewCalculator view, CommitSummaries summaries) {
+        return ResponsiblePersons.authorName(view, stamp.authorNid())
+                + summaries.committed(view, stamp).map(committed -> ", committed by " + committed.who()).orElse("");
     }
 
     private static Node stampRow(StampEntity<?> stamp, String role, ViewCalculator view, CommitSummaries summaries, Function<StampEntity<?>, Image> identicon) {
@@ -146,6 +165,14 @@ public final class ProvenancePopover {
         when.setFont(SMALL);
         when.setStyle("-fx-text-fill: #5f6b7a;");
         VBox text = new VBox(1, author, when);
+        summaries.committed(view, stamp).ifPresent(committed -> {
+            Label committer = new Label(committed.text());
+            committer.setId("stampedDocumentProvenanceCommitter");
+            committer.setWrapText(true);
+            committer.setFont(committed.differs() ? Font.font("System", FontWeight.BOLD, 11) : SMALL);
+            committer.setStyle("-fx-text-fill: " + (committed.differs() ? Committers.Committed.MARK_COLOUR : "#5f6b7a") + ";");
+            text.getChildren().add(committer);
+        });
         summaries.summary(stamp.nid()).ifPresent(summary -> {
             Label commit = new Label(summary);
             commit.setFont(Font.font("Menlo", 11));

@@ -27,8 +27,10 @@ import javafx.scene.control.Label;
 import javafx.scene.control.ScrollPane;
 import javafx.scene.control.Tab;
 import javafx.scene.control.TabPane;
+import javafx.scene.control.TableCell;
 import javafx.scene.control.TableColumn;
 import javafx.scene.control.TableView;
+import javafx.scene.control.Tooltip;
 import javafx.scene.image.Image;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.HBox;
@@ -43,6 +45,7 @@ import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Function;
 import java.util.function.LongConsumer;
@@ -50,7 +53,7 @@ import java.util.function.LongConsumer;
 /**
  * The History view (ike-lab-documents topic {@code dev-stamped-document-surface}, phase 4):
  * the commit list of the open file or of the whole repository, read through the person's own
- * git — SHA, author, date and subject — pinned until closed. Selecting a commit highlights the
+ * git — SHA, author, committer where it is not the author, date and subject — pinned until closed. Selecting a commit highlights the
  * lines it introduced in the Reading view, through the store's STAMP for that commit. When
  * lines are selected, a second tab lists their STAMPs and annotations in force, the Show history
  * of the context menu.
@@ -66,12 +69,16 @@ final class HistoryDialog {
     public static final class Row {
         private final SimpleStringProperty sha;
         private final SimpleStringProperty author;
+        private final SimpleStringProperty committer;
+        private final Optional<Committers.Committed> committed;
         private final SimpleStringProperty date;
         private final SimpleStringProperty summary;
         private final GitOperations.Commit commit;
 
-        Row(GitOperations.Commit commit) {
+        Row(GitOperations.Commit commit, Optional<Committers.Committed> committed) {
             this.commit = commit;
+            this.committed = committed;
+            this.committer = new SimpleStringProperty(committed.map(Committers.Committed::name).orElse(""));
             this.sha = new SimpleStringProperty(commit.shortSha());
             this.author = new SimpleStringProperty(commit.author());
             this.date = new SimpleStringProperty(commit.date());
@@ -86,12 +93,31 @@ final class HistoryDialog {
             return author;
         }
 
+        /** @return the committer when it is not the author, else empty */
+        public SimpleStringProperty committerProperty() {
+            return committer;
+        }
+
         public SimpleStringProperty dateProperty() {
             return date;
         }
 
         public SimpleStringProperty summaryProperty() {
             return summary;
+        }
+    }
+
+    /** The committer of a row's commit; a marked one in the mark's colour, with the whole of what is said in its tooltip. */
+    private static final class CommitterCell extends TableCell<Row, String> {
+        @Override
+        protected void updateItem(String item, boolean empty) {
+            super.updateItem(item, empty);
+            Optional<Committers.Committed> committed = empty || getTableRow() == null || getTableRow().getItem() == null
+                    ? Optional.empty() : getTableRow().getItem().committed;
+            setText(empty ? null : item);
+            setStyle(committed.filter(Committers.Committed::differs).isPresent()
+                    ? "-fx-text-fill: " + Committers.Committed.MARK_COLOUR + "; -fx-font-weight: bold;" : "");
+            setTooltip(committed.map(by -> new Tooltip(by.text())).orElse(null));
         }
     }
 
@@ -127,8 +153,13 @@ final class HistoryDialog {
         date.setPrefWidth(90);
         TableColumn<Row, String> summary = new TableColumn<>("Summary");
         summary.setCellValueFactory(r -> r.getValue().summaryProperty());
-        summary.setPrefWidth(420);
-        table.getColumns().addAll(List.of(sha, author, date, summary));
+        summary.setPrefWidth(380);
+        // the committer is written where it is not the author, and marked where an assistant's work was not committed by its person
+        TableColumn<Row, String> committer = new TableColumn<>("Committer");
+        committer.setCellValueFactory(r -> r.getValue().committerProperty());
+        committer.setCellFactory(column -> new CommitterCell());
+        committer.setPrefWidth(140);
+        table.getColumns().addAll(List.of(sha, author, committer, date, summary));
         table.getSelectionModel().selectedItemProperty().addListener((obs, was, is) -> {
             if (is == null) {
                 highlight.accept(0);
@@ -170,7 +201,8 @@ final class HistoryDialog {
                     return;
                 }
                 table.setPlaceholder(new Label("No commits."));
-                table.setItems(FXCollections.observableArrayList(commits.stream().map(Row::new).toList()));
+                table.setItems(FXCollections.observableArrayList(commits.stream()
+                        .map(commit -> new Row(commit, summaries.committers().of(view, commit.sha()))).toList()));
             }));
         };
         scope.valueProperty().addListener((obs, was, is) -> load.run());
@@ -198,7 +230,7 @@ final class HistoryDialog {
             scroll.setFitToWidth(true);
             tabs.getTabs().add(new Tab(selected.size() + " selected line(s)", scroll));
         }
-        tabs.setPrefSize(760, 520);
+        tabs.setPrefSize(860, 520);
 
         Dialog<Void> dialog = new Dialog<>();
         dialog.setTitle("History");

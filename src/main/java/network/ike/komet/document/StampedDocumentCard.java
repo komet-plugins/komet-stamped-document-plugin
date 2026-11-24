@@ -1486,7 +1486,7 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
         footerIdentity.setText(name);
         footerIdentity.setCursor(javafx.scene.Cursor.HAND);
         footerIdentity.setTooltip(new Tooltip(file + "\n" + shortSha + " · " + ResponsiblePersons.authorName(view(), stamp.get().authorNid()) + " · "
-                + DateTimeUtil.format(stamp.get().time()) + summaries.summary(stamp.get().nid()).map(s -> "\n" + s).orElse("")
+                + DateTimeUtil.format(stamp.get().time()) + summaries.lines(view(), stamp.get())
                 + "\nClick to copy the full SHA"));
     }
 
@@ -1603,7 +1603,7 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
      * @param path             the recorded path, or {@code null} when the store holds no git source
      * @param pending          whether an edit of it is pending in Komet
      * @param restorable       whether an edit of it that was discarded, or left out of a commit, can be restored
-     * @param summaries        the commit subjects of its STAMPs
+     * @param summaries        the commit subjects and committers of its STAMPs
      */
     private record Loaded(StoredDocument document, Map<Long, Integer> committedNumbers, List<String> committedLines, String path,
                           boolean pending, boolean restorable, CommitSummaries summaries) {
@@ -3268,7 +3268,7 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
                     continue;
                 }
                 summaries.sha(annotation.stamp().nid()).ifPresent(sha ->
-                        choices.putIfAbsent(sha, sha.substring(0, 7) + "  " + ProvenancePopover.annotationText(annotation, view())));
+                        choices.putIfAbsent(sha, sha.substring(0, 7) + "  " + ProvenancePopover.annotationText(annotation, view(), summaries)));
             }
         }
         if (choices.isEmpty()) {

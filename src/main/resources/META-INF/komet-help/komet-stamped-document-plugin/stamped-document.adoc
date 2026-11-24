@@ -33,6 +33,21 @@ Show history:: Lists the STAMPs of the selected lines, or of the whole document,
 Go to page…:: Scrolls the Page layout to a page.
 Attributes set for this card:: Lists the attribute names the document's `ifdef` and `ifndef` lines ask about. Check one to read the document as a document that sets it would, in every view and in the PDF: with _compendium_ checked, a book reads as the compendium reads the same topics. The status line says what the card has set, and the card remembers it for that document. A name the document sets itself is shown checked and cannot be changed here.
 
+== Who wrote a line
+
+Hover over a line to see who wrote it, when, and in which commit.
+A line that an assistant wrote names the person who directs the assistant, as in _Ada's Claude, directed by Ada Lovelace_.
+A line from an address that a person used earlier says so, as in _Ada Lovelace (earlier commits)_.
+
+A commit has a committer as well as an author.
+Where the two are not the same, the card says who committed it, as in _Committed by Ada Lovelace_.
+The card reads the committer from the document's repository, so it shows none for a document whose repository is not on this computer.
+
+A commit of an assistant's work should be committed by the person who directs the assistant.
+Where it is not, the card marks it: the word _committer_ beside the STAMPs in the Reading view, the Page layout and the Graph, and _!_ beside the line in the Source view.
+Point at the mark to see who committed it.
+_Show history_ lists the committer of each commit, and marks it in the same way.
+
 == Reviewing and editing
 
 Click in a block to give it the focus. The Reading view marks the block with a bar at its left edge, and the caret stands where you clicked.

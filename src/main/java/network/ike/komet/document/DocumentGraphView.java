@@ -1043,6 +1043,13 @@ final class DocumentGraphView {
             setGraphic(box);
         }
 
+        /** Marks a row whose commit is an assistant's work that its person did not commit; the row's tooltip says who did. */
+        private void addCommitterMark(HBox box, DocumentGraph.Node node) {
+            if (host.summaries().committerDiffers(node.stamp())) {
+                box.getChildren().add(caption(Committers.Committed.MARK, Committers.Committed.MARK_COLOUR));
+            }
+        }
+
         private Label caption(String text, String color) {
             Label label = new Label(text);
             label.setFont(SMALL);
@@ -1071,6 +1078,7 @@ final class DocumentGraphView {
                     badge.setFitHeight(IDENTICON);
                     box.getChildren().addAll(new dev.ikm.komet.framework.controls.StampSigil(IDENTICON), badge);
                     box.getChildren().add(caption(node.stamp().time() == Long.MAX_VALUE ? "uncommitted" : DAY.format(Instant.ofEpochMilli(node.stamp().time())), "#8a8782"));
+                    addCommitterMark(box, node);
                 }
                 box.getChildren().add(caption(node.kind() == Kind.RETIRED ? "retired" : node.version().word(), changeColor(node)));
                 return box;
@@ -1088,7 +1096,7 @@ final class DocumentGraphView {
                     ImageView badge = new ImageView(host.identicon(commit));
                     badge.setPreserveRatio(true);
                     badge.setFitHeight(IDENTICON - 2);
-                    Tooltip.install(badge, new Tooltip(when(commit) + host.summaries().summary(commit.nid()).map(s -> "\n" + s).orElse("")));
+                    Tooltip.install(badge, new Tooltip(when(commit) + host.summaries().lines(host.view(), commit)));
                     badge.setOnMouseEntered(e -> host.highlightCommit(commit.nid()));
                     badge.setOnMouseExited(e -> host.highlightCommit(0));
                     strip.getChildren().add(badge);
@@ -1101,6 +1109,7 @@ final class DocumentGraphView {
                 badge.setFitHeight(IDENTICON);
                 box.getChildren().addAll(new dev.ikm.komet.framework.controls.StampSigil(IDENTICON), badge);
                 box.getChildren().add(caption(node.stamp().time() == Long.MAX_VALUE ? "uncommitted" : DAY.format(Instant.ofEpochMilli(node.stamp().time())), "#8a8782"));
+                addCommitterMark(box, node);
             }
             if (host.layer(Layer.ANNOTATION_MARKS) && node.line() != null && !node.line().inForce().isEmpty()) {
                 Label mark = new Label(DocumentSurfaceView.mark(node.line()));
@@ -1166,7 +1175,7 @@ final class DocumentGraphView {
                 if (node.stamp().time() != Long.MAX_VALUE) {
                     text.append(" · ").append(DAY.format(Instant.ofEpochMilli(node.stamp().time())));
                 }
-                host.summaries().summary(node.stamp().nid()).ifPresent(s -> text.append('\n').append(s));
+                text.append(host.summaries().lines(host.view(), node.stamp()));
             }
             return text.isEmpty() ? null : new Tooltip(text.toString());
         }
