@@ -24,6 +24,7 @@ import dev.ikm.tinkar.common.id.PublicIds;
 import dev.ikm.tinkar.entity.transaction.StampedWriter;
 import dev.ikm.tinkar.terms.EntityFacade;
 import dev.ikm.tinkar.terms.ConceptFacade;
+import dev.ikm.tinkar.entity.boundary.ModuleKinds;
 import dev.ikm.tinkar.terms.EntityProxy;
 import dev.ikm.tinkar.terms.EntityProxy.Concept;
 import dev.ikm.tinkar.terms.KernelConcept;
@@ -64,10 +65,39 @@ public final class GitStampVocabulary {
      */
     public static synchronized void seedIfAbsent(GitStampTerms.GitStamp stamp) {
         seedConceptIfAbsent(stamp.author(), null);
-        // A working tree's module is ephemeral: the repository is the record of what is written under
-        // it (IKE-Network/ike-issues#1313). Stated only where the store holds the parent.
-        seedConceptIfAbsent(stamp.module(), entityAbsent(KernelConcept.EPHEMERAL_MODULE) ? null : KernelConcept.EPHEMERAL_MODULE);
+        // A document's module is a file module: the repository is the record of what is written under
+        // it (IKE-Network/ike-issues#1313). A new one is the document's own, written under itself, so it
+        // is file data that goes with the document (KEC, 2026-11-22). Stated a kind of File module only
+        // where the store holds that parent; a working tree's module of before 2026-11-22 is knowledge
+        // and is stated a kind of it the next time something is written under it.
+        if (entityAbsent(stamp.module()) && !entityAbsent(KernelConcept.FILE_MODULE)) {
+            seedOwnModule(stamp.module());
+        } else {
+            seedConceptIfAbsent(stamp.module(), entityAbsent(KernelConcept.FILE_MODULE) ? null : KernelConcept.FILE_MODULE);
+        }
         seedConceptIfAbsent(stamp.path(), null);
+    }
+
+    /**
+     * Writes a document's own module under itself, a kind of File module: its concept, its name and
+     * its stated parent are file data of the document's, so they are counted, removed and exported
+     * with it, and knowledge gains nothing for a document anyone opens (IKE-Network/ike-issues#1313,
+     * design {@code design-2026-11-22-knowledge-shared-local}). Its parent is known from the first
+     * record on, so none of it reaches the knowledge change sets ({@link ModuleKinds#writeModule}).
+     *
+     * @param module the module concept, named by {@link DocumentModules#component}
+     */
+    private static void seedOwnModule(ConceptFacade module) {
+        ModuleKinds.writeModule(module, KernelConcept.FILE_MODULE, () -> {
+            try (StampedWriter writer = StampedWriter.open("git-stamp-vocabulary-module", State.ACTIVE, System.currentTimeMillis(),
+                    KernelConcept.USER, module, KernelConcept.DEVELOPMENT_PATH)) {
+                writer.concept(module.publicId());
+                writer.fullyQualifiedName(module.publicId(), module.description());
+                stateParent(writer, module, KernelConcept.FILE_MODULE);
+                writer.commit();
+            }
+        });
+        LOG.info("Seeded the document module '{}' ({}) under itself", module.description(), module.publicId().asUuidArray()[0]);
     }
 
     /**
@@ -123,14 +153,14 @@ public final class GitStampVocabulary {
     private static void seedConceptIfAbsent(ConceptFacade concept, ConceptFacade parent) {
         if (!entityAbsent(concept)) {
             if (parent != null && entityAbsent(dev.ikm.tinkar.terms.EntityProxy.Semantic.make(statedAxiomsId(concept)))) {
-                // A module seeded before its store held Ephemeral module, as in every store
+                // A module seeded before its store held File module (Ephemeral module until 2026-11-22), as in every store
                 // materialized before 2026-10-21: state its parent now, so what is written under
                 // it classifies as ephemeral and its documents are scopes (IKE-Network/ike-issues#1313).
                 try (StampedWriter writer = seedWriter()) {
                     stateParent(writer, concept, parent);
                     writer.commit();
                 }
-                dev.ikm.tinkar.entity.boundary.ModuleKinds.clear();
+                ModuleKinds.clear();
                 dev.ikm.tinkar.entity.boundary.EntityBoundaries.clear();
                 LOG.info("Stated git STAMP concept '{}' a kind of '{}'", concept.description(), parent.description());
             }

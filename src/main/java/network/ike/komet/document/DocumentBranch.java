@@ -28,8 +28,8 @@ import java.util.List;
  * commit by time, so the commits of two branches in one document show whichever was written
  * last, not HEAD. The commits HEAD adds are written first, which is all a branch ahead of the
  * document needs. When the document then still differs from HEAD it is rebuilt from HEAD's
- * history alone. Nothing is lost: an ephemeral document is what git holds, and the commits of the
- * other branch stay in git. A document that is not ephemeral is left as it is and said so.
+ * history alone. Nothing is lost: git contains everything a document saved in a file has, and the commits of
+ * the other branch stay in git. A document that is not saved in a file is left as it is and said so.
  */
 final class DocumentBranch {
 

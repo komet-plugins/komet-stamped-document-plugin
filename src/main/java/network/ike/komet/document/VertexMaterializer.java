@@ -87,8 +87,8 @@ import java.util.TreeMap;
  * document's root vertex, and the root references the document's pattern.
  *
  * <p>The walk is the one {@link GitDocumentMaterializer} makes: one STAMP per commit that changed
- * the file, from the commit's own coordinates, under the working tree's module, which is a kind of
- * Ephemeral module since the repository is the record. A commit writes a version of each vertex
+ * the file, from the commit's own coordinates, under the document's own module ({@link DocumentModules}),
+ * a kind of File module, itself a kind of Local module, since the repository is the record. A commit writes a version of each vertex
  * whose meaning or properties changed, an inactive version of each vertex it removed, the git
  * source beside the root, and an Annotation semantic per trailer. Identities are UUID5s of frozen
  * keys, so a later run converges and skips the commits the git source records.
@@ -119,7 +119,7 @@ public final class VertexMaterializer {
 
     /** The terms the vertex model writes with, which a store built from an older starter set lacks. */
     private static final List<EntityFacade> TERMS = List.of(IkeConcept.DOCUMENT_VERTEX, IkeConcept.DOCUMENT_VERTEX_VALUE,
-            IkeConcept.LINE_SOURCE, IkeConcept.DOCUMENT_STRUCTURE, KernelConcept.VERTEX_FIELD, KernelConcept.EPHEMERAL_MODULE);
+            IkeConcept.LINE_SOURCE, IkeConcept.DOCUMENT_STRUCTURE, KernelConcept.VERTEX_FIELD, KernelConcept.FILE_MODULE);
 
     /**
      * The vertex model's terms the open store lacks: none in a store built from the current IKE
@@ -250,6 +250,15 @@ public final class VertexMaterializer {
             Map<LineId, String> lastText = new HashMap<>();
             Map<String, Written> last = new HashMap<>();
             boolean patternWritten = !GitStampVocabulary.entityAbsent(EntityProxy.Pattern.make(patternId));
+            if (patternWritten && SharedDocuments.shared(root.publicId())) {
+                // A document is named by its working tree's folder and its path, so two repositories whose folders
+                // have one name can hold two documents of one identity. A shared one may be someone else's.
+                Set<String> theirs = recordedCommits(root);
+                if (history.events().stream().noneMatch(event -> theirs.contains(event.commit().sha()))) {
+                    throw new IOException("A shared document named " + component + "/" + path + " is in this knowledge base, and it is not"
+                            + " this file: they have no commit in common. Rename the folder " + component + " to open this file too.");
+                }
+            }
             Set<String> recorded = patternWritten && onlyNew ? recordedCommits(root) : Set.of();
             int lines = 0;
             int blocks = 0;
@@ -293,7 +302,7 @@ public final class VertexMaterializer {
                     unchecked = false;                           // before the first write: what it compares against must be what the store holds
                     requireSentencesAsDerived(root.publicId(), name, patternId, last);
                 }
-                GitStampTerms.GitStamp stamp = GitStampTerms.GitStamp.of(adapter.coordinatesOf(event, component, branch));
+                GitStampTerms.GitStamp stamp = GitStampTerms.GitStamp.of(adapter.coordinatesOf(event, DocumentModules.component(component, path), branch));
                 GitStampVocabulary.seedIfAbsent(stamp, adapter.author(event.commit().author()));
                 Map<String, Written> now = null;
                 List<GitDocumentMaterializer.Narration> narrated = new ArrayList<>();
@@ -393,6 +402,133 @@ public final class VertexMaterializer {
             return new GitDocumentMaterializer.Result(root.publicId(), name, history.events().size() - skipped, lines, annotations,
                     blocks, references, repo.headRevision());
         }
+    }
+
+    // ── a file in a folder without git ────────────────────────────────────────
+
+    /** What names the one version of a file in a folder without git: never a git commit's SHA. */
+    static final String TEXT_REVISION = "text-";
+
+    /**
+     * Whether a recorded revision names the one version of a file in a folder without git.
+     *
+     * @param revision the revision a document's git source records
+     * @return whether it is not a git commit
+     */
+    static boolean textRevision(String revision) {
+        return revision != null && revision.startsWith(TEXT_REVISION);
+    }
+
+    /**
+     * Reads a file in a folder without git as one version (IKE-Network/ike-issues#1313; the second
+     * question before step 2 of {@code design-2026-11-22-knowledge-shared-local}, settled by KEC on
+     * 2026-11-22). An ordinary file has no history, only its text and the time it was last changed,
+     * so every line gets the same STAMP: that time, the person Komet opens as, and the document's own
+     * module, on the development path. Its lines, blocks and sentences are named as a first commit
+     * names them, by a revision made from the text ({@link #TEXT_REVISION} and a digest), which never
+     * names a git commit. The folder plays the working tree's part in the document's identity, so
+     * starting git history in the folder later reads the document under the same identity.
+     *
+     * <p>A document the store already holds at this text is not written again. One read from an
+     * earlier text of the file is dropped and read again, unless an edit of it is pending in Komet.
+     *
+     * @param folder the folder holding the file
+     * @param file   the file, absolute or relative to the folder
+     * @param author the person Komet opens as
+     * @return what was written; its anchor is the document's root vertex, and its commit the revision
+     * @throws IOException if the file cannot be read
+     */
+    public static GitDocumentMaterializer.Result materializeVersion(Path folder, Path file, ConceptFacade author) throws IOException {
+        requirePresent(TERMS);
+        Path root = folder.toAbsolutePath().normalize();
+        Path relative = root.relativize(root.resolve(file).toAbsolutePath().normalize());
+        String path = relative.toString().replace('\\', '/');
+        String component = root.getFileName().toString();
+        List<String> lines = java.nio.file.Files.readAllLines(root.resolve(relative));
+        String revision = revisionOf(lines);
+        GitIdentityAdapter adapter = GitIdentityAdapter.raw();
+        String key = adapter.document(component, path).key();
+        String name = GitDocumentMaterializer.topicIdOf(lines).orElse(path);
+        PublicId patternId = PublicIds.of(Uuid5.of(GitIdentityAdapter.NAMESPACE, "vertex-pattern:" + key));
+        Semantic rootVertex = semantic("vertex:" + key + ":document");
+        Semantic source = semantic("vertex-source:" + key);
+        boolean patternWritten = !GitStampVocabulary.entityAbsent(EntityProxy.Pattern.make(patternId));
+        if (patternWritten) {
+            Set<String> recorded = recordedCommits(rootVertex);
+            if (recorded.contains(revision) || DocumentEditor.pending(rootVertex.publicId()).isPresent()) {
+                return new GitDocumentMaterializer.Result(rootVertex.publicId(), name, 0, 0, 0, 0, 0, revision);
+            }
+            DocumentScopes.dropForRebuild(rootVertex.publicId());      // read from an earlier text of the file
+            patternWritten = false;
+        }
+        List<LineId> manifest = new ArrayList<>(lines.size());
+        Map<LineId, String> text = new HashMap<>();
+        for (int i = 0; i < lines.size(); i++) {
+            LineId id = new LineId(revision, path, i + 1);
+            manifest.add(id);
+            text.put(id, lines.get(i));
+        }
+        boolean segments = segmentsAvailable();
+        Map<String, Written> now = snapshot(key, patternId, rootVertex, manifest, text, segments ? firstSegments(lines, revision, path) : null);
+        long time = java.nio.file.Files.getLastModifiedTime(root.resolve(relative)).toMillis();
+        GitStampTerms.GitStamp stamp = new GitStampTerms.GitStamp(GitStampTerms.concept(adapter.stamp(revision)), State.ACTIVE, time,
+                author, GitStampTerms.concept(adapter.module(DocumentModules.component(component, path))), KernelConcept.DEVELOPMENT_PATH);
+        GitStampVocabulary.seedIfAbsent(stamp);
+        int written = 0;
+        int blocks = 0;
+        int references = 0;
+        try (StampedWriter writer = stamp.openWriter("file-version " + path)) {
+            if (!patternWritten) {
+                writer.pattern(patternId, IkeConcept.DOCUMENT_VERTEX, IkeConcept.DOCUMENT_STRUCTURE,
+                        StampedWriter.field(IkeConcept.DOCUMENT_VERTEX_VALUE, IkeConcept.DOCUMENT_STRUCTURE, KernelConcept.VERTEX_FIELD));
+                writer.fullyQualifiedName(patternId, name);
+            }
+            for (Written vertex : now.values()) {
+                writer.semantic(vertex.proxy().publicId(), patternId, vertex.referenced(), vertex.value());
+                switch (vertex.kind()) {
+                    case LINE -> written++;
+                    case BLOCK, ROOT -> blocks++;
+                    case REFERENCE -> references++;
+                    case SENTENCE, INLINE -> { }
+                }
+            }
+            writer.semantic(source.publicId(), IkePattern.GIT_SOURCE_PATTERN.publicId(), rootVertex.publicId(), path, revision);
+            writer.commit();
+        }
+        LOG.info("Read {} as one version of '{}', from a folder without git: {} line(s), {} block(s)", path, name, written, blocks);
+        return new GitDocumentMaterializer.Result(rootVertex.publicId(), name, 1, written, 0, blocks, references, revision);
+    }
+
+    /** The revision a file's text is read under: {@link #TEXT_REVISION} and the start of a SHA-256 digest of the text. */
+    static String revisionOf(List<String> lines) {
+        try {
+            java.security.MessageDigest sha = java.security.MessageDigest.getInstance("SHA-256");
+            byte[] digest = sha.digest(String.join("\n", lines).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            return TEXT_REVISION + java.util.HexFormat.of().formatHex(digest).substring(0, 34);
+        } catch (java.security.NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException(impossible);
+        }
+    }
+
+    /** The sentences and inline elements of a first version: every one introduced, at its position, under the revision. */
+    private static CommitEvent.Segments firstSegments(List<String> lines, String revision, String path) {
+        Segmenter.Segmentation now = Segmenter.of(IkeDialectParser.parse(lines));
+        List<SegmentId> sentences = new ArrayList<>();
+        List<CommitEvent.Segment> introduced = new ArrayList<>();
+        List<String> texts = now.texts();
+        for (int j = 0; j < texts.size(); j++) {
+            SegmentId id = new SegmentId(SegmentId.Kind.SENTENCE, revision, path, j + 1);
+            sentences.add(id);
+            introduced.add(new CommitEvent.Segment(id, texts.get(j)));
+        }
+        List<SegmentId> inline = new ArrayList<>();
+        List<CommitEvent.Segment> inlineIntroduced = new ArrayList<>();
+        for (int j = 0; j < now.inlines().size(); j++) {
+            SegmentId id = new SegmentId(SegmentId.Kind.INLINE, revision, path, j + 1);
+            inline.add(id);
+            inlineIntroduced.add(new CommitEvent.Segment(id, now.inlines().get(j).text()));
+        }
+        return new CommitEvent.Segments(introduced, List.of(), List.of(), sentences, inlineIntroduced, List.of(), List.of(), inline);
     }
 
     private static void adopt(Map<String, Written> last, Map<String, Written> now) {

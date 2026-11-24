@@ -130,6 +130,21 @@ public final class JournalStore {
         return PublicIds.of(UuidT5Generator.get(anchor.asUuidArray()[0], ROOT_KEY));
     }
 
+    /**
+     * Whether a component is the root of a conversation's journal stored as semantic vertices.
+     *
+     * @param anchor a component
+     * @return whether it is a journal's root vertex
+     */
+    public static boolean isJournal(PublicId anchor) {
+        if (!VertexReader.isVertexDocument(anchor)) {
+            return false;
+        }
+        SemanticEntityVersion head = rawHead(EntityHandle.get(EntityService.get().nidForPublicId(anchor)).expectSemantic());
+        return head != null && head.fieldValues().get(0) instanceof EntityVertex root
+                && root.getMeaningNid() == IkeConcept.CONVERSATION_JOURNAL.nid();
+    }
+
     // ── Append ───────────────────────────────────────────────────────────
 
     /**

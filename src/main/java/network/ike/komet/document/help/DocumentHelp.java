@@ -33,6 +33,6 @@ public final class DocumentHelp extends KlResourceHelpProvider {
 
     /** Public no-arg constructor, for the service loader. */
     public DocumentHelp() {
-        super(BOOK_ID, "Stamped documents");
+        super(BOOK_ID, "IKE documents");
     }
 }

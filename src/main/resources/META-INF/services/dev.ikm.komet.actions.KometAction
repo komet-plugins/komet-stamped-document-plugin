@@ -2,3 +2,7 @@ network.ike.komet.document.EditDocumentBlock
 network.ike.komet.document.EditDocumentSentence
 network.ike.komet.document.AddDocumentBlock
 network.ike.komet.document.DeleteDocumentBlock
+network.ike.komet.document.RemoveFromKnowledgeBase
+network.ike.komet.document.ShareDocument
+network.ike.komet.document.MakeDocumentLocal
+network.ike.komet.document.DeleteDocument

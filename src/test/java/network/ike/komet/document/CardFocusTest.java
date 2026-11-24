@@ -85,7 +85,7 @@ class CardFocusTest {
         // Made on the JavaFX thread, as everything below is: the first control a JVM makes has
         // that thread load the default stylesheet, and a control made here meanwhile can wait
         // on it for ever, each thread holding a CSS class the other is initializing.
-        Label tab = onFx(() -> new Label("STAMPed Document"));
+        Label tab = onFx(() -> new Label("IKE Document"));
         TextField text = onFx(() -> new TextField("words"));
         List<KeyCode> heard = new ArrayList<>();
         BorderPane card = onFx(() -> {

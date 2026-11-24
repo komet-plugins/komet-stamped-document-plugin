@@ -51,9 +51,10 @@ public record GitStampBridge(Path file, StampFile stamps, Map<StampId, GitStampT
         try (GitRepo repo = GitRepo.open(repoRoot)) {
             String branch = repo.branch();
             StampFile atHead = repo.stampHistoryOf(file).atHead();
+            String module = DocumentModules.component(component, atHead.file().toString());
             Map<StampId, GitStampTerms.GitStamp> terms = new LinkedHashMap<>();
             for (Map.Entry<StampId, StampRecord> e : atHead.stamps().entrySet()) {
-                terms.put(e.getKey(), GitStampTerms.GitStamp.of(adapter.coordinatesOf(e.getValue(), component, branch)));
+                terms.put(e.getKey(), GitStampTerms.GitStamp.of(adapter.coordinatesOf(e.getValue(), module, branch)));
             }
             return new GitStampBridge(atHead.file(), atHead, terms);
         }

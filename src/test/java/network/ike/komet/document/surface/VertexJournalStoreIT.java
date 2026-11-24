@@ -89,10 +89,10 @@ class VertexJournalStoreIT extends JournalStoreIT {
         SemanticEntity<?> rootEntity = EntityHandle.get(EntityService.get().nidForPublicId(anchor)).expectSemantic();
         long patternNid = rootEntity.patternNid();
 
-        // The journal's own pattern: instance data, named for the conversation.
+        // The journal's own pattern: local data, named for the conversation.
         PatternEntityVersion pattern = (PatternEntityVersion) EntityHandle.get(patternNid).expectPattern().versions().getFirst();
         assertEquals(IkeConcept.DOCUMENT_VERTEX.nid(), pattern.semanticMeaningNid());
-        assertEquals(DataKind.INSTANCE, EntityBoundaries.birthKind(patternNid), "a journal is instance data");
+        assertEquals(DataKind.LOCAL, EntityBoundaries.birthKind(patternNid), "a journal is local data");
         assertEquals("Vertex conversation", StampNames.name(Calculators.View.Default(), patternNid));
         assertEquals(patternNid, rootEntity.referencedComponentNid(), "the root references its pattern");
 

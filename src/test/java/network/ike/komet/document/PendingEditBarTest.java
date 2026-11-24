@@ -52,6 +52,11 @@ class PendingEditBarTest {
         }
 
         @Override
+        public void savePending() {
+            asked.add("save");
+        }
+
+        @Override
         public void discardPending() {
             asked.add("discard");
         }
@@ -110,8 +115,9 @@ class PendingEditBarTest {
         assertEquals("Discard the 1 edited line?", PendingEditBar.discardQuestion(1, 1));
         assertEquals("Discard the 7 edited lines in 2 documents?", PendingEditBar.discardQuestion(7, 2));
         assertEquals("Discard the edit that is not committed?", PendingEditBar.discardQuestion(0, 1), "an edit that only removed lines");
-        assertEquals("The document will read as last committed. Restore as pending brings the discarded edit back.", PendingEditBar.discardConsequence(1));
-        assertTrue(PendingEditBar.discardConsequence(2).startsWith("The documents will read"));
+        assertEquals("The document and its file will read as last committed. Restore as pending brings the discarded edit back.",
+                PendingEditBar.discardConsequence(1));
+        assertTrue(PendingEditBar.discardConsequence(2).startsWith("The documents and their files will read"));
         assertEquals("Discarded 1 edited line. Restore as pending brings it back.", PendingEditBar.discarded(1));
         assertEquals("Discarded 2 edited lines. Restore as pending brings them back.", PendingEditBar.discarded(2));
         assertEquals("Discarded the edit. Restore as pending brings it back.", PendingEditBar.discarded(0));
@@ -132,18 +138,18 @@ class PendingEditBarTest {
             PendingEditBar bar = new PendingEditBar(new Asked());
             List<String> states = new ArrayList<>();
             states.add("new: " + bar.isVisible() + " " + bar.isManaged());
-            bar.show(true, false, 3, 1);
+            bar.show(true, false, 3, 1, false);
             states.add("pending: " + bar.isVisible() + " " + ((Label) node(bar, "stampedDocumentEditedBadge")).getText()
                     + " commit=" + node(bar, "stampedDocumentCommit").isVisible() + " message=" + node(bar, "stampedDocumentCommitMessage").isVisible()
                     + " discard=" + node(bar, "stampedDocumentDiscard").isVisible() + " restore=" + node(bar, "stampedDocumentRestore").isVisible());
-            bar.show(false, true, 0, 0);
+            bar.show(false, true, 0, 0, false);
             states.add("restorable: " + bar.isVisible() + " " + ((Label) node(bar, "stampedDocumentEditedBadge")).getText()
                     + " commit=" + node(bar, "stampedDocumentCommit").isManaged() + " message=" + node(bar, "stampedDocumentCommitMessage").isManaged()
                     + " discard=" + node(bar, "stampedDocumentDiscard").isManaged() + " restore=" + node(bar, "stampedDocumentRestore").isVisible());
             states.add("restorable is plain: " + bar.getStyleClass().contains("restore-only"));
-            bar.show(true, true, 1, 1);
+            bar.show(true, true, 1, 1, false);
             states.add("pending again is not: " + bar.getStyleClass().contains("restore-only"));
-            bar.show(false, false, 0, 0);
+            bar.show(false, false, 0, 0, false);
             states.add("settled: " + bar.isVisible() + " " + bar.isManaged());
             return states;
         });
@@ -155,11 +161,40 @@ class PendingEditBarTest {
     }
 
     @Test
+    void saveIsOfferedUntilTheFileHoldsTheEdit() throws Exception {
+        List<String> seen = onFx(() -> {
+            PendingEditBar bar = new PendingEditBar(new Asked());
+            List<String> states = new ArrayList<>();
+            bar.show(true, false, 2, 1, false);
+            states.add(((Label) node(bar, "stampedDocumentEditedBadge")).getText() + " save=" + !node(bar, "stampedDocumentSave").isDisable());
+            bar.show(true, false, 2, 1, true);
+            states.add(((Label) node(bar, "stampedDocumentEditedBadge")).getText() + " save=" + !node(bar, "stampedDocumentSave").isDisable());
+            bar.show(false, true, 0, 0, false);
+            states.add("restorable: save shown=" + node(bar, "stampedDocumentSave").isManaged());
+            return states;
+        });
+        assertEquals(List.of("2 lines edited save=true", "2 lines edited, saved save=false", "restorable: save shown=false"), seen);
+    }
+
+    @Test
+    void aDocumentWithoutGitIsSavedAndNeverCommitted() throws Exception {
+        List<String> seen = onFx(() -> {
+            PendingEditBar bar = new PendingEditBar(new Asked());
+            bar.committable(false);
+            bar.show(true, false, 1, 1, false);
+            return List.of("commit=" + node(bar, "stampedDocumentCommit").isManaged(), "message=" + node(bar, "stampedDocumentCommitMessage").isManaged(),
+                    "sign=" + node(bar, "stampedDocumentCommitSign").isManaged(), "save=" + node(bar, "stampedDocumentSave").isManaged(),
+                    "discard=" + node(bar, "stampedDocumentDiscard").isManaged());
+        });
+        assertEquals(List.of("commit=false", "message=false", "sign=false", "save=true", "discard=true"), seen);
+    }
+
+    @Test
     void enterInTheMessageCommitsAsTheButtonDoesWithTheMessageAndTheSigningChoice() throws Exception {
         Asked card = new Asked();
         onFx(() -> {
             PendingEditBar bar = new PendingEditBar(card);
-            bar.show(true, false, 1, 1);
+            bar.show(true, false, 1, 1, false);
             TextField message = node(bar, "stampedDocumentCommitMessage");
             message.setText("  Mark the dose bold ");
             message.getOnAction().handle(new javafx.event.ActionEvent());          // Enter in the field
@@ -167,20 +202,21 @@ class PendingEditBarTest {
             bar.clearMessage();
             ((Button) node(bar, "stampedDocumentCommit")).fire();
             ((CheckBox) node(bar, "stampedDocumentCommitSign")).setSelected(false);  // the person's change: remembered
+            ((Button) node(bar, "stampedDocumentSave")).fire();
             ((Button) node(bar, "stampedDocumentDiscard")).fire();
             ((Button) node(bar, "stampedDocumentRestore")).fire();
             return null;
         });
-        assertEquals(List.of("commit[Mark the dose bold] unsigned", "commit[] signed", "sign false", "discard", "restore"), card.asked);
+        assertEquals(List.of("commit[Mark the dose bold] unsigned", "commit[] signed", "sign false", "save", "discard", "restore"), card.asked);
     }
 
     @Test
     void aBarShownAgainIsEnabledSoACommitUnderWayDoesNotLeaveItDead() throws Exception {
         assertFalse(onFx(() -> {
             PendingEditBar bar = new PendingEditBar(new Asked());
-            bar.show(true, false, 1, 1);
+            bar.show(true, false, 1, 1, false);
             bar.setDisable(true);
-            bar.show(true, false, 2, 1);
+            bar.show(true, false, 2, 1, false);
             return bar.isDisable();
         }));
     }

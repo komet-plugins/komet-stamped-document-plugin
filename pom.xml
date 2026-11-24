@@ -126,6 +126,11 @@
             <groupId>dev.ikm.komet</groupId>
             <artifactId>actions</artifactId>
         </dependency>
+        <!-- The toast a removal from the knowledge base is reported with (IKE-Network/ike-issues#1313). -->
+        <dependency>
+            <groupId>dev.ikm.komet</groupId>
+            <artifactId>kview</artifactId>
+        </dependency>
         <dependency>
             <groupId>dev.ikm.komet</groupId>
             <artifactId>komet-markdown-richtext</artifactId>

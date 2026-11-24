@@ -107,10 +107,17 @@ final class DocumentNavigatorTray implements KlSidebarTray {
     private GitOperations.Branches branches;
     /** Set while the drop-down is filled, so that filling it is not taken for a choice. */
     private boolean fillingBranches;
+    /** The journal's view, which names the person signed in; null until the journal gives it. */
+    private dev.ikm.komet.framework.view.ObservableView view;
     /** Advanced at each selection; a detail read for an older one is dropped. */
     private int reading;
     /** Advanced at each reading of the branches; an older one is dropped. */
     private int readingBranches;
+
+    @Override
+    public void view(dev.ikm.komet.framework.view.ObservableView view) {
+        this.view = view;
+    }
 
     DocumentNavigatorTray(UUID journalTopic) {
         this.journalTopic = journalTopic;
@@ -123,7 +130,7 @@ final class DocumentNavigatorTray implements KlSidebarTray {
         title.getStyleClass().add("title-label");
         HBox titleRow = new HBox(title);
         titleRow.getStyleClass().add("title-row");
-        Label subtitle = new Label("Stamped documents in " + DocumentLibrary.shownRoot());
+        Label subtitle = new Label("IKE documents in " + DocumentLibrary.shownRoot());
         subtitle.getStyleClass().add("subtitle-label");
         subtitle.setWrapText(true);
         branch.setId("stampedDocumentNavigatorBranch");
@@ -164,7 +171,7 @@ final class DocumentNavigatorTray implements KlSidebarTray {
 
         Label emptyTitle = new Label("No documents yet");
         emptyTitle.getStyleClass().add("empty-title");
-        Label emptyText = new Label(DocumentLibrary.shownRoot() + " is one git repository for your stamped documents, "
+        Label emptyText = new Label(DocumentLibrary.shownRoot() + " is one git repository for your IKE documents, "
                 + "outside the synced tree. Create it here; nothing is committed until you add a document.");
         emptyText.getStyleClass().add("empty-text");
         emptyText.setWrapText(true);
@@ -196,6 +203,28 @@ final class DocumentNavigatorTray implements KlSidebarTray {
         // The tray takes kview's look from the journal window it sits in: kview's sheet is in
         // kview's module, where a class of this plugin cannot find it.
         shown();
+        // Once the journal around the tray is up, its cards can be made.
+        PauseTransition settle = new PauseTransition(Duration.seconds(1));
+        settle.setOnFinished(_ -> reopenUnsaved());
+        settle.play();
+    }
+
+    /** The documents a tray has reopened for their unsaved edits, so two journal windows do not both. */
+    private static final java.util.Set<dev.ikm.tinkar.common.id.PublicId> REOPENED = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    /**
+     * Opens a card in this journal for each document Komet kept when the knowledge base opened
+     * because it holds an edit its file does not, which a crash leaves (IKE-Network/ike-issues#1313):
+     * the card asks whether to save the edit or discard it. Each is opened once, by the first tray.
+     */
+    private void reopenUnsaved() {
+        for (dev.ikm.tinkar.common.id.PublicId anchor : DocumentScopes.keptUnsaved()) {
+            Optional<Path> folder = DocumentFiles.rootOf(anchor);
+            Optional<String> path = GitDocumentMaterializer.recordedPath(anchor);
+            if (folder.isPresent() && path.isPresent() && Files.isRegularFile(folder.get().resolve(path.get())) && REOPENED.add(anchor)) {
+                open(folder.get().resolve(path.get()));
+            }
+        }
     }
 
     @Override
@@ -605,12 +634,37 @@ final class DocumentNavigatorTray implements KlSidebarTray {
     /** A line of the tree: the name with a folder or file icon, the whole path as its tooltip. */
     private final class EntryCell extends TreeCell<Path> {
 
+        /** The row's menu: removing what the knowledge base holds of the folder or file. */
+        private final javafx.scene.control.ContextMenu menu = new javafx.scene.control.ContextMenu();
+
         EntryCell() {
             setOnMouseClicked(e -> {
                 if (e.getClickCount() == 2 && !isEmpty() && DocumentLibrary.isDocument(getItem())) {
                     open(getItem());
                 }
             });
+            javafx.scene.control.MenuItem remove = new javafx.scene.control.MenuItem(DocumentRemoval.TITLE);
+            remove.setId("stampedDocumentNavigatorRemove");
+            remove.setOnAction(e -> {
+                if (!isEmpty() && getItem() != null) {
+                    removeFromKnowledgeBase(getItem());
+                }
+            });
+            javafx.scene.control.MenuItem share = new javafx.scene.control.MenuItem(DocumentSharing.Gesture.SHARE.title);
+            share.setId("stampedDocumentNavigatorShare");
+            share.setOnAction(e -> {
+                if (!isEmpty() && getItem() != null) {
+                    sharing(getItem(), DocumentSharing.Gesture.SHARE);
+                }
+            });
+            javafx.scene.control.MenuItem local = new javafx.scene.control.MenuItem(DocumentSharing.Gesture.MAKE_LOCAL.title);
+            local.setId("stampedDocumentNavigatorMakeLocal");
+            local.setOnAction(e -> {
+                if (!isEmpty() && getItem() != null) {
+                    sharing(getItem(), DocumentSharing.Gesture.MAKE_LOCAL);
+                }
+            });
+            menu.getItems().addAll(share, local, remove);
         }
 
         @Override
@@ -626,6 +680,70 @@ final class DocumentNavigatorTray implements KlSidebarTray {
             setText(path.getFileName() == null ? path.toString() : path.getFileName().toString());
             setGraphic(Icons.of(Files.isDirectory(path) ? (top ? "mdi2s-source-repository" : "mdi2f-folder-outline") : "mdi2f-file-document-outline"));
             setTooltip(new Tooltip(path.toString()));
+            setContextMenu(Files.isDirectory(path) || DocumentLibrary.isDocument(path) ? menu : null);
         }
+    }
+
+    /**
+     * Removes what the knowledge base holds of a folder, every stored document under it at any
+     * depth, or of one file, in one step (IKE-Network/ike-issues#1313). It asks nothing: the files
+     * and their commits stay in git, and opening a file reads its document back in.
+     */
+    private void removeFromKnowledgeBase(Path path) {
+        String name = path.getFileName() == null ? path.toString() : path.getFileName().toString();
+        status.setText("Finding what the knowledge base holds of " + name + " …");
+        CompletableFuture.supplyAsync(() -> storedAt(path)).whenComplete((anchors, failure) -> Platform.runLater(() -> {
+            if (failure != null) {
+                status.setText("Could not read the knowledge base: " + message(failure));
+                return;
+            }
+            if (anchors.isEmpty()) {
+                flashStatus("The knowledge base holds no document of " + name + ".");
+                return;
+            }
+            status.setText("Removing " + (anchors.size() == 1 ? "1 document" : anchors.size() + " documents")
+                    + " from the knowledge base …");
+            DocumentRemoval.perform(root, anchors, result -> status.setText(result.completed() ? result.message()
+                    : "Not removed: " + result.message()));
+        }));
+    }
+
+    /**
+     * Shares the stored documents of a folder or a file, or makes the shared ones local, after asking
+     * (IKE-Network/ike-issues#1313, step 4 of {@code design-2026-11-22-knowledge-shared-local}).
+     */
+    private void sharing(Path path, DocumentSharing.Gesture gesture) {
+        String name = path.getFileName() == null ? path.toString() : path.getFileName().toString();
+        CompletableFuture.supplyAsync(() -> storedAt(path).stream().filter(gesture::offered).toList())
+                .whenComplete((anchors, failure) -> Platform.runLater(() -> {
+                    if (failure != null) {
+                        status.setText("Could not read the knowledge base: " + message(failure));
+                        return;
+                    }
+                    if (anchors.isEmpty()) {
+                        flashStatus(gesture == DocumentSharing.Gesture.SHARE ? "The knowledge base holds no document of " + name + " to share; open it first."
+                                : "No document of " + name + " is shared.");
+                        return;
+                    }
+                    DocumentSharing.perform(root, gesture, anchors, view == null ? dev.ikm.tinkar.coordinate.Coordinates.Edit.Default()
+                            : view.editCoordinate().toEditCoordinateRecord(), null);
+                }));
+    }
+
+    /**
+     * The stored documents of a folder, at any depth, or of one file, read under the identity each
+     * file materializes as in its working tree.
+     */
+    private static List<dev.ikm.tinkar.common.id.PublicId> storedAt(Path path) {
+        Optional<Path> repo = GitRepo.findRoot(path).map(found -> found.toAbsolutePath().normalize());
+        if (repo.isEmpty()) {
+            return List.of();
+        }
+        if (Files.isDirectory(path)) {
+            return DocumentScopes.storedUnder(repo.get(), path);
+        }
+        String relative = repo.get().relativize(path.toAbsolutePath().normalize()).toString().replace('\\', '/');
+        dev.ikm.tinkar.common.id.PublicId anchor = GitDocumentMaterializer.documentAnchor(repo.get(), relative);
+        return dev.ikm.tinkar.common.service.PrimitiveData.get().hasPublicId(anchor) ? List.of(anchor) : List.of();
     }
 }

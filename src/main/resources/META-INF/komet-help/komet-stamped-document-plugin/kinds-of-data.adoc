@@ -1,42 +1,91 @@
-= Kinds of data: knowledge, instance and ephemeral
+= Kinds of data: knowledge, shared and local
 
-A store holds three kinds of data side by side.
-The kind decides who shares the data, whether it can be deleted, and where its lasting record is.
-You do not choose the kind each time you write: it is fixed by the module of the STAMP the data is first written under.
+A knowledge base keeps more than knowledge.
+It also keeps conversations with the assistant, documents, and records of how the knowledge base changed.
+Each has one of three kinds, named by who else gets it: knowledge, shared or local.
+The kind tells you who sees the data and what removing it loses.
+You do not choose the kind each time you write: it follows from the module the data is first written under.
 
 == Knowledge
 
-Knowledge is the terminology: concepts, their descriptions, definitions and patterns.
-It is shared with everyone who uses the knowledge base, kept forever, and only ever added to; a change is a new version, never an erasure.
-Knowledge is written under every module that is not a kind of _Instance module_ or _Ephemeral module_.
+A reference book that a whole team keeps up to date is a good picture of knowledge.
+Everyone uses the same book, and a correction appears in a new edition instead of erasing the old entry.
 
-== Instance
+Knowledge is the content of the knowledge base itself.
+Concepts, their descriptions and definitions, and the patterns that give data its shape are knowledge.
+It is shared with everyone who syncs the knowledge base.
+A change is a new version, so nothing is removed.
+Knowledge that is no longer wanted is retired by making it inactive.
+Knowledge is written under every module that is not a kind of _Shared module_ or _Local module_.
 
-Instance data is about particular things, and the store is its only record.
-A conversation journal is instance data, and so is a document whose only copy is in the store.
-It is kept apart from knowledge: it is not shared through the knowledge change sets, and it can be deleted as a whole.
-Because nothing else holds a copy, deleting it loses it.
+== Shared
 
-== Ephemeral
+A team folder on a shared drive is a good picture of shared data.
+Everyone with access gets the folder, and the folder can be taken out as a whole.
 
-Ephemeral data is a copy of a record kept somewhere else.
-A document opened from git is ephemeral: the repository holds its lines, who wrote them, and the annotations signed into its commits.
-The knowledge base holds a copy so that Komet can show, search and connect it, and the copy can be dropped at any time and rebuilt from the repository with *More › Rebuild from Git*.
-Every document the STAMPed Document card opens from git is ephemeral data.
+Shared data is synced with the knowledge base, but it is kept apart from the knowledge, in change sets of its own.
+A shared document is one, with its lines and what people said of them.
+See xref:stamped-document.adoc[IKE Documents] for sharing one.
+
+Shared data syncs with the knowledge base's change sets, through the same remote and login, on a branch named `shared`.
+Everyone who syncs the knowledge base gets it, and a release of the knowledge base never contains it.
+There are two ways to take a shared document out of the folder.
+_Delete_ removes it for everyone who syncs the knowledge base.
+_Make Local_ removes it for everyone else and keeps it here as local data.
+Both leave a small marker in the folder, and only a marker removes a document elsewhere: if its files are merely missing, Komet says so and keeps it.
+Someone with a comment of their own that was never synced keeps a local copy.
+If the document is shared again, what that person said while their copy was local stays with them.
+
+== Local
+
+The notes on your own computer are a good picture of local data.
+They stay with you, and no one else gets them unless you send them.
+
+Local data never syncs with the knowledge base.
+A conversation with the assistant is local, and so is a document opened from a file.
+What removing it loses depends on whether the data is saved in a file.
+
+Local data that is not saved in a file, such as a conversation, has no other record.
+Removing it loses it, unless it was exported first.
+_Export…_ writes a conversation to one file, and *File › Import Dataset…* reads that file into another knowledge base.
+Before anything is read in, Komet checks that this knowledge base has the concepts, patterns and modules the file needs, and that the data would be local here too.
+If a check fails, nothing is read in and Komet says why.
+If the conversation is here already, Komet asks whether to replace it.
+
+A document opened from a file is local data saved in a file.
+A document opened from git is one: the repository contains its lines, who wrote them, and the annotations signed into its commits.
+The knowledge base keeps a copy while Komet is open, so that Komet can show the document, search it and connect it to concepts.
+When a knowledge base opens, Komet removes these copies, and opening the file reads it in again.
+When Komet quits, it saves every edited document to its file.
+A shared document is no copy: the knowledge base keeps it.
+The copy can also be removed at any time with *More › Remove from Knowledge Base*, or rebuilt with *More › Rebuild from Git*.
 
 == How the kinds stay apart
 
-Knowledge never refers to instance or ephemeral data.
-A commit that would make knowledge depend on a document or a journal is refused, so the terminology stays sharable and a document can be dropped without breaking it.
-Instance and ephemeral data may refer to knowledge, which is how a document names the concepts it is about.
+Data refers only to data that is shared at least as widely.
+Knowledge never refers to shared or local data, and shared data never refers to local data.
+A commit that would break this is refused, so the terminology stays sharable and a document can be removed without breaking anything.
+Local data may refer to shared data and to knowledge, which is how a document names the concepts it is about.
+A document saved in a file and a conversation do not refer to each other's data.
 
-Each document, with its lines and the annotations on them, is a _scope_: it is exported, deleted or rebuilt as one unit.
-Each kind is also written to its own change-set folder, so documents and journals never travel with the knowledge change sets.
+Each document, with its lines and the annotations on them, is a _scope_: it is exported, removed or rebuilt as one unit.
+Each kind is also written to its own change-set folder, so documents and conversations never travel with the knowledge change sets.
 
-== Ephemeral is not the same as memory-only
+== Seeing what a knowledge base has stored
 
-The kind of data says where its lasting record is.
+*View › Storage* lists every document and conversation in the knowledge base, by who else gets it.
+Each has its name, where it came from, its size, and what can be done with it: a document saved in a file can be shared or removed, a shared one made local or deleted, and a conversation exported or moved to the Trash.
+Under _Not shown anywhere else_ are those that no other list in Komet shows, such as the journal of a conversation whose file is gone.
+
+== Instance data is a separate question
+
+Data about one patient is _instance data_, as against class data, which is about kinds of things such as a disease or a drug.
+Whether data is about one patient is a separate question from who else gets it.
+
+== The kind is not the same as the store
+
+The kind of data says who else gets it.
 The store you open says whether the store itself is kept.
-An ephemeral document in a persistent store survives a restart, and can still be rebuilt from git.
+A document saved in a file is removed from the knowledge base when it next opens, whatever the store, and opening the file reads it in again.
 Any data in a memory-only store, of any kind, is gone when Komet quits.
 See xref:stores.adoc[Persistent and memory-only stores].

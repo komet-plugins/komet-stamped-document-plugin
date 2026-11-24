@@ -65,6 +65,11 @@ final class RepositoryPanel extends TitledPane {
         /** Whether the shown document carries an edit pending in Komet. */
         boolean pendingEdit();
 
+        /** Who gets the shown document, when that is not the usual: {@code shared}, or {@code only in this knowledge base}. */
+        default Optional<String> sharing() {
+            return Optional.empty();
+        }
+
         void newRepository();
 
         void cloneRepository();
@@ -170,8 +175,9 @@ final class RepositoryPanel extends TitledPane {
     }
 
     private void showTitle() {
-        setText(isExpanded() ? "Repository" : "Repository \u2014 " + summary);
-        setTooltip(isExpanded() ? null : new Tooltip(summary));
+        String shown = summary + host.sharing().map(who -> " \u00b7 " + who).orElse("");
+        setText(isExpanded() ? "Repository" : "Repository \u2014 " + shown);
+        setTooltip(isExpanded() ? null : new Tooltip(shown));
     }
 
     private static Label key(String text) {
@@ -196,7 +202,9 @@ final class RepositoryPanel extends TitledPane {
 
     private void showNone() {
         state = null;
-        root.setText("No working tree holds the document's file. Open file… names one, New… makes one, or Clone… brings one.");
+        root.setText(host.sharing().map(who -> "This document is " + (who.equals("shared") ? "shared, and its file is not on this computer"
+                        : "kept " + who + ", with no file") + ". You can read it and comment on it.")
+                .orElse("No working tree holds the document's file. Open file… names one, New… makes one, or Clone… brings one."));
         remotes.getChildren().setAll(new Label("—"));
         branch.setText("—");
         head.setText("—");
@@ -225,6 +233,11 @@ final class RepositoryPanel extends TitledPane {
         if (repo == null) {
             showNone();
             return;
+        }
+        if (design.knowledge.stamp.adoc.git.GitRepo.findRoot(repo).isEmpty()) {
+            showNone();
+            root.setText(repo + " is a folder without git. More › Start Git History makes it a repository.");
+            return;                                                // a document read as one version (IKE-Network/ike-issues#1313)
         }
         Path file = host.currentFile().orElse(null);
         boolean pending = host.pendingEdit();

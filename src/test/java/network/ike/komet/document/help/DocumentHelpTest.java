@@ -55,7 +55,7 @@ class DocumentHelpTest {
             assertFalse(entry.title().equals(entry.topicId()), "topic " + entry.topicId() + " has a title");
         }
         Set<String> ids = topicIds();
-        assertTrue(ids.contains(DocumentHelp.STAMPED_DOCUMENT.topicId()), "the STAMPed Document card's topic is in the contents");
+        assertTrue(ids.contains(DocumentHelp.STAMPED_DOCUMENT.topicId()), "the IKE Document card's topic is in the contents");
     }
 
     @Test
@@ -94,7 +94,7 @@ class DocumentHelpTest {
     @Test
     void theKindsOfDataTopicNamesEachKind() {
         String kinds = AsciiDocMarkdown.markdown(book.source("kinds-of-data").orElseThrow());
-        for (String kind : List.of("## Knowledge", "## Instance", "## Ephemeral")) {
+        for (String kind : List.of("## Knowledge", "## Shared", "## Local")) {
             assertTrue(kinds.contains(kind), kind);
         }
     }

@@ -109,6 +109,7 @@ public final class DocumentEditor {
      *                                  blocks, or the new text is empty
      */
     public static synchronized Edit editBlock(PublicId anchor, long block, String text, EditCoordinate edit) {
+        SharedDocuments.requireEditable(anchor);
         return editBlock(anchor, block, text, edit.getAuthorNidForChanges(), edit.getDefaultPathNid());
     }
 
@@ -130,6 +131,7 @@ public final class DocumentEditor {
      *                                  empty, or the recomposed lines would change the document's structure
      */
     public static synchronized Edit editSentence(PublicId anchor, long sentence, String text, EditCoordinate edit) {
+        SharedDocuments.requireEditable(anchor);
         GitDocumentMaterializer.StoredDocument document = GitDocumentMaterializer.load(anchor, true)
                 .orElseThrow(() -> new IllegalArgumentException("The store holds no document " + anchor.idString()));
         if (text == null || text.isBlank()) {
@@ -208,6 +210,7 @@ public final class DocumentEditor {
      *                                  kind is not a leaf kind, or the text does not form exactly one block of that kind
      */
     public static synchronized Edit addBlock(PublicId anchor, long after, Block.Kind kind, String text, EditCoordinate edit) {
+        SharedDocuments.requireEditable(anchor);
         return addBlock(anchor, after, kind, text, edit.getAuthorNidForChanges(), edit.getDefaultPathNid());
     }
 
@@ -390,6 +393,7 @@ public final class DocumentEditor {
      * @throws IllegalArgumentException when the block is not one of the document's, or holds child blocks
      */
     public static synchronized Edit deleteBlock(PublicId anchor, long block, EditCoordinate edit) {
+        SharedDocuments.requireEditable(anchor);
         return deleteBlock(anchor, block, edit.getAuthorNidForChanges(), edit.getDefaultPathNid());
     }
 
@@ -508,7 +512,7 @@ public final class DocumentEditor {
      * whose text AsciiDoc reads into child blocks and an edit holds as lines, so the two agree
      * whichever it stands as.
      */
-    private static List<Block> structural(Document parsed) {
+    static List<Block> structural(Document parsed) {
         Set<Block> inside = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
         for (Block block : parsed.blocks()) {
             if (structuredOpen(block.kind(), block.parameters())) {
@@ -518,11 +522,11 @@ public final class DocumentEditor {
         return parsed.blocks().stream().filter(b -> !inside.contains(b)).toList();
     }
 
-    private static boolean structuredOpen(Block.Kind kind, String parameters) {
+    static boolean structuredOpen(Block.Kind kind, String parameters) {
         return kind == Block.Kind.OPEN && StructuredBlocks.style(parameters).flatMap(StructuredBlocks::kindFor).isPresent();
     }
 
-    private static boolean sameKinds(List<Block> parsed, List<GitDocumentMaterializer.StoredBlock> stored) {
+    static boolean sameKinds(List<Block> parsed, List<GitDocumentMaterializer.StoredBlock> stored) {
         for (int i = 0; i < parsed.size(); i++) {
             if (parsed.get(i).kind() != stored.get(i).kind()) {
                 return false;

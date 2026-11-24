@@ -1119,7 +1119,9 @@ public final class DocumentSurfaceView {
         if (title.isEmpty() && document.root() != null) {
             title = document.root().title();
         }
-        headerTitle.setText(title.isEmpty() ? StampNames.name(host.view(), dev.ikm.tinkar.common.service.PrimitiveData.nid(document.anchor())) : title);
+        // a document just removed from the knowledge base is shown empty, under an anchor the store no longer has
+        headerTitle.setText(!title.isEmpty() ? title : dev.ikm.tinkar.common.service.PrimitiveData.get().hasPublicId(document.anchor())
+                ? StampNames.name(host.view(), dev.ikm.tinkar.common.service.PrimitiveData.nid(document.anchor())) : "");
         headerSection.setText("");
         buildSource(shown);
         long t2 = System.nanoTime();

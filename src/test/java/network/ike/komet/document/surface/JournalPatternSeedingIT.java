@@ -45,7 +45,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * A journal opens on a store that holds an assistant's conversation journal: the
  * pattern-definition seeding a journal runs projects knowledge patterns only, and leaves the
- * journal's own instance pattern alone, since knowledge never references instance data
+ * journal's own local pattern alone, since knowledge never references local data
  * (IKE-Network/ike-issues#1313). On the memory-only 64-bit store with the starter set.
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)

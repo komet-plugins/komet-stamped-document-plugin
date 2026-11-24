@@ -59,7 +59,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * A narration of a stamped document's commit, contained in the document's git repository
  * (IKE-Network/ike-issues#1355): rebuilding the document from git writes it as a Comment on the commit's
- * STAMP, by its annotator, under the document's ephemeral module, inside the document's scope; rebuilding
+ * STAMP, by its annotator, under the document's own file module, inside the document's scope; rebuilding
  * again adds nothing.
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
@@ -125,7 +125,7 @@ class NarrationIT {
         assertEquals(PublicIds.of(NARRATOR), version.stamp().author().publicId(), "by its annotator");
         assertEquals(Instant.parse("2026-11-08T18:00:00Z").toEpochMilli(), version.stamp().time(), "at its time");
         assertEquals(stamp.lastVersion().moduleNid(), version.stamp().moduleNid(), "under the document's module");
-        assertEquals(DataKind.EPHEMERAL, EntityBoundaries.kindOf(comment.nid()));
+        assertEquals(DataKind.FILE, EntityBoundaries.kindOf(comment.nid()));
 
         Scope scope = DocumentScopes.of(anchor);
         assertTrue(scope.members().contains(comment.nid()), "the narration goes with its document");

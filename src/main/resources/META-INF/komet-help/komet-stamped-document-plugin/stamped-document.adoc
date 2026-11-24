@@ -1,6 +1,6 @@
-= The STAMPed Document card
+= The IKE Document card
 
-The STAMPed Document card shows an AsciiDoc document that is kept in git, as the knowledge base holds it.
+The IKE Document card shows an AsciiDoc document that is kept in git, as the knowledge base holds it.
 Every line carries the STAMP of the commit that wrote it: who wrote it, when, and on which path.
 You can read the document, see where each line came from, review lines, and edit it.
 
@@ -22,12 +22,13 @@ When the card is wide, each control shows its name beside its icon. When it is n
 
 Find…:: Opens a bar under the Repository line for finding text; Command-F opens it from anywhere in the card. The text is found as you type it, whatever its case, from where you are reading: in the Reading view in the text of the blocks and in the captions of figures and tables, in the Source view in the lines as written. Return, or Command-G, goes to the next match and Shift-Return to the one before; a match under a fold opens the fold. Esc closes the bar. The Page layout and the Graph are not read.
 Find and Replace…:: Opens the find bar with a second row, as Option-Command-F does: the words to put in place of what is found, Replace and Replace All. Replace changes the match shown and goes to the next; Replace All changes every match, from the last to the first, and puts you back where you were reading. Each replacement is an edit of its block, as a mark is: the bar at the foot of the card counts the lines edited, Commit records them and Discard… takes them back. Words are replaced in paragraphs, list items and admonitions, and anywhere in the Source view; a match in a heading, a caption or a table cell is left as it stands, and the status line says how many were.
-Open file…:: Chooses a committed `.adoc` file and shows it, materializing it first if the knowledge base lacks it.
+Open file…:: Chooses an `.adoc` file and shows it, materializing it first if the knowledge base lacks it. A file in a folder without git is read as one version.
 Refresh:: Reads the list of documents and the shown document again.
 Export…:: Writes the document from the knowledge base back into a working tree at its recorded path, and compares it with HEAD.
 Print to PDF…:: Typesets the document, with the documents it includes, through your installed Typst.
 Materialize:: Writes the commits that the knowledge base lacks, of the shown file and of every file it includes.
-Rebuild from Git:: Drops the document from the knowledge base and materializes it again. Only ephemeral documents can be rebuilt; see xref:kinds-of-data.adoc[Kinds of data].
+Rebuild from Git:: Drops the document from the knowledge base and materializes it again. Only documents saved in a file can be rebuilt; see xref:kinds-of-data.adoc[Kinds of data].
+Start Git History:: For a document read from a folder without git: makes the folder a git repository, with the file as its first commit, and reads the document in again from git. Save or discard an edit first.
 Remove Superseded Documents:: Deletes older copies of documents that were materialized again in the current form.
 Show history:: Lists the STAMPs of the selected lines, or of the whole document, in order.
 Go to page…:: Scrolls the Page layout to a page.
@@ -47,6 +48,28 @@ A commit of an assistant's work should be committed by the person who directs th
 Where it is not, the card marks it: the word _committer_ beside the STAMPs in the Reading view, the Page layout and the Graph, and _!_ beside the line in the Source view.
 Point at the mark to see who committed it.
 _Show history_ lists the committer of each commit, and marks it in the same way.
+
+== Sharing
+
+*More › Share…* shares the document, and the documents it includes, with everyone who syncs this knowledge base.
+They get it when the knowledge base is next synced.
+Komet asks first, and names the documents.
+Do not share anything about a real patient.
+
+The file stays the document's record.
+You edit it and commit it as you do any document, in Komet or outside it, and the shared copy follows each commit.
+Someone without the file reads the document and can comment on it, but not edit its text.
+Their comment is written in the knowledge base, and reaches you at the next sync.
+An affirmation and a refutation are commits in the repository, so they need the file.
+
+*More › Make Local…* takes the document away from everyone else and keeps it here.
+*More › Delete Document…* deletes it for everyone who syncs this knowledge base.
+Your file stays where it is either way, and opening it reads it in again as a local document.
+A comment that another person made is in the shared copy and not in your file, so it goes with the shared copy: at once when you delete the document, and when you quit Komet if you make it local.
+Neither is done while an edit is not committed, or while another shared document includes this one.
+
+The same gestures are on a file or a folder in the Documents tray.
+A document is known by the name of its repository's folder and its path, so a different file of the same name cannot be opened while the shared one is here: Komet says so, and renaming the folder makes it another document.
 
 == Reviewing and editing
 
@@ -70,22 +93,28 @@ _Link_ opens the block's source in the Reading view with the address selected, f
 Marks are written in a paragraph, a list item or an admonition.
 
 To change the words themselves, right-click a block in the Reading view and choose _Edit block_.
-A mark or an edit is saved at once, and is pending until you commit it.
+A mark or an edit is kept in the knowledge base at once, and is pending until you commit it.
 
 == Committing your edits
 
 While an edit is pending, a bar shows at the bottom of the card, above the status line.
-It says how many lines are edited, for example _3 lines edited_.
+It says how many lines are edited, for example _3 lines edited_, and ends with _saved_ when the file holds the edit.
 When nothing is pending the bar is not there.
 
 Message:: A line that says what the edit is for, such as _Mark the dose bold_. You can leave it empty. The commit then names the document and lists what changed.
 Sign:: Signs the commit with your key, so that it can be shown to be yours. The card remembers your choice, and your annotations follow it.
+Save:: Writes the document with your edits into its file, without committing them. Komet also saves every edited document when it quits. Komet does not write over a file that changed after Komet read it: it says so, and you choose. For a file in a folder without git, Save is all there is: the bar has no Commit, and the lines you changed take the time of the save.
 Commit:: Writes the document with your edits into its folder and records them there as your own git commit. Pressing Enter in the message does the same. Nothing is pushed.
-Discard…:: Asks whether to discard the edited lines, and says how many there are. If you agree, the document reads as it was last committed.
+Discard…:: Asks whether to discard the edited lines, and says how many there are. If you agree, the document and its file read as they were last committed.
 Restore as pending:: Shows after you discard an edit, or after a commit leaves part of an edit out. It brings that edit back as a pending edit.
 
 When the edits are in more than one document, as with a document and one it includes, each _Commit_ records one document.
 The bar stays until every document is committed.
 
 If the document's file was also changed outside Komet, _Commit_ first asks about that file in a dialog, because you choose which changed file the commit holds.
+
+If Komet stops before it saves an edit, the next time the knowledge base opens Komet keeps that edit and opens the document.
+A dialog asks what to do with it.
+_Save_ writes it into the file, _Discard_ puts the document and its file back as last committed, and _Later_ leaves the edit pending and not saved.
+When the file changed after Komet read it, _Save_ is not offered, so that change is not written over.
 _Commit…_ in the Repository panel opens the same dialog.

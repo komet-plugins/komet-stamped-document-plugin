@@ -26,9 +26,10 @@ import javafx.scene.layout.Priority;
 import javafx.scene.layout.Region;
 
 /**
- * The bar at the bottom of a STAMPed Document card while an edit made in Komet is not yet
- * committed: how many lines are edited, a field for the commit's message, whether the commit is
- * signed, Commit, and Discard… at the far end. A mark over selected words is saved at once as an
+ * The bar at the bottom of an IKE Document card while an edit made in Komet is not yet
+ * committed: how many lines are edited and whether the file holds them, a field for the commit's
+ * message, whether the commit is signed, Save, Commit, and Discard… at the far end. Save writes the
+ * edit into the document's file without committing it (IKE-Network/ike-issues#1313). A mark over selected words is saved at once as an
  * uncommitted edit, so edits are pending often; the bar is where a person settles them, and it
  * is gone when nothing is pending, which leaves the card's toolbar to the document.
  *
@@ -51,6 +52,9 @@ final class PendingEditBar extends HBox {
          */
         void commitPending(String message, boolean sign);
 
+        /** Writes the pending edit into the document's file, without committing it. */
+        void savePending();
+
         /** Asks whether to discard the pending edit, and discards it on a yes. */
         void discardPending();
 
@@ -68,11 +72,14 @@ final class PendingEditBar extends HBox {
     private final Label summary = new Label();
     private final TextField message = new TextField();
     private final CheckBox sign = new CheckBox("Sign");
+    private final Button save = new Button("Save");
     private final Button commit = new Button("Commit");
     private final Button restore = new Button("Restore as pending");
     private final Button discard = new Button("Discard…");
     private final Region gap = new Region();
     private boolean showingSign;
+    /** Whether the document can be committed: not one read from a folder without git, which Save keeps. */
+    private boolean committable = true;
 
     /**
      * A bar for a card, hidden until {@link #show} finds an edit pending or one to restore.
@@ -101,6 +108,11 @@ final class PendingEditBar extends HBox {
                 host.setSignsCommits(is);
             }
         });
+        save.setId("stampedDocumentSave");
+        save.getStyleClass().add("stamped-pending-quiet");
+        save.setTooltip(new Tooltip("Write the document with your edits into its file, without committing them. Komet also saves every edited document when it quits."));
+        save.setMinWidth(Region.USE_PREF_SIZE);
+        save.setOnAction(e -> host.savePending());
         commit.setId("stampedDocumentCommit");
         commit.getStyleClass().add("stamped-pending-commit");
         commit.setTooltip(new Tooltip("Write the document with your edits into its folder and record them there as your own git commit"));
@@ -117,8 +129,8 @@ final class PendingEditBar extends HBox {
         discard.setMinWidth(Region.USE_PREF_SIZE);
         discard.setOnAction(e -> host.discardPending());
         gap.setMinWidth(4);
-        getChildren().addAll(summary, message, sign, commit, gap, restore, discard);
-        show(false, false, 0, 0);
+        getChildren().addAll(summary, message, sign, save, commit, gap, restore, discard);
+        show(false, false, 0, 0, false);
     }
 
     /**
@@ -128,12 +140,15 @@ final class PendingEditBar extends HBox {
      * @param restorable whether an edit that was discarded, or left out of a commit, can be restored
      * @param lines      the lines edited and not yet committed
      * @param documents  the documents the pending edits are in: the one opened and those it includes
+     * @param saved      whether the files hold every pending edit
      */
-    void show(boolean pending, boolean restorable, long lines, int documents) {
-        summary.setText(pending ? summary(lines, documents) : "An earlier edit can be restored");
-        for (Region control : new Region[] {message, sign, commit, discard}) {
-            control.setVisible(pending);
-            control.setManaged(pending);
+    void show(boolean pending, boolean restorable, long lines, int documents, boolean saved) {
+        summary.setText(pending ? summary(lines, documents) + (saved ? ", saved" : "") : "An earlier edit can be restored");
+        save.setDisable(saved);
+        for (Region control : new Region[] {message, sign, save, commit, discard}) {
+            boolean shows = pending && (committable || control == save || control == discard);
+            control.setVisible(shows);
+            control.setManaged(shows);
         }
         restore.setVisible(restorable);
         restore.setManaged(restorable);
@@ -164,6 +179,16 @@ final class PendingEditBar extends HBox {
         } finally {
             showingSign = false;
         }
+    }
+
+    /**
+     * Whether the shown document can be committed: a document read from a folder without git has
+     * no Commit, message or signing, and Save keeps its edit (IKE-Network/ike-issues#1313).
+     *
+     * @param can whether it can
+     */
+    void committable(boolean can) {
+        committable = can;
     }
 
     /** Empties the message, after its commit was made or another document was opened. */
@@ -212,7 +237,7 @@ final class PendingEditBar extends HBox {
      * @return the consequence
      */
     static String discardConsequence(int documents) {
-        return (documents > 1 ? "The documents" : "The document") + " will read as last committed. "
+        return (documents > 1 ? "The documents and their files" : "The document and its file") + " will read as last committed. "
                 + "Restore as pending brings the discarded edit back.";
     }
 

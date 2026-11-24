@@ -232,7 +232,7 @@ public final class GitDocumentMaterializer {
                     skipped++;
                     continue;                                    // already in the store
                 }
-                GitStampTerms.GitStamp stamp = GitStampTerms.GitStamp.of(adapter.coordinatesOf(event, component, branch));
+                GitStampTerms.GitStamp stamp = GitStampTerms.GitStamp.of(adapter.coordinatesOf(event, DocumentModules.component(component, path), branch));
                 GitStampVocabulary.seedIfAbsent(stamp, adapter.author(event.commit().author()));
                 List<Retirement> retirements = new ArrayList<>();
                 List<Narration> narrated = new ArrayList<>();
@@ -918,7 +918,17 @@ public final class GitDocumentMaterializer {
     }
 
     static Optional<String> topicId(GitRepo repo, Path relative) throws IOException {
-        for (String line : repo.headLines(relative).subList(0, Math.min(40, repo.headLines(relative).size()))) {
+        return topicIdOf(repo.headLines(relative));
+    }
+
+    /**
+     * The {@code :topic-id:} among a text's first forty lines.
+     *
+     * @param lines the text
+     * @return the topic id, or empty when none is there
+     */
+    static Optional<String> topicIdOf(List<String> lines) {
+        for (String line : lines.subList(0, Math.min(40, lines.size()))) {
             Matcher m = TOPIC_ID.matcher(line);
             if (m.matches()) {
                 return Optional.of(m.group(1));
@@ -1417,7 +1427,8 @@ public final class GitDocumentMaterializer {
                 boolean vertex = anchor instanceof SemanticEntity<?>;
                 String name = vertex ? StampNames.name(view, ((SemanticEntity<?>) anchor).patternNid()) : StampNames.name(view, anchorNid);
                 all.add(new Listed(name, path, anchor.publicId(), vertex,
-                        vertex ? null : supersededBy(anchor.publicId(), StampNames.name(view, latest.stamp().moduleNid()), path)));
+                        vertex ? null : supersededBy(anchor.publicId(),
+                                DocumentModules.workingTree(StampNames.name(view, latest.stamp().moduleNid()), path), path)));
             });
         });
         return all;
@@ -1425,8 +1436,8 @@ public final class GitDocumentMaterializer {
 
     /**
      * The root vertex a prose-element document's file materializes as: both identities are UUID5s
-     * of the working tree's name and the path, and the working tree's name is its git STAMP's
-     * module. {@code null} when the prose anchor is not the one that name and path give.
+     * of the working tree's name and the path, and the working tree's name is read from its git
+     * STAMP's module ({@link DocumentModules#workingTree}). {@code null} when the prose anchor is not the one that name and path give.
      */
     private static PublicId supersededBy(PublicId proseAnchor, String component, String path) {
         if (component == null || component.isBlank()) {
@@ -1606,11 +1617,12 @@ public final class GitDocumentMaterializer {
      *
      * @param anchor the document's anchor
      * @param sha    the commit's SHA
-     * @return the STAMP, or empty when no version of the document's source names the commit
+     * @return the STAMP, or empty when no version of the document's source names the commit, or the
+     *         document is no longer in the knowledge base
      */
     public static Optional<StampEntity<?>> commitStamp(PublicId anchor, String sha) {
-        if (sha.isEmpty()) {
-            return Optional.empty();
+        if (sha.isEmpty() || !PrimitiveData.get().hasPublicId(anchor)) {
+            return Optional.empty();                                   // a removed document has no commits here
         }
         for (SemanticEntity<SemanticEntityVersion> source : EntityService.get()
                 .semanticsForComponentOfPattern(PrimitiveData.nid(anchor), IkePattern.GIT_SOURCE_PATTERN.nid()).toList()) {

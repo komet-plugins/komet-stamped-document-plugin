@@ -195,12 +195,12 @@ class VertexReaderIT {
     }
 
     /**
-     * An ephemeral document is rebuilt from git under the same public ids, reading as before, its
-     * annotations back from the trailers; a conversation journal, instance data with no other
+     * A document saved in a file is rebuilt from git under the same public ids, reading as before, its
+     * annotations back from the trailers; a conversation journal, local data with no other
      * record, is refused.
      */
     @Test
-    void anEphemeralDocumentIsRebuiltFromGitAndAJournalIsNot() throws Exception {
+    void aDocumentSavedInAFileIsRebuiltFromGitAndAJournalIsNot() throws Exception {
         Path dir = Files.createDirectories(root.resolve("rebuild"));
         git(dir, "init", "-q", "-b", "main");
         Path file = dir.resolve("rebuild.adoc");
@@ -225,7 +225,7 @@ class VertexReaderIT {
                 .appendExchange(null, "A journal", "a question", "an answer");
         IllegalStateException refused = org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
                 () -> DocumentScopes.dropForRebuild(journal));
-        assertTrue(refused.getMessage().contains("instance"), refused.getMessage());
+        assertTrue(refused.getMessage().contains("not saved in a file"), refused.getMessage());
         assertTrue(dev.ikm.tinkar.common.service.PrimitiveData.get().hasPublicId(journal), "a refused rebuild drops nothing");
     }
 

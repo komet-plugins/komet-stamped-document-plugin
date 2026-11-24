@@ -27,6 +27,7 @@ import dev.ikm.komet.preferences.KometPreferencesImpl;
 import dev.ikm.tinkar.common.id.PublicId;
 import dev.ikm.tinkar.common.service.PrimitiveData;
 import dev.ikm.tinkar.coordinate.Coordinates;
+import dev.ikm.tinkar.coordinate.edit.EditCoordinateRecord;
 import dev.ikm.tinkar.entity.boundary.EntityBoundaries;
 import dev.ikm.tinkar.entity.boundary.ModuleKinds;
 import dev.ikm.tinkar.entity.load.LoadEntitiesFromProtobufFile;
@@ -318,6 +319,46 @@ class AnnotationCardIT {
             return null;
         });
         assertEquals("The commit that recorded the annotation is not in the history of missing; pull it, then retract.", onFx(() -> status(card)));
+    }
+
+    /**
+     * A shared document whose file is not on this computer: a retraction is a commit in its repository, so the
+     * card says so and asks for no folder. Where the file is, a comment made where it was not has no commit.
+     */
+    @Test
+    void whatHasNoCommitHereIsNotRetracted() throws Exception {
+        Path dir = repository("shared");
+        StampedDocumentCard card = open(dir);
+        comment(card, 4, "A comment in the repository.");
+        PublicId anchor = onFx(() -> card.shown().orElseThrow().anchor());
+        EditCoordinateRecord edit = Coordinates.Edit.Default();
+        SharedDocuments.share(List.of(anchor), edit, root.resolve("shared-folder"));
+        Path away = root.resolve("shared-away");
+        Files.move(dir, away);                                      // as on a computer that does not have the file
+
+        assertEquals("Retraction is a commit in the document's repository, which is not on this computer.", retractionRefused(card, 4));
+        SharedDocuments.comment(anchor, List.of(onFx(() -> line(card, 6).nid())), "A comment in the knowledge base.", edit);
+
+        Files.move(away, dir);
+        StampedDocumentCard there = card();
+        onFx(() -> {
+            there.open(dir.resolve("shared.adoc"));
+            return null;
+        });
+        await("the document is shown with both comments", () -> there.shown().isPresent() && status(there).startsWith("Materialized ")
+                && line(there, 4).inForce().size() == 1 && line(there, 6).inForce().size() == 1);
+        assertEquals("The comment was written in the knowledge base, where the file was not, so there is no commit of it to retract.",
+                retractionRefused(there, 6));
+        press(retract(there, 4), "Cancel");                          // and the one that is a commit still can be
+    }
+
+    /** Retract… on a line, where it opens no dialog: what the card says instead. */
+    private String retractionRefused(StampedDocumentCard card, int line) throws Exception {
+        return onFx(() -> {
+            card.selectLines(line, line);
+            card.annotate(AnnotationKind.RETRACTION);
+            return status(card);
+        });
     }
 
     /** Git dates a commit to the second: an affirmation, a comment and a commit to the file in one second have one STAMP, and each has its commit. */

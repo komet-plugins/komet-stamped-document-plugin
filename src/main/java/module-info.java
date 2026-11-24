@@ -26,6 +26,8 @@ module komet.stamped.document {
     requires dev.ikm.komet.framework;
     requires dev.ikm.komet.preferences;
     requires dev.ikm.komet.actions;
+    // The toast a removal from the knowledge base is reported with (IKE-Network/ike-issues#1313).
+    requires dev.ikm.komet.kview;
     requires dev.ikm.komet.markdown.richtext;
     requires dev.ikm.komet.terms;
     requires dev.ikm.tinkar.entity;
@@ -66,7 +68,14 @@ module komet.stamped.document {
             with network.ike.komet.document.EditDocumentBlock,
                  network.ike.komet.document.EditDocumentSentence,
                  network.ike.komet.document.AddDocumentBlock,
-                 network.ike.komet.document.DeleteDocumentBlock;
+                 network.ike.komet.document.DeleteDocumentBlock,
+                 network.ike.komet.document.RemoveFromKnowledgeBase,
+                 network.ike.komet.document.ShareDocument,
+                 network.ike.komet.document.MakeDocumentLocal,
+                 network.ike.komet.document.DeleteDocument;
+    // The documents the Storage window lists (IKE-Network/ike-issues#1313).
+    provides dev.ikm.komet.layout.storage.KlStorageProvider
+            with network.ike.komet.document.DocumentStorage;
     // The Documents tray of the sidebar.
     provides dev.ikm.komet.layout.tray.KlSidebarTrayProvider
             with network.ike.komet.document.DocumentNavigatorTrayProvider;
@@ -77,6 +86,10 @@ module komet.stamped.document {
     provides dev.ikm.komet.layout.help.KlHelpViewer.Factory
             with network.ike.komet.document.help.AsciiDocHelpViewerFactory;
     // Saved layouts that name a class by its komet-claude-plugin package still restore.
+    // Documents saved in files are dropped from the knowledge base as it opens, and saved to their
+    // files as Komet quits (IKE-Network/ike-issues#1313).
+    provides dev.ikm.tinkar.common.service.ServiceLifecycle
+            with network.ike.komet.document.DocumentFilesLifecycle;
     provides dev.ikm.tinkar.common.service.RenamedClasses
             with network.ike.komet.document.DocumentRenames;
 

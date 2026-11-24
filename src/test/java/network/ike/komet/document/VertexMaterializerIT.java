@@ -113,7 +113,7 @@ class VertexMaterializerIT {
         SemanticEntity<?> rootEntity = EntityHandle.get(result.anchor()).expectSemantic();
         PatternEntityVersion pattern = (PatternEntityVersion) EntityHandle.get(rootEntity.patternNid()).expectPattern().versions().getFirst();
         assertEquals(IkeConcept.DOCUMENT_VERTEX.nid(), pattern.semanticMeaningNid(), "the document's pattern means Document vertex");
-        assertEquals(DataKind.EPHEMERAL, EntityBoundaries.birthKind(rootEntity.patternNid()), "a document in git is ephemeral");
+        assertEquals(DataKind.FILE, EntityBoundaries.birthKind(rootEntity.patternNid()), "a document in git is file data");
         assertEquals(rootEntity.patternNid(), rootEntity.referencedComponentNid(), "the root references the document's pattern");
 
         // The root: its meaning, title, topic id and members.
@@ -156,12 +156,13 @@ class VertexMaterializerIT {
     }
 
     /**
-     * A working tree's module seeded before its store held Ephemeral module, as in every store
-     * materialized before 2026-10-21, is stated a kind of it the next time a commit under it is
-     * written, so what was written under it becomes ephemeral and its documents become scopes.
+     * A working tree's module seeded before its store held the File module (Ephemeral module until
+     * 2026-11-22), as in every store materialized before 2026-10-21, is stated a kind of it the next
+     * time a commit under it is written, so what was written under it becomes file data and its
+     * documents become scopes.
      */
     @Test
-    void anOldModuleIsStatedEphemeralWhenNextWrittenUnder() {
+    void anOldModuleIsStatedAFileModuleWhenNextWrittenUnder() {
         dev.ikm.tinkar.terms.EntityProxy.Concept module = dev.ikm.tinkar.terms.EntityProxy.Concept.make("old-clone",
                 java.util.UUID.randomUUID());
         try (dev.ikm.tinkar.entity.transaction.StampedWriter writer = dev.ikm.tinkar.entity.transaction.StampedWriter.open("old module",
@@ -177,7 +178,7 @@ class VertexMaterializerIT {
         GitStampTerms.GitStamp stamp = new GitStampTerms.GitStamp(module, State.ACTIVE, System.currentTimeMillis(),
                 dev.ikm.tinkar.terms.KernelConcept.USER, module, dev.ikm.tinkar.terms.KernelConcept.DEVELOPMENT_PATH);
         GitStampVocabulary.seedIfAbsent(stamp);
-        assertEquals(DataKind.EPHEMERAL, ModuleKinds.resolve(module.nid()).kind(), "stated a kind of Ephemeral module");
+        assertEquals(DataKind.FILE, ModuleKinds.resolve(module.nid()).kind(), "stated a kind of File module");
         long axioms = EntityService.get().semanticsForComponentOfPattern(module.nid(),
                 dev.ikm.tinkar.terms.KernelPattern.EL_PLUS_PLUS_STATED_AXIOMS_PATTERN.nid()).count();
         GitStampVocabulary.seedIfAbsent(stamp);

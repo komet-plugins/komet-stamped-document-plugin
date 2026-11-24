@@ -157,13 +157,19 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
     /** The folder the last PDF went to, where the next save dialog opens. */
     private static File lastPdfFolder;
 
-    static final String CARD_NAME = "STAMPed Document";
+    static final String CARD_NAME = "IKE Document";
 
     /** By document: the commit its repository stood at when this card last read it into the knowledge base. */
     private static final String PREF_READ_AT = "network.ike.komet.document.readAt.";
     private static final String PREF_DOCUMENT = "network.ike.komet.document.document";
     /** The working tree a document was last opened from, committed or exported into. */
     private static final String PREF_WORKING_TREE = "network.ike.komet.document.workingTree";
+    /**
+     * The file of the document last read in, by its path in the working tree: a card built again
+     * after a restart reads it in again, since the knowledge base drops the copies of documents
+     * saved in files as it opens (IKE-Network/ike-issues#1313).
+     */
+    private static final String PREF_FILE = "network.ike.komet.document.file";
     private static final String PREF_VIEW = "network.ike.komet.document.view";
     /** How large the card draws its document, as a zoom: 1 is the document's own size. */
     private static final String PREF_ZOOM = "network.ike.komet.document.zoom";
@@ -350,6 +356,11 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
         @Override
         public void commitPending(String message, boolean sign) {
             commitFromBar(message, sign);
+        }
+
+        @Override
+        public void savePending() {
+            StampedDocumentCard.this.savePending();
         }
 
         @Override
@@ -752,18 +763,25 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
                 item("Show in Navigator", "stampedDocumentShowInNavigator", "Select the document's file in the journal's Documents tray", this::showInNavigator),
                 item("Show in Finder", "stampedDocumentShowInFinder", "Show the document's file in the Finder", this::showInFinder),
                 new SeparatorMenuItem(),
-                item("Open file…", "stampedDocumentOpenFile", "Choose an .adoc file; it is materialized if the store lacks it, and one with no commit yet is offered a repository and a first commit", this::chooseFile),
+                item("Open file…", "stampedDocumentOpenFile", "Choose an .adoc file; it is materialized if the store lacks it, one in a folder without git is read as one version, and one with no commit yet in a repository is offered a first commit", this::chooseFile),
                 item("Refresh", "stampedDocumentRefresh", "Re-read the documents the store holds, and the one shown", this::refresh),
                 item("Export…", "stampedDocumentExport", "Write the document from the store back into a repository's working tree at its recorded path, and compare it with HEAD", this::chooseExportTarget),
                 item("Print to PDF…", "stampedDocumentPrintPdf", "Save the document, with the documents it includes, as a PDF where you choose, compiled by your installed typst, and open it", this::chooseAndPrint),
                 new SeparatorMenuItem(),
                 item("Materialize", "stampedDocumentMaterialize", "Write the commits the knowledge base lacks of this file and of every file it includes, each as its own document", this::materialize),
-                item("Rebuild from Git", "stampedDocumentRebuild", "Drop this document from the knowledge base and materialize it again from git, which holds all an ephemeral document is", this::rebuildFromGit),
+                item("Rebuild from Git", "stampedDocumentRebuild", "Remove this document from the knowledge base and read it in again from git, which contains everything the document has", this::rebuildFromGit),
+                item("Start Git History", "stampedDocumentStartGit", "Make the folder of a document read from a folder without git a repository, with the file as its first commit, and read the document in again from git", this::startGitHistory),
+                sharingItem(DocumentSharing.Gesture.SHARE, "stampedDocumentShare"),
+                sharingItem(DocumentSharing.Gesture.MAKE_LOCAL, "stampedDocumentMakeLocal"),
+                sharingItem(DocumentSharing.Gesture.DELETE, "stampedDocumentDelete"),
+                item(DocumentRemoval.TITLE, "stampedDocumentRemove", "Remove this document, with its annotations, from the knowledge base. Its file and commits stay in git, and opening the file reads it back in", this::removeFromKnowledgeBase),
                 item("Remove Superseded Documents", "stampedDocumentRemoveSuperseded", "Delete the prose-element documents that vertex documents of the same working tree and path replace", this::removeSuperseded),
                 new SeparatorMenuItem(),
                 item("Show history", "stampedDocumentHistory", "The STAMPs of the selected lines, or of the whole document, in order", this::showHistory),
                 new SeparatorMenuItem(),
                 item("Go to page…", "stampedDocumentGoToPage", "Scroll the Page layout to a page by its number", this::goToPage));
+        // What sharing offers follows what the shown document is.
+        overflow.setOnShowing(e -> sharingItems.forEach((gesture, item) -> item.setVisible(shown != null && gesture.offered(shown.anchor()))));
         attributesMenu.setId("stampedDocumentAttributes");
         overflow.getItems().addAll(new SeparatorMenuItem(), attributesMenu);
         fillAttributesMenu();
@@ -1400,7 +1418,7 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
             Platform.runLater(() -> open(file));                   // it may ask for a repository, and a dialog cannot wait in a layout pass
             return;
         }
-        refresh();
+        refresh(true);
     }
 
     // ── the Host ──────────────────────────────────────────────────────────────
@@ -1465,6 +1483,9 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
         }
         String commit = member.document().commit();
         String file = member.path().isEmpty() ? documents.getValue() : member.path();
+        if (file == null) {
+            return;                                                // no document chosen: the card was emptied
+        }
         // The file's name alone: its whole path is in the Repository title, and here it squeezed the line into a thin column.
         String name = Path.of(file).getFileName().toString();
         String shortSha = commit.substring(0, Math.min(7, commit.length()));
@@ -1495,7 +1516,17 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
 
     /** Re-reads the store's document list and reopens the chosen document. */
     public void refresh() {
+        refresh(false);
+    }
+
+    /**
+     * Re-reads the store's document list and reopens the chosen document; as the card is built,
+     * a document the store no longer holds is read in again from the file the card last read it
+     * from, as after a restart, when the knowledge base has dropped the copies of documents saved in files.
+     */
+    private void refresh(boolean fromFile) {
         String wanted = documents.getValue() != null ? documents.getValue() : preferences().get(PREF_DOCUMENT, "");
+        String lastFile = preferences().get(PREF_FILE, "");
         CompletableFuture.supplyAsync(GitDocumentMaterializer::storedDocuments).whenComplete((found, failure) -> Platform.runLater(() -> {
             if (failure != null) {
                 statusLine.setText("Could not list the store's documents: " + failure.getMessage());
@@ -1504,7 +1535,10 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
             }
             anchors = found;
             documents.getItems().setAll(found.keySet());
-            if (found.isEmpty()) {
+            if (fromFile && !found.containsKey(wanted) && reading == null && repoRoot != null && !lastFile.isEmpty()
+                    && Files.isRegularFile(repoRoot.resolve(lastFile))) {
+                open(repoRoot.resolve(lastFile));
+            } else if (found.isEmpty()) {
                 shown = null;
                 statusLine.setText("The knowledge base holds no materialized documents yet. Open file… materializes one.");
             } else if (found.containsKey(wanted)) {
@@ -1605,9 +1639,10 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
      * @param pending          whether an edit of it is pending in Komet
      * @param restorable       whether an edit of it that was discarded, or left out of a commit, can be restored
      * @param summaries        the commit subjects and committers of its STAMPs
+     * @param saved            whether an edit is pending and its file holds it
      */
     private record Loaded(StoredDocument document, Map<Long, Integer> committedNumbers, List<String> committedLines, String path,
-                          boolean pending, boolean restorable, CommitSummaries summaries) {
+                          boolean pending, boolean restorable, CommitSummaries summaries, boolean saved) {
 
         /**
          * Reads one document as of a time; off the FX thread. The committed text is read again only
@@ -1629,7 +1664,19 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
             boolean rootHoldsFile = root != null && relative != null && Files.isRegularFile(root.resolve(relative));
             return Optional.of(new Loaded(loaded.get(), numbers, committed.lines().stream().map(StoredLine::text).toList(), path,
                     pending, host && asOf == Long.MAX_VALUE && !DocumentEditor.restorable(anchor).isEmpty(),
-                    CommitSummaries.read(anchor, rootHoldsFile ? root : null, relative)));
+                    CommitSummaries.read(anchor, rootHoldsFile ? root : null, relative),
+                    pending && relative != null && holds(rootHoldsFile ? Optional.of(root) : DocumentFiles.rootOf(anchor), relative,
+                            loaded.get().lines().stream().map(StoredLine::text).toList())));
+        }
+
+        /** Whether the file at a path of a folder holds these lines; off the FX thread. */
+        private static boolean holds(Optional<Path> root, Path relative, List<String> lines) {
+            try {
+                return root.isPresent() && Files.isRegularFile(root.get().resolve(relative))
+                        && Files.readAllLines(root.get().resolve(relative)).equals(lines);
+            } catch (IOException unreadable) {
+                return false;
+            }
         }
     }
 
@@ -1667,7 +1714,7 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
             // the document did not exist yet at that time: nothing is shown as it stood then, rather than what it is now
             StoredDocument nothing = StoredDocument.nothing(anchor);
             DocumentAssembly empty = DocumentAssembly.single(nothing, "");
-            Loaded before = new Loaded(nothing, Map.of(), List.of(), null, false, false, CommitSummaries.NONE);
+            Loaded before = new Loaded(nothing, Map.of(), List.of(), null, false, false, CommitSummaries.NONE, false);
             return new Opened(before, Map.of(empty.host().path(), before), empty, asOf);
         }
         Map<String, Loaded> loaded = new LinkedHashMap<>();
@@ -1780,9 +1827,14 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
         List<String> set = attributesSet(anchor);
         long started = System.nanoTime();
         long[] readAt = new long[1];
+        EditCoordinateRecord edit = editCoordinate();
+        java.util.concurrent.atomic.AtomicReference<String> saved = new java.util.concurrent.atomic.AtomicReference<>("");
         CompletableFuture.supplyAsync(() -> {
             home.set(home(anchor, known).orElse(null));
             Path tree = home.get() != null ? home.get() : known;
+            if (changed == null && asOf == Long.MAX_VALUE) {
+                saved.set(readSavedChanges(anchor, tree, edit));
+            }
             Opened read = read(anchor, tree, asOf, set, java.util.Objects.equals(tree, known) ? asRead : Map.of(), host);
             readAt[0] = System.nanoTime();
             return read;
@@ -1803,14 +1855,41 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
             show(loaded);
             LOG.info("Read {} file(s) in {} ms, waited {} ms for the application thread, drew them in {} ms",
                     loaded.members().size(), (readAt[0] - started) / 1_000_000, (showing - readAt[0]) / 1_000_000, (System.nanoTime() - showing) / 1_000_000);
-            if (report != null) {
-                statusLine.setText(report);
+            if (report != null || !saved.get().isEmpty()) {
+                statusLine.setText(report == null ? saved.get() : saved.get().isEmpty() ? report : report + " " + saved.get());
             }
             if (afterShow != null) {
                 afterShow.run();
             }
             DocumentNavigatorTray.readAgain(fxObject());               // what its detail says of the store may have changed
         }));
+    }
+
+    /**
+     * Reads a stored document's file as it is, when the file changed after Komet last read or wrote
+     * it, as when the knowledge base kept the document's copy or the file was saved by another
+     * editor (IKE-Network/ike-issues#1313): the difference from the last commit becomes a pending
+     * edit, as opening the file makes it. Off the FX thread.
+     *
+     * @return what reading said, or empty
+     */
+    private static String readSavedChanges(PublicId anchor, Path tree, EditCoordinateRecord edit) {
+        try {
+            Optional<String> path = GitDocumentMaterializer.recordedPath(anchor);
+            if (tree == null || path.isEmpty() || !Files.isRegularFile(tree.resolve(path.get()))
+                    || !DocumentFiles.hasRecordInFile(anchor)
+                    || !DocumentFiles.changedSinceRead(anchor, tree, path.get())) {
+                return "";
+            }
+            String commit = GitDocumentExporter.export(anchor, false).map(GitDocumentExporter.Exported::commit).orElse("");
+            if (VertexMaterializer.textRevision(commit)) {
+                return "";                                         // a file without git is read again by opening it
+            }
+            return WorkingTreeEdit.readFile(anchor, tree, path.get(), edit).report(path.get());
+        } catch (RuntimeException failed) {
+            LOG.info("Could not compare {} with its file: {}", anchor.idString(), failed.getMessage());
+            return "";
+        }
     }
 
     /**
@@ -1892,7 +1971,10 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
         if (pendingEdit) {
             pendingBar.showSigned(signsAnnotations());
         }
-        pendingBar.show(pendingEdit, loaded.restorable(), edited, editedDocuments);
+        pendingBar.committable(!VertexMaterializer.textRevision(shown.commit()));
+        pendingBar.show(pendingEdit, loaded.restorable(), edited, editedDocuments,
+                members.values().stream().filter(Loaded::pending).allMatch(Loaded::saved));
+        askAboutUnsaved();
         int children = assembly.children().size();
         List<DocumentAssembly.Include> unresolved = assembly.unresolved();
         int blocks = shown.root() == null ? -1 : assembly.byPath().values().stream().mapToInt(m -> m.document().blocks().size()).sum();
@@ -2699,7 +2781,7 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
     public void open(Path file) {
         Optional<Path> root = GitRepo.findRoot(file);
         if (root.isEmpty()) {
-            offerRepository(file);
+            openVersion(file);
             return;
         }
         Path relative = root.get().relativize(file.toAbsolutePath().normalize());
@@ -2737,6 +2819,86 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
             statusLine.setText("Cannot read " + relative + " at HEAD: " + e.getMessage());
             return -1;
         }
+    }
+
+    /**
+     * Opens a file in a folder without git as one version (IKE-Network/ike-issues#1313; the second
+     * question before step 2 of {@code design-2026-11-22-knowledge-shared-local}, settled by KEC on
+     * 2026-11-22): every line has one STAMP, the time the file was last changed and the person Komet
+     * opens as. History, narration and Commit need git, so the card offers Save, and More, Start Git
+     * History makes the folder a repository.
+     */
+    private void openVersion(Path file) {
+        Path folder = file.toAbsolutePath().normalize().getParent();
+        Path relative = Path.of(String.valueOf(file.getFileName()));
+        repoRoot = folder;
+        preferences().put(PREF_WORKING_TREE, folder.toString());
+        syncPreferences();
+        repositoryPanel.refresh();
+        statusLine.setText("Reading " + relative + " …");
+        dev.ikm.tinkar.terms.ConceptFacade author = dev.ikm.tinkar.terms.EntityProxy.Concept.make(editCoordinate().getAuthorNidForChanges());
+        CompletableFuture.supplyAsync(() -> {
+            try {
+                GitDocumentMaterializer.Result result = VertexMaterializer.materializeVersion(folder, relative, author);
+                if (DocumentEditor.pending(result.anchor()).isEmpty()) {
+                    DocumentFiles.remember(result.anchor(), folder, relative.toString(), Files.readAllLines(file));
+                }
+                return new Materialized(result.name(), result.anchor(), "Read " + relative + " from a folder without git, as one version"
+                        + (result.commits() == 0 ? "" : ": " + result.lines() + " line(s)")
+                        + ". History and Commit need git; More › Start Git History makes the folder a repository.");
+            } catch (IOException e) {
+                throw new UncheckedIOException(e);
+            }
+        }).whenComplete((materialized, failure) -> Platform.runLater(() -> showMaterialized(relative, materialized, failure)));
+    }
+
+    /**
+     * Makes the shown document's folder a git repository, with its file as the first commit, and
+     * reads the document in again from git, under the same identity (IKE-Network/ike-issues#1313).
+     * Offered for a document read from a folder without git; refused while an edit is pending, which
+     * Save or Discard settles first.
+     */
+    private void startGitHistory() {
+        if (shown == null) {
+            statusLine.setText("Choose a document first.");
+            return;
+        }
+        PublicId anchor = shown.anchor();
+        if (!VertexMaterializer.textRevision(shown.commit())) {
+            statusLine.setText("The document is already read from git.");
+            return;
+        }
+        if (DocumentEditor.pending(anchor).isPresent()) {
+            statusLine.setText("Save or discard the edit first: the first commit records the file as it is.");
+            return;
+        }
+        Optional<Path> folder = DocumentFiles.rootOf(anchor);
+        Optional<String> path = GitDocumentMaterializer.recordedPath(anchor);
+        if (folder.isEmpty() || path.isEmpty()) {
+            statusLine.setText("Komet cannot tell where the document's file is.");
+            return;
+        }
+        Path file = folder.get().resolve(path.get());
+        statusLine.setText("Making " + folder.get() + " a repository …");
+        CompletableFuture.supplyAsync(() -> uncheck(() -> {
+            DocumentRepository.Placed placed = DocumentRepository.place(file, folder.get());
+            if (placed.ok()) {
+                DocumentScopes.dropForRebuild(anchor);               // its lines are named from git from now on
+            }
+            return placed;
+        })).whenComplete((placed, failure) -> Platform.runLater(() -> {
+            if (failure != null) {
+                Throwable cause = failure.getCause() != null ? failure.getCause() : failure;
+                statusLine.setText("Could not start git history: " + cause.getMessage());
+                return;
+            }
+            if (!placed.ok()) {
+                statusLine.setText(placed.report().replace('\n', ' '));
+                return;
+            }
+            repositoryReport = placed.report();
+            open(placed.file());
+        }));
     }
 
     /** Asks where a file in no repository should live, with its own folder offered, and places it there. */
@@ -2902,15 +3064,18 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
             return;
         }
         statusLine.setText("Materializing " + relative + " into the knowledge base …");
+        EditCoordinateRecord edit = editCoordinate();
         CompletableFuture.supplyAsync(() -> {
             try {
                 GitDocumentMaterializer.Result result = GitDocumentMaterializer.materialize(root, root.resolve(relative), true);
                 DocumentEditor.Settlement settlement = DocumentEditor.settle(result.anchor());
+                String saved = WorkingTreeEdit.readFile(result.anchor(), root, relative.toString().replace('\\', '/'), edit).report(relative.toString());
                 return new Materialized(result.name(), result.anchor(), "Materialized '" + result.name() + "': " + result.commits() + " commit(s) written, " + result.lines()
                         + " line(s), " + result.blocks() + " block version(s), " + result.references() + " reference(s), "
                         + result.annotations() + " annotation(s)."
                         + (result.note().isEmpty() ? "" : " " + result.note())
                         + (settlement.settled() || settlement.rebased() ? " Edit in Komet: " + describe(settlement) : "")
+                        + (saved.isEmpty() ? "" : " " + saved)
                         + VertexMaterializer.fallbackNote());
             } catch (IOException e) {
                 throw new UncheckedIOException(e);
@@ -2930,6 +3095,7 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
         }
         statusLine.setText("Materializing " + relative + " and the files it includes …");
         AssemblyRun run = materializing.start(root, relative);
+        EditCoordinateRecord edit = editCoordinate();
         record Written(GitDocumentMaterializer.AssemblyResult result, Materialized materialized) { }
         CompletableFuture.supplyAsync(() -> {
             try {
@@ -2938,10 +3104,19 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
                     return new Written(result, null);
                 }
                 int settled = 0;
+                List<String> saved = new ArrayList<>();
                 for (GitDocumentMaterializer.Result document : result.documents()) {
                     DocumentEditor.Settlement settlement = DocumentEditor.settle(document.anchor());
                     if (settlement.settled() || settlement.rebased()) {
                         settled++;
+                    }
+                    // A member saved and not committed is read as it is, where its working tree is this one.
+                    Optional<String> path = GitDocumentMaterializer.recordedPath(document.anchor());
+                    if (path.isPresent() && PublicId.equals(GitDocumentMaterializer.documentAnchor(root, path.get()), document.anchor())) {
+                        String said = WorkingTreeEdit.readFile(document.anchor(), root, path.get(), edit).report(path.get());
+                        if (!said.isEmpty()) {
+                            saved.add(said);
+                        }
                     }
                 }
                 StringBuilder report = new StringBuilder();
@@ -2953,6 +3128,9 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
                 report.append("Materialized assembly '").append(result.assembly().name()).append("': ").append(result.summary()).append('.');
                 if (settled > 0) {
                     report.append(" Edits pending in Komet were settled in ").append(settled).append(" document(s).");
+                }
+                for (String said : saved) {
+                    report.append(' ').append(said);
                 }
                 for (GitDocumentMaterializer.Unresolved u : result.unresolved()) {
                     report.append("\nNot resolved: ").append(u);
@@ -2981,6 +3159,7 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
             return;
         }
         preferences().put(PREF_DOCUMENT, materialized.name());
+        preferences().put(PREF_FILE, relative.toString().replace('\\', '/'));
         syncPreferences();
         String report = (repositoryReport == null ? "" : repositoryReport + " ") + materialized.report();
         repositoryReport = null;
@@ -3023,11 +3202,11 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
         return materializing.markdown();
     }
 
-    // ── ephemeral documents: rebuilt from git (IKE-Network/ike-issues#1313) ─────
+    // ── documents saved in a file: rebuilt from git (IKE-Network/ike-issues#1313) ─────
 
     /**
      * Drops the shown document from the knowledge base and materializes its file again. Only an
-     * ephemeral document is rebuilt: the repository holds its lines, their authors and the
+     * document saved in a file is rebuilt: the repository contains its lines, their authors and the
      * annotations signed into commits, so nothing is lost; an edit pending in Komet refuses it.
      */
     private void rebuildFromGit() {
@@ -3047,7 +3226,7 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
         confirm.setTitle("Rebuild from Git");
         confirm.setHeaderText("Rebuild " + relative + " from git?");
         confirm.setContentText("The document is dropped from the knowledge base and its file's history materialized again. "
-                + "Git holds everything an ephemeral document is: its lines, who wrote them, and the annotations signed into commits.");
+                + "Git contains everything the document has: its lines, who wrote them, and the annotations signed into commits.");
         ButtonType rebuild = new ButtonType("Rebuild");
         confirm.getButtonTypes().setAll(rebuild, ButtonType.CANCEL);
         confirm.initOwner(window());
@@ -3063,6 +3242,139 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
             }
             materialize(root, relative, false);
         }));
+    }
+
+    /** The menu's sharing gestures, each shown when the document is one it is for. */
+    private final Map<DocumentSharing.Gesture, MenuItem> sharingItems = new java.util.EnumMap<>(DocumentSharing.Gesture.class);
+
+    private MenuItem sharingItem(DocumentSharing.Gesture gesture, String id) {
+        MenuItem item = item(gesture.title, id, gesture.tooltip, () -> {
+            if (shown == null) {
+                statusLine.setText("Choose a document first.");
+                return;
+            }
+            DocumentSharing.perform(fxObject(), gesture, List.of(shown.anchor()), editCoordinate(), done -> { });
+        });
+        sharingItems.put(gesture, item);
+        return item;
+    }
+
+    /** Has every open card read its document again, and lose one that is gone, after shared data changed. Call on the JavaFX thread. */
+    static void sharedDataChanged() {
+        for (WeakReference<StampedDocumentCard> ref : OPEN) {
+            StampedDocumentCard card = ref.get();
+            if (card == null) {
+                continue;
+            }
+            try {
+                if (card.shown != null && SharedDocuments.kind(card.shown.anchor()) == dev.ikm.tinkar.entity.boundary.DataKind.KNOWLEDGE) {
+                    card.forget(java.util.Set.of(card.shown.anchor()));
+                } else {
+                    card.refresh();
+                }
+            } catch (RuntimeException e) {
+                LOG.error("A card could not read its document again after the shared data changed", e);
+            }
+        }
+    }
+
+    /**
+     * Comments on the selected lines of a document whose record is not a file on this computer: the
+     * comment is written in the knowledge base, under the document, and goes where the document goes.
+     */
+    private void commentWithoutFile(DocumentAssembly.Located located) {
+        DocumentAssembly.Member member = located.member();
+        List<Long> lines = new ArrayList<>();
+        for (int o = located.local().min(); o <= located.local().max(); o++) {
+            lines.add(member.document().lines().get(o).nid());
+        }
+        PublicId host = shown.anchor();
+        PublicId anchor = member.document().anchor();
+        surface.composeAnnotation(AnnotationKind.COMMENT, "Your comment", false, false, text ->
+                CompletableFuture.supplyAsync(() -> SharedDocuments.comment(anchor, lines, text, editCoordinate()))
+                        .whenComplete((written, failure) -> Platform.runLater(() -> {
+                            if (failure != null) {
+                                Throwable cause = failure.getCause() != null ? failure.getCause() : failure;
+                                statusLine.setText("Comment not written: " + cause.getMessage());
+                                return;
+                            }
+                            open(host, SharedDocuments.shared(anchor) ? "Comment written. Everyone who syncs this knowledge base gets it at the next sync."
+                                    : "Comment written.", null);
+                        })));
+    }
+
+    /**
+     * Removes the shown document, with its annotations and narrations, from the knowledge base
+     * (IKE-Network/ike-issues#1313). It asks nothing and uses no Trash: the file and its commits stay
+     * in git, and opening the file reads the document back in.
+     */
+    private void removeFromKnowledgeBase() {
+        if (shown == null || !PrimitiveData.get().hasPublicId(shown.anchor())) {
+            statusLine.setText("Choose a document first.");
+            return;
+        }
+        statusLine.setText("Removing " + DocumentScopes.name(shown.anchor()) + " from the knowledge base …");
+        DocumentRemoval.perform(fxObject(), List.of(shown.anchor()), view(), editCoordinate(), result -> {
+            if (!result.completed()) {
+                statusLine.setText("Not removed: " + result.message());
+            }
+        });
+    }
+
+    /**
+     * Tells every open card that documents were removed from the knowledge base: each drops them
+     * from its chooser, and a card showing one of them says it was removed. Call on the JavaFX thread.
+     *
+     * @param removed the removed documents' anchors
+     */
+    static void documentsRemoved(java.util.Set<PublicId> removed) {
+        for (WeakReference<StampedDocumentCard> ref : OPEN) {
+            StampedDocumentCard card = ref.get();
+            if (card != null) {
+                try {
+                    card.forget(removed);
+                } catch (RuntimeException e) {
+                    LOG.error("A card could not let go of the documents removed from the knowledge base", e);
+                }
+            }
+        }
+    }
+
+    /** Drops removed documents from the chooser, and empties the card when it showed one of them. */
+    private void forget(java.util.Set<PublicId> removed) {
+        List<String> gone = anchors.entrySet().stream()
+                .filter(entry -> removed.stream().anyMatch(anchor -> PublicId.equals(anchor, entry.getValue())))
+                .map(Map.Entry::getKey).toList();
+        boolean showing = shown != null && removed.stream().anyMatch(anchor -> PublicId.equals(anchor, shown.anchor()));
+        if (showing) {
+            reading = null;
+        }
+        // The chooser lets go of the names without opening another: removing the chosen name would select a
+        // neighbour, and the chooser opens what is selected.
+        listingShown = true;
+        try {
+            if (showing) {
+                documents.getSelectionModel().clearSelection();
+            }
+            gone.forEach(anchors::remove);
+            documents.getItems().removeAll(gone);
+        } finally {
+            listingShown = false;
+        }
+        if (showing) {
+            // The card shows no document, as it does when the store holds none: the surface is emptied and
+            // nothing of the removed document is read again, nor recorded against its anchor.
+            String path = shownPath != null ? shownPath : DocumentScopes.name(shown.anchor());
+            PublicId removedAnchor = shown.anchor();
+            shown = null;
+            if (surface != null) {
+                surface.show(DocumentAssembly.single(StoredDocument.nothing(removedAnchor), ""));
+            }
+            statusLine.setText(path + " was removed from the knowledge base. Its file stays in git: Open file… reads it back in.");
+            if (repositoryPanel != null) {
+                repositoryPanel.refresh();                         // its line says who gets the document, and no one does now
+            }
+        }
     }
 
     /** Deletes the prose-element documents that vertex documents of the same working tree and path replace. */
@@ -3165,6 +3477,20 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
     public void annotate(AnnotationKind kind) {
         if (kind == AnnotationKind.RETRACTION) {
             retractSelection();
+            return;
+        }
+        Optional<DocumentAssembly.Located> without = shown == null || surface.selection().isEmpty() ? Optional.empty()
+                : located().filter(where -> SharedDocuments.readOnly(where.member().document().anchor()));
+        if (without.isPresent()) {
+            if (kind != AnnotationKind.COMMENT) {
+                statusLine.setText(displayName(kind) + " is a commit in the document's repository, which is not on this computer. You can comment on it.");
+                return;
+            }
+            if (surface.view() != DocumentSurfaceView.View.READING) {
+                statusLine.setText("A comment on this document is written in the margin of the Reading view.");
+                return;
+            }
+            commentWithoutFile(without.get());
             return;
         }
         // An annotation is a sentence beside a line, so it is written where it will live: in the margin, no dialog.
@@ -3281,6 +3607,15 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
         }
         if (inForce.isEmpty()) {
             statusLine.setText("No annotation is in force on the selected lines; there is nothing to retract.");
+            return;
+        }
+        PublicId anchor = member.document().anchor();
+        if (SharedDocuments.readOnly(anchor)) {
+            statusLine.setText(displayName(AnnotationKind.RETRACTION) + " is a commit in the document's repository, which is not on this computer.");
+            return;
+        }
+        if (inForce.stream().allMatch(annotation -> SharedDocuments.inNoFile(anchor, annotation))) {
+            statusLine.setText("The comment was written in the knowledge base, where the file was not, so there is no commit of it to retract.");
             return;
         }
         Optional<Path> tree = workingTree(member.path());
@@ -3686,6 +4021,15 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
     }
 
     // ── the repository (phase 4) ──────────────────────────────────────────────
+
+    @Override
+    public Optional<String> sharing() {
+        if (shown == null) {
+            return Optional.empty();
+        }
+        return SharedDocuments.shared(shown.anchor()) ? Optional.of("shared")
+                : SharedDocuments.keptHereOnly(shown.anchor()) ? Optional.of("only in this knowledge base") : Optional.empty();
+    }
 
     @Override
     public boolean pendingEdit() {
@@ -4581,6 +4925,10 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
             statusLine.setText("Nothing to commit: no edit of this document is pending in Komet.");
             return;
         }
+        if (VertexMaterializer.textRevision(GitDocumentExporter.export(anchor, false).map(GitDocumentExporter.Exported::commit).orElse(""))) {
+            statusLine.setText("The document is in a folder without git, so Save keeps the edit. More › Start Git History makes the folder a repository.");
+            return;
+        }
         GitDocumentExporter.Exported pending = GitDocumentExporter.export(anchor, true).orElseThrow();
         GitDocumentExporter.Exported committed = GitDocumentExporter.export(anchor, false).orElseThrow();
         Optional<Path> chosenRoot = workingTree(pending.path());
@@ -4588,8 +4936,10 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
             return;
         }
         Path root = chosenRoot.get();
+        // A file Komet saved an earlier state of the edit into is Komet's own change, not someone else's.
         boolean outside = uncheck(() -> !GitOperations.changedFiles(root, List.of(pending.path())).isEmpty()
-                && !Files.readAllLines(root.resolve(pending.path())).equals(pending.lines()));
+                && !Files.readAllLines(root.resolve(pending.path())).equals(pending.lines())
+                && DocumentFiles.changedOutside(anchor, Files.readAllLines(root.resolve(pending.path()))));
         if (outside) {
             statusLine.setText(pending.path() + " has changes made outside Komet, which writing your edit would overwrite. Commit records them first.");
             return;
@@ -4601,6 +4951,7 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
         CompletableFuture.supplyAsync(() -> {
             try {
                 Path file = GitDocumentExporter.writeTo(pending, root);
+                DocumentFiles.remember(anchor, root, pending.path(), pending.lines());
                 DocumentCommit.Result result = DocumentCommit.write(root, pending.path(), text, sign, authors);
                 if (!result.ok()) {
                     return new Committed(false, "Not committed: " + result.output()
@@ -4867,17 +5218,123 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
         if (confirm.showAndWait().filter(b -> b == discardEdits).isEmpty()) {
             return;
         }
+        discard(anchor, pending, lines);
+    }
+
+    /** Discards the pending edits of documents, and puts their files back as last committed. */
+    private void discard(PublicId anchor, List<PublicId> pending, long lines) {
         pendingBar.setDisable(true);
         CompletableFuture.supplyAsync(() -> {
+            List<String> left = new ArrayList<>();
             for (PublicId edited : pending) {
+                Optional<Path> root = DocumentFiles.rootOf(edited);
                 DocumentEditor.cancel(edited);
+                // The file goes back as last committed too, or a saved edit would be read from it again.
+                if (root.isPresent()) {
+                    DocumentFiles.Saved reverted = uncheck(() -> DocumentFiles.revert(edited, root.get()));
+                    if (reverted.outcome() == DocumentFiles.Outcome.CHANGED_OUTSIDE) {
+                        left.add(reverted.file().getFileName() + " changed after Komet read it, so it was left as it is.");
+                    }
+                }
             }
-            return true;
-        }).whenComplete((done, failure) -> Platform.runLater(() -> {
+            return String.join(" ", left);
+        }).whenComplete((left, failure) -> Platform.runLater(() -> {
             pendingBar.setDisable(false);
             pendingBar.clearMessage();
             open(anchor, failure != null ? "Could not discard the edit: " + (failure.getCause() != null ? failure.getCause() : failure).getMessage()
-                    : PendingEditBar.discarded(lines), null);
+                    : PendingEditBar.discarded(lines) + (left.isEmpty() ? "" : " " + left), null);
+        }));
+    }
+
+    /**
+     * Asks once about the edits Komet kept when the knowledge base opened because their files do
+     * not hold them, which a crash leaves (IKE-Network/ike-issues#1313; the third question before
+     * step 2 of {@code design-2026-11-22-knowledge-shared-local}, settled by KEC on 2026-11-22).
+     * Save writes them into their files; Discard puts the documents and their files back as last
+     * committed; Later leaves them pending and not saved. A file that changed after Komet read it
+     * is not overwritten, so Save is not offered then.
+     */
+    private void askAboutUnsaved() {
+        if (shown == null || !pendingEdit) {
+            return;
+        }
+        List<PublicId> kept = members.values().stream().filter(Loaded::pending).map(l -> l.document().anchor())
+                .filter(DocumentScopes::takeUnsaved).toList();
+        if (kept.isEmpty()) {
+            return;
+        }
+        PublicId hostAnchor = shown.anchor();
+        List<String> changed = new ArrayList<>();
+        for (PublicId anchor : kept) {
+            Optional<Path> root = DocumentFiles.rootOf(anchor);
+            Optional<String> path = GitDocumentMaterializer.recordedPath(anchor);
+            if (root.isPresent() && path.isPresent() && Files.isRegularFile(root.get().resolve(path.get()))
+                    && DocumentFiles.changedOutside(anchor, uncheck(() -> Files.readAllLines(root.get().resolve(path.get()))))) {
+                changed.add(path.get());
+            }
+        }
+        long lines = editedLines;
+        Platform.runLater(() -> {
+            ButtonType save = new ButtonType("Save", javafx.scene.control.ButtonBar.ButtonData.YES);
+            ButtonType discardEdits = new ButtonType("Discard", javafx.scene.control.ButtonBar.ButtonData.NO);
+            ButtonType later = new ButtonType("Later", javafx.scene.control.ButtonBar.ButtonData.CANCEL_CLOSE);
+            String what = kept.size() == 1 ? "your edit of " + DocumentScopes.name(kept.getFirst()) : "your edits of " + kept.size() + " documents";
+            Alert ask = new Alert(Alert.AlertType.CONFIRMATION);
+            ask.setTitle("Unsaved Edit");
+            ask.getDialogPane().setId("stampedDocumentUnsavedDialog");
+            ask.setHeaderText("Komet stopped before it saved " + what + ".");
+            if (changed.isEmpty()) {
+                ask.setContentText("Save writes the edit into its file. Discard puts the document and its file back as last"
+                        + " committed, and Restore as pending brings the edit back. Later leaves the edit here, not saved.");
+                ask.getButtonTypes().setAll(save, discardEdits, later);
+            } else {
+                ask.setContentText(String.join(", ", changed) + " changed after Komet read it, so saving would overwrite"
+                        + " that change. Discard puts the document back as last committed and leaves the file as it is."
+                        + " Later leaves the edit here, not saved.");
+                ask.getButtonTypes().setAll(discardEdits, later);
+            }
+            ask.getDialogPane().setMinHeight(javafx.scene.layout.Region.USE_PREF_SIZE);
+            ((Button) ask.getDialogPane().lookupButton(later)).setDefaultButton(true);
+            ask.initOwner(window());
+            Optional<ButtonType> chosen = ask.showAndWait();
+            if (chosen.filter(b -> b == save).isPresent()) {
+                savePending();
+            } else if (chosen.filter(b -> b == discardEdits).isPresent()) {
+                discard(hostAnchor, kept, lines);
+            }
+        });
+    }
+
+    /**
+     * Writes the pending edit of the shown document, and of any document it includes that is
+     * edited, into their files without committing them (IKE-Network/ike-issues#1313). A file that
+     * changed after Komet read it is not overwritten, and the status line says so. Public for
+     * automation, as Commit is.
+     */
+    public void savePending() {
+        if (shown == null) {
+            statusLine.setText("Choose a document first.");
+            return;
+        }
+        PublicId hostAnchor = shown.anchor();
+        List<PublicId> pending = members.values().stream().filter(Loaded::pending).map(l -> l.document().anchor()).toList();
+        if (pending.isEmpty()) {
+            statusLine.setText("Nothing to save: no edit of this document is pending in Komet.");
+            return;
+        }
+        pendingBar.setDisable(true);
+        CompletableFuture.supplyAsync(() -> {
+            List<String> said = new ArrayList<>();
+            for (PublicId anchor : pending) {
+                Optional<Path> root = DocumentFiles.rootOf(anchor);
+                said.add(root.isEmpty() ? new DocumentFiles.Saved(DocumentFiles.Outcome.NOTHING, null).report()
+                        : uncheck(() -> DocumentFiles.save(anchor, root.get())).report());
+            }
+            return String.join(" ", said);
+        }).whenComplete((report, failure) -> Platform.runLater(() -> {
+            pendingBar.setDisable(false);
+            open(hostAnchor, failure != null ? "Could not save: " + (failure.getCause() != null ? failure.getCause() : failure).getMessage()
+                    : report, null);
         }));
     }
 
@@ -4904,7 +5361,7 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
         try {
             preferences().sync();
         } catch (Exception e) {
-            LOG.warn("Could not sync the STAMPed Document card preferences", e);
+            LOG.warn("Could not sync the IKE Document card preferences", e);
         }
     }
 
