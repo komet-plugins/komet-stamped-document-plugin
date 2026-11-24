@@ -114,6 +114,7 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
  * The Stamped Document card ({@code IKE-Network/ike-issues#1307}; ike-lab-documents topic
@@ -2845,11 +2846,24 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
         }
         preferences().put(key, state.headSha());                       // before the reading, which shows the document again
         syncPreferences();
-        if (summaries.shaByStamp().values().stream().anyMatch(sha -> sha.startsWith(state.headSha()))) {
-            return;                                                    // the knowledge base holds that commit: one this card made, or one read before
+        if (stored(state.headSha())) {
+            return;                                                    // the knowledge base has that commit: one this card made, or one read before
         }
         LOG.info("The repository of {} stands at {}, which this card has not read: materializing it", file.get(), state.headSha());
         materializeFile(repoRoot, file.get());
+    }
+
+    /**
+     * Whether the knowledge base has what a commit did to the document: the git source names a commit that
+     * changed a file, and a commit that only annotated, or retracted, is the one an annotation came from.
+     */
+    private boolean stored(String shortSha) {
+        return summaries.shaByStamp().values().stream().anyMatch(sha -> sha.startsWith(shortSha))
+                || members.values().stream().anyMatch(member -> member.document().lines().stream()
+                        .flatMap(line -> line.annotations().stream())
+                        .flatMap(annotation -> Stream.concat(member.summaries().annotationCommits(annotation).stream(),
+                                member.summaries().retractionCommits(annotation).stream()))
+                        .anyMatch(sha -> sha.startsWith(shortSha)));
     }
 
     private void materialize() {
@@ -3261,18 +3275,51 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
             return;
         }
         DocumentAssembly.Member member = located.get().member();
-        Map<String, String> choices = new LinkedHashMap<>();
+        List<GitDocumentMaterializer.StoredAnnotation> inForce = new ArrayList<>();
         for (int o = located.get().local().min(); o <= located.get().local().max() && o < member.document().lines().size(); o++) {
-            for (GitDocumentMaterializer.StoredAnnotation annotation : member.document().lines().get(o).inForce()) {
-                if (annotation.stamp() == null) {
-                    continue;
-                }
-                summaries.sha(annotation.stamp().nid()).ifPresent(sha ->
-                        choices.putIfAbsent(sha, sha.substring(0, 7) + "  " + ProvenancePopover.annotationText(annotation, view(), summaries)));
+            inForce.addAll(member.document().lines().get(o).inForce());
+        }
+        if (inForce.isEmpty()) {
+            statusLine.setText("No annotation is in force on the selected lines; there is nothing to retract.");
+            return;
+        }
+        Optional<Path> tree = workingTree(member.path());
+        if (tree.isEmpty()) {
+            return;                                                    // no repository was chosen
+        }
+        Loaded loaded = members.get(member.path());
+        if (loaded != null && loaded.summaries().committers() != Committers.NONE) {
+            offerRetraction(inForce, loaded.summaries(), member, tree.get());
+            return;
+        }
+        // the document was read with no working tree known: its commits are read from the one found now
+        PublicId host = shown.anchor();
+        statusLine.setText("Reading the commits of " + tree.get().getFileName() + " …");
+        CompletableFuture.supplyAsync(() -> CommitSummaries.read(member.document().anchor(), tree.get(), Path.of(member.path())))
+                .whenComplete((read, failure) -> Platform.runLater(() -> {
+                    if (failure != null) {
+                        statusLine.setText("Could not read the commits of " + tree.get().getFileName() + ": " + failure.getMessage());
+                        LOG.warn("Reading the commits of {} failed", tree.get(), failure);
+                    } else if (shown != null && PublicId.equals(shown.anchor(), host)) {
+                        offerRetraction(inForce, read, member, tree.get());
+                    }
+                }));
+    }
+
+    /**
+     * Offers the annotations to withdraw, each by the commit that recorded it: one is confirmed outright,
+     * several are chosen from.
+     */
+    private void offerRetraction(List<GitDocumentMaterializer.StoredAnnotation> inForce, CommitSummaries commits, DocumentAssembly.Member member,
+                                 Path tree) {
+        Map<String, String> choices = new LinkedHashMap<>();
+        for (GitDocumentMaterializer.StoredAnnotation annotation : inForce) {
+            for (String sha : commits.annotationCommits(annotation)) {
+                choices.putIfAbsent(sha, sha.substring(0, 7) + "  " + ProvenancePopover.annotationText(annotation, view(), commits));
             }
         }
         if (choices.isEmpty()) {
-            statusLine.setText("No annotation is in force on the selected lines; there is nothing to retract.");
+            statusLine.setText("The commit that recorded the annotation is not in the history of " + tree.getFileName() + "; pull it, then retract.");
             return;
         }
         if (choices.size() == 1) {
@@ -3299,11 +3346,9 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
             statusLine.setText("Choose a document first.");
             return;
         }
-        if (repoRoot == null || memberPath == null || !Files.isRegularFile(repoRoot.resolve(memberPath))) {
-            Optional<Path> chosen = workingTree(memberPath == null ? shownPath : memberPath);
-            if (chosen.isEmpty()) {
-                return;
-            }
+        Optional<Path> tree = workingTree(memberPath == null ? shownPath : memberPath);
+        if (tree.isEmpty()) {
+            return;
         }
         Annotation annotation = Annotation.of(AnnotationKind.RETRACTION, new AnnotationTarget.Commit(sha));
         String about = summaries.records().containsKey(sha)
@@ -3339,7 +3384,7 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
         }
         boolean sign = choice.get() == signed;
         String body = text.getText();
-        Path root = repoRoot;
+        Path root = tree.get();                                        // the file's own repository, which an included file may not share with its host
         Path file = Path.of(memberPath == null ? shownPath : memberPath);
         PublicId anchor = shown.anchor();
         statusLine.setText("Writing retraction commit …");

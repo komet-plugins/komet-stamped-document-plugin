@@ -69,6 +69,12 @@ A commit is found by the SHA that the store has for its STAMP. A commit that
 only annotates has none there, and a rebased one has another SHA, so these
 are found by author and author time.
 
+Retract… names the commit that recorded an annotation, and the card asks
+whether it has read a commit that only annotates or retracts. Both ask
+`CommitSummaries` (`annotationCommits`, `retractionCommits`), never the SHAs
+the store has. Where an author has several commits in one second, the file's
+own history says which of them annotated it.
+
 ## Key Classes
 
 - `CommitAuthors`: the file of authors, and the variables for a commit of
@@ -96,3 +102,9 @@ are found by author and author time.
 - `CommittersIT` writes its records with `ResponsiblePersons.recordIfAbsent`,
   and gives each commit an hour of its own, since two commits of one author
   in the same second are one STAMP.
+- `AnnotationCardIT` drives a real card in a shown window under Monocle. It
+  waits for the second to pass after a comment, as a person's hands do: a
+  retraction in the comment's own second has its time, and neither version is
+  the later one. It lets the card's reading end before it closes the card.
+- A key test needs the text area on the screen: with no skin it has no key
+  handlers of its own (`MarginNoteIT`).

@@ -24,6 +24,11 @@ import dev.ikm.tinkar.coordinate.view.calculator.ViewCalculator;
 import dev.ikm.tinkar.entity.load.LoadEntitiesFromProtobufFile;
 import javafx.application.Platform;
 import javafx.scene.Node;
+import javafx.scene.Scene;
+import javafx.scene.control.TextArea;
+import javafx.scene.input.KeyCode;
+import javafx.scene.input.KeyEvent;
+import javafx.stage.Stage;
 import network.ike.komet.document.DocumentSurfaceView.Layer;
 import network.ike.komet.document.GitDocumentMaterializer.StoredBlock;
 import network.ike.komet.document.GitDocumentMaterializer.StoredDocument;
@@ -182,7 +187,90 @@ class MarginNoteIT {
         assertEquals(List.of("Say where this was measured."), onFx(() -> noteTexts(body)));
     }
 
+    /**
+     * Enter records a note as it was written, wherever the caret stands. The text area handles Enter itself, and
+     * once broke the line at the caret, or put a line break in place of the words selected, before the note was read.
+     */
+    @Test
+    void enterRecordsTheNoteAsItWasWritten() throws Exception {
+        assertEquals(List.of("A comment for the check."), recordedWith("atend", note -> note.end()));
+        assertEquals(List.of("A comment for the check."), recordedWith("within", note -> note.positionCaret(note.getLength() - 2)),
+                "the caret is where a person left it after a correction");
+        assertEquals(List.of("A comment for the check."), recordedWith("atstart", note -> note.home()));
+        assertEquals(List.of("A comment for the check."), recordedWith("selected", note -> note.selectAll()), "what is selected is not replaced");
+    }
+
+    /** Shift+Enter breaks the line at the caret and records nothing; a note that needs a reason does not record empty. */
+    @Test
+    void shiftEnterBreaksALineAndAnEmptyReasonIsNotRecorded() throws Exception {
+        List<String> recorded = new ArrayList<>();
+        TextArea note = composed("shift", true, recorded);
+        onFx(() -> {
+            press(note, KeyCode.ENTER, false);
+            return null;
+        });
+        assertEquals(List.of(), recorded, "a reason is needed");
+        assertEquals("", onFx(note::getText), "and the empty note stays empty");
+        assertTrue(onFx(() -> note.getScene() != null), "the note is still open");
+
+        onFx(() -> {
+            note.setText("The first line.The second line.");
+            note.positionCaret("The first line.".length());
+            press(note, KeyCode.ENTER, true);
+            return null;
+        });
+        assertEquals("The first line.\nThe second line.", onFx(note::getText));
+        assertEquals(List.of(), recorded);
+        onFx(() -> {
+            press(note, KeyCode.ENTER, false);
+            return null;
+        });
+        assertEquals(List.of("The first line.\nThe second line."), recorded);
+        assertTrue(onFx(() -> note.getScene() == null), "the note is closed");
+    }
+
     // ── helpers ───────────────────────────────────────────────────────────────
+
+    /** What Enter records of a note with the caret, or the selection, where a person left it. */
+    private List<String> recordedWith(String name, java.util.function.Consumer<TextArea> placed) throws Exception {
+        List<String> recorded = new ArrayList<>();
+        TextArea note = composed(name, false, recorded);
+        onFx(() -> {
+            note.setText("A comment for the check.");
+            placed.accept(note);
+            press(note, KeyCode.ENTER, false);
+            return null;
+        });
+        return recorded;
+    }
+
+    /** A note open in a shown window, where the text area has the key handlers of its own that a person's keys reach. */
+    private TextArea composed(String name, boolean required, List<String> recorded) throws Exception {
+        StoredDocument document = stored(repository(name));
+        DocumentSurface body = onFx(() -> new DocumentSurface(new BlockFactory(Calculators.View.Default(), 13)));
+        onFx(() -> {
+            Stage stage = new Stage();
+            stage.setScene(new Scene(body, 900, 700));
+            stage.show();
+            DocumentSurfaceView view = new DocumentSurfaceView(host(EnumSet.noneOf(Layer.class)), body);
+            view.show(DocumentAssembly.single(document, name + ".adoc"));
+            view.select(selectionOf(document, "A second claim."));
+            view.composeAnnotation(AnnotationKind.COMMENT, "Your comment", required, false, recorded::add);
+            return null;
+        });
+        for (int i = 0; i < 100; i++) {
+            TextArea note = onFx(() -> (TextArea) body.lookup("#stampedDocumentNoteText"));
+            if (note != null && onFx(note::getSkin) != null) {
+                return note;
+            }
+            Thread.sleep(50);
+        }
+        throw new AssertionError("the note is not on the screen");
+    }
+
+    private static void press(TextArea note, KeyCode key, boolean shift) {
+        note.fireEvent(new KeyEvent(KeyEvent.KEY_PRESSED, "", "", key, shift, false, false, false));
+    }
 
     /** The nodes a selector finds in the rows the surface stacked: what is in a row is on the surface, what is not is nowhere. */
     private static List<Node> inStack(DocumentSurface body, String selector) {

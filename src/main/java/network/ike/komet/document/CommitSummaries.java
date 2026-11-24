@@ -15,6 +15,7 @@
  */
 package network.ike.komet.document;
 
+import design.knowledge.stamp.adoc.model.AnnotationKind;
 import design.knowledge.stamp.adoc.model.StampRecord;
 import dev.ikm.tinkar.common.id.PublicId;
 import dev.ikm.tinkar.coordinate.view.calculator.ViewCalculator;
@@ -23,6 +24,7 @@ import dev.ikm.tinkar.entity.SemanticEntity;
 import dev.ikm.tinkar.entity.SemanticEntityVersion;
 import dev.ikm.tinkar.entity.StampEntity;
 import network.ike.foundation.ike.bindings.IkePattern;
+import network.ike.komet.document.GitDocumentMaterializer.StoredAnnotation;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -30,6 +32,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
@@ -125,6 +128,46 @@ public record CommitSummaries(Map<Long, String> shaByStamp, Map<String, StampRec
         String shortSha = sha.get().substring(0, Math.min(7, sha.get().length()));
         StampRecord record = records.get(sha.get());
         return Optional.of(record == null ? shortSha : shortSha + "  " + record.summary());
+    }
+
+    /**
+     * The commits that recorded an annotation, as a retraction names one. The store has a SHA only for a commit
+     * that changed the file, and an annotation's commit changes none, so it is found in the repository by the
+     * author and time its STAMP has ({@link Committers#commits}). Where the author has several commits in that
+     * second, the ones that the file's own history says made an annotation of the kind are meant.
+     *
+     * @param annotation the annotation
+     * @return the SHAs, one unless several commits in that second made such an annotation; empty when the
+     *         repository was not read or does not contain the commit
+     */
+    public List<String> annotationCommits(StoredAnnotation annotation) {
+        List<String> commits = committers.commits(annotation.stamp());
+        if (commits.size() < 2) {
+            return commits;
+        }
+        List<String> annotating = commits.stream().filter(sha -> records.containsKey(sha) && annotates(records.get(sha), annotation.kind())).toList();
+        return annotating.isEmpty() ? commits : annotating;
+    }
+
+    /** Whether a commit annotates a line of the file with a kind; a kind the engine does not know leaves no trace in the record. */
+    private static boolean annotates(StampRecord commit, AnnotationKind kind) {
+        return kind != null && switch (kind) {
+            case AFFIRMATION -> !commit.affirmed().isEmpty();
+            case REFUTATION -> !commit.refuted().isEmpty();
+            case COMMENT -> !commit.commented().isEmpty();
+            case RETRACTION -> false;
+        };
+    }
+
+    /**
+     * The commits that retracted an annotation, found as {@link #annotationCommits} finds the one that recorded
+     * it. A retraction leaves no mark on a line, so a commit that does is not meant.
+     *
+     * @param annotation the annotation
+     * @return the SHAs; empty when it is in force, and when the repository was not read or does not contain the commit
+     */
+    List<String> retractionCommits(StoredAnnotation annotation) {
+        return committers.commits(annotation.retractedBy()).stream().filter(sha -> !records.containsKey(sha)).toList();
     }
 
     /**

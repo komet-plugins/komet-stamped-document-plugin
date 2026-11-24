@@ -109,9 +109,10 @@ public final class Committers {
     }
 
     private final Map<String, Verdict> bySha;
-    private final Map<Authored, List<Verdict>> byAuthored;
+    /** The commits' SHAs, newest first, by what their STAMPs have of them: several where an author has several in one second. */
+    private final Map<Authored, List<String>> byAuthored;
 
-    private Committers(Map<String, Verdict> bySha, Map<Authored, List<Verdict>> byAuthored) {
+    private Committers(Map<String, Verdict> bySha, Map<Authored, List<String>> byAuthored) {
         this.bySha = bySha;
         this.byAuthored = byAuthored;
     }
@@ -130,14 +131,14 @@ public final class Committers {
             Map<Person, Identity> identities = new HashMap<>();
             Map<UUID, Map<UUID, Verdict>> verdicts = new HashMap<>();
             Map<String, Verdict> bySha = new HashMap<>();
-            Map<Authored, List<Verdict>> byAuthored = new HashMap<>();
+            Map<Authored, List<String>> byAuthored = new HashMap<>();
             for (GitOperations.CommitPeople commit : log(root)) {
                 Identity author = identities.computeIfAbsent(commit.author(), adapter::author);
                 Identity committer = identities.computeIfAbsent(commit.committer(), adapter::author);
                 Verdict verdict = verdicts.computeIfAbsent(author.uuid(), a -> new HashMap<>())
                         .computeIfAbsent(committer.uuid(), c -> verdict(author, committer));
                 bySha.put(commit.sha(), verdict);
-                nidOf(author).ifPresent(nid -> add(byAuthored, new Authored(nid, commit.time()), verdict));
+                nidOf(author).ifPresent(nid -> add(byAuthored, new Authored(nid, commit.time()), commit.sha()));
             }
             return new Committers(bySha, byAuthored);
         } catch (IOException | RuntimeException e) {
@@ -154,10 +155,10 @@ public final class Committers {
      */
     static Committers merge(Collection<Committers> all) {
         Map<String, Verdict> bySha = new HashMap<>();
-        Map<Authored, List<Verdict>> byAuthored = new HashMap<>();
+        Map<Authored, List<String>> byAuthored = new HashMap<>();
         for (Committers one : all.stream().distinct().toList()) {
             bySha.putAll(one.bySha);
-            one.byAuthored.forEach((authored, verdicts) -> verdicts.forEach(verdict -> add(byAuthored, authored, verdict)));
+            one.byAuthored.forEach((authored, commits) -> commits.forEach(sha -> add(byAuthored, authored, sha)));
         }
         return new Committers(bySha, byAuthored);
     }
@@ -187,13 +188,25 @@ public final class Committers {
         return verdicts(sha, stamp).stream().anyMatch(verdict -> verdict.relation() == Relation.DIFFERS);
     }
 
+    /**
+     * The commits whose author and time a STAMP has. A commit that only annotates is found this way, since the
+     * store records no SHA for it ({@link CommitSummaries#annotationCommits}).
+     *
+     * @param stamp the STAMP
+     * @return the SHAs, newest first; several where the author has several in that second; empty when the
+     *         repository was not read or does not contain the commit, and for an uncommitted STAMP
+     */
+    List<String> commits(StampEntity<?> stamp) {
+        return stamp == null || stamp.time() == Long.MAX_VALUE ? List.of()
+                : byAuthored.getOrDefault(new Authored(stamp.authorNid(), stamp.time()), List.of());
+    }
+
     private List<Verdict> verdicts(Optional<String> sha, StampEntity<?> stamp) {
         if (stamp == null || stamp.time() == Long.MAX_VALUE) {
             return List.of();
         }
         Optional<Verdict> named = sha.map(bySha::get);
-        return named.map(List::of)
-                .orElseGet(() -> byAuthored.getOrDefault(new Authored(stamp.authorNid(), stamp.time()), List.of()));
+        return named.map(List::of).orElseGet(() -> commits(stamp).stream().map(bySha::get).distinct().toList());
     }
 
     /**
@@ -264,10 +277,10 @@ public final class Committers {
         return GitStampVocabulary.entityAbsent(concept) ? OptionalLong.empty() : OptionalLong.of(concept.nid());
     }
 
-    private static void add(Map<Authored, List<Verdict>> byAuthored, Authored authored, Verdict verdict) {
-        List<Verdict> verdicts = byAuthored.computeIfAbsent(authored, a -> new ArrayList<>(1));
-        if (!verdicts.contains(verdict)) {
-            verdicts.add(verdict);
+    private static void add(Map<Authored, List<String>> byAuthored, Authored authored, String sha) {
+        List<String> commits = byAuthored.computeIfAbsent(authored, a -> new ArrayList<>(1));
+        if (!commits.contains(sha)) {
+            commits.add(sha);
         }
     }
 

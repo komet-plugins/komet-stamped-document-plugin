@@ -5434,11 +5434,15 @@ public final class DocumentSurfaceView {
             text.selectRange(edit.start(), edit.end());
             e.consume();
         }));
-        text.setOnKeyPressed(e -> {
+        // a filter, so the text area does not break the line at the caret, or over the words selected, before the note is read
+        text.addEventFilter(javafx.scene.input.KeyEvent.KEY_PRESSED, e -> {
             if (e.getCode() == javafx.scene.input.KeyCode.ESCAPE) {
                 closeComposer(true);
                 e.consume();
-            } else if (e.getCode() == javafx.scene.input.KeyCode.ENTER && !e.isShiftDown()) {
+            } else if (e.getCode() == javafx.scene.input.KeyCode.ENTER && e.isShiftDown()) {
+                text.replaceSelection("\n");                        // the text area itself breaks a line on Enter alone
+                e.consume();
+            } else if (e.getCode() == javafx.scene.input.KeyCode.ENTER) {
                 String body = text.getText().strip();
                 if (required && body.isEmpty()) {
                     hint.setText("A reason is needed");
