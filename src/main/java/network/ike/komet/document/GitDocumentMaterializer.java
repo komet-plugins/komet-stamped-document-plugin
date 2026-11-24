@@ -233,7 +233,7 @@ public final class GitDocumentMaterializer {
                     continue;                                    // already in the store
                 }
                 GitStampTerms.GitStamp stamp = GitStampTerms.GitStamp.of(adapter.coordinatesOf(event, component, branch));
-                GitStampVocabulary.seedIfAbsent(stamp);
+                GitStampVocabulary.seedIfAbsent(stamp, adapter.author(event.commit().author()));
                 List<Retirement> retirements = new ArrayList<>();
                 List<Narration> narrated = new ArrayList<>();
                 try (StampedWriter writer = stamp.openWriter("git-materialize " + event.commit().sha().substring(0, 7))) {
@@ -322,6 +322,7 @@ public final class GitDocumentMaterializer {
                 }
                 structure.adopt(now);
             }
+            ResponsiblePersons.recordIfAbsent(history.events().stream().map(event -> adapter.author(event.commit().author())).toList());
             LOG.info("Materialized {} as '{}': {} commit(s) written, {} already recorded, {} line(s), {} block version(s), {} reference version(s), {} annotation(s), {} narration(s)",
                     path, name, history.events().size() - skipped, skipped, lines, blocks, references, annotations, narrations);
             return new Result(anchor.publicId(), name, history.events().size() - skipped, lines, annotations, blocks, references, repo.headRevision());

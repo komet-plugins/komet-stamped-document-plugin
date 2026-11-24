@@ -686,7 +686,7 @@ final class DocumentGraphView {
     }
 
     private String when(StampEntity<?> stamp) {
-        String by = host.view() == null ? "" : " by " + StampNames.name(host.view(), stamp.authorNid());
+        String by = host.view() == null ? "" : " by " + ResponsiblePersons.authorName(host.view(), stamp.authorNid());
         return stamp.time() == Long.MAX_VALUE ? "in Komet, uncommitted" + by : "on " + DAY.format(Instant.ofEpochMilli(stamp.time())) + by;
     }
 
@@ -1162,7 +1162,7 @@ final class DocumentGraphView {
                 if (!text.isEmpty()) {
                     text.append('\n');
                 }
-                text.append(StampNames.name(host.view(), node.stamp().authorNid()));
+                text.append(ResponsiblePersons.authorName(host.view(), node.stamp().authorNid()));
                 if (node.stamp().time() != Long.MAX_VALUE) {
                     text.append(" · ").append(DAY.format(Instant.ofEpochMilli(node.stamp().time())));
                 }

@@ -83,6 +83,16 @@ class GitStampTermsTest {
     }
 
     @Test
+    void anAuthorsFullyQualifiedNameHasTheAddress() {
+        GitIdentityAdapter adapter = GitIdentityAdapter.raw();
+
+        assertEquals("Kerry Goetz (kerry@example.test)",
+                GitStampTerms.fullyQualifiedName(adapter.author(new Person("Kerry Goetz", "Kerry@example.test"))));
+        assertEquals("kerry@example.test",
+                GitStampTerms.fullyQualifiedName(adapter.author(new Person("", "kerry@example.test"))), "git gives no name");
+    }
+
+    @Test
     void gitStatusIsAnActiveVersion() {
         assertEquals(State.ACTIVE, GitStampTerms.state(Status.ACTIVE));
     }

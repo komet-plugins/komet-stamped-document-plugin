@@ -1421,7 +1421,7 @@ public final class DocumentSurfaceView {
         headerRunStamps.getChildren().add(new dev.ikm.komet.framework.controls.StampSigil(14));
         for (StampEntity<?> stamp : stamps.subList(0, Math.min(HEADER_STAMPS, stamps.size()))) {
             Node icon = identicon(stamp, 14, null);
-            Tooltip.install(icon, new Tooltip(StampNames.name(host.view(), stamp.authorNid()) + " · " + DAY.format(Instant.ofEpochMilli(stamp.time()))
+            Tooltip.install(icon, new Tooltip(ResponsiblePersons.authorName(host.view(), stamp.authorNid()) + " · " + DAY.format(Instant.ofEpochMilli(stamp.time()))
                     + host.summaries().summary(stamp.nid()).map(summary -> "\n" + summary).orElse("")
                     + "\nIntroduced what is at the top of the view"));
             headerRunStamps.getChildren().add(icon);
@@ -5318,7 +5318,7 @@ public final class DocumentSurfaceView {
         note.setStyle("-fx-border-color: transparent transparent transparent " + (annotation.kind() == AnnotationKind.REFUTATION ? "#e0a0a0" : "#c8ced8")
                 + "; -fx-border-width: 0 0 0 2; -fx-padding: 1 0 1 6;");
         Tooltip.install(note, new Tooltip((annotation.kind() == AnnotationKind.REFUTATION ? "Refutation" : "Comment") + " by "
-                + StampNames.name(host.view(), stamp.authorNid()) + " · " + DAY.format(Instant.ofEpochMilli(stamp.time()))));
+                + ResponsiblePersons.authorName(host.view(), stamp.authorNid()) + " · " + DAY.format(Instant.ofEpochMilli(stamp.time()))));
         return note;
     }
 
@@ -5454,7 +5454,7 @@ public final class DocumentSurfaceView {
         view.setFitHeight(size);
         if (area != null) {
             long introduced = area.lines.stream().filter(l -> l.introduced() != null && l.introduced().nid() == stamp.nid()).count();
-            Tooltip.install(view, new Tooltip(StampNames.name(host.view(), stamp.authorNid()) + " · " + DAY.format(Instant.ofEpochMilli(stamp.time()))
+            Tooltip.install(view, new Tooltip(ResponsiblePersons.authorName(host.view(), stamp.authorNid()) + " · " + DAY.format(Instant.ofEpochMilli(stamp.time()))
                     + host.summaries().summary(stamp.nid()).map(s -> "\n" + s).orElse("")
                     + "\nIntroduced " + introduced + " of these " + area.lines.size() + " line(s)"));
             view.setOnMouseEntered(e -> {

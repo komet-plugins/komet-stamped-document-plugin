@@ -165,6 +165,65 @@ class CommitAuthorsTest {
         assertThrows(IllegalArgumentException.class, () -> CommitAuthors.read(file));
     }
 
+    @Test
+    void theFileMayListTheAddressesOfThePersonsEarlierCommits() throws Exception {
+        CommitAuthors authors = CommitAuthors.read(write("""
+                person.name=Ada Lovelace
+                person.email=ada@komet.ike.network
+                person.earlier=ada@example.test, ada@engine.test,ADA@example.test
+                assistant.name=Ada's Claude
+                assistant.email=ada-claude@komet.ike.network
+                """)).orElseThrow();
+
+        assertEquals(List.of("ada@example.test", "ada@engine.test"), authors.earlier(), "in the file's order, each once");
+        assertEquals(authors.earlier(), authors.withoutAssistant().earlier());
+        assertEquals("ada@komet.ike.network", authors.assistantsWork().get("GIT_COMMITTER_EMAIL"), "no commit is made under one");
+    }
+
+    @Test
+    void aFileNeedListNoEarlierAddress() throws Exception {
+        CommitAuthors authors = CommitAuthors.read(write("""
+                person.name=Ada Lovelace
+                person.email=ada@komet.ike.network
+                person.earlier=
+                """)).orElseThrow();
+
+        assertEquals(List.of(), authors.earlier());
+    }
+
+    @Test
+    void anEarlierAddressGitWouldNotTakeIsRefused() throws Exception {
+        Path file = write("""
+                person.name=Ada Lovelace
+                person.email=ada@komet.ike.network
+                person.earlier=ada@example.test, Ada Lovelace
+                """);
+
+        IllegalArgumentException refused = assertThrows(IllegalArgumentException.class, () -> CommitAuthors.read(file));
+        assertTrue(refused.getMessage().contains("person.earlier lists Ada Lovelace"), refused.getMessage());
+    }
+
+    @Test
+    void anIdentityAddressIsNotAnEarlierOne() throws Exception {
+        Path file = write("""
+                person.name=Ada Lovelace
+                person.email=ada@komet.ike.network
+                person.earlier=ADA@komet.ike.network
+                """);
+        IllegalArgumentException refused = assertThrows(IllegalArgumentException.class, () -> CommitAuthors.read(file));
+        assertTrue(refused.getMessage().endsWith("the identity address of Ada Lovelace"), refused.getMessage());
+
+        write("""
+                person.name=Ada Lovelace
+                person.email=ada@komet.ike.network
+                person.earlier=ada-claude@komet.ike.network
+                assistant.name=Ada's Claude
+                assistant.email=ada-claude@komet.ike.network
+                """);
+        refused = assertThrows(IllegalArgumentException.class, () -> CommitAuthors.read(file));
+        assertTrue(refused.getMessage().endsWith("the identity address of Ada's Claude"), refused.getMessage());
+    }
+
     private Path write(String text) throws Exception {
         Path file = CommitAuthors.file(home);
         Files.createDirectories(file.getParent());

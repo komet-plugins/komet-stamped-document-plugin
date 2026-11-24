@@ -47,6 +47,19 @@ public final class GitStampTerms {
     }
 
     /**
+     * The fully qualified name of an author concept: the name git gives, then the address the concept is
+     * made from (KEC, 2026-11-23). A person has one concept for each address, so the name alone is the
+     * name of several.
+     *
+     * @param author an author's identity from the adapter
+     * @return {@code Ada Lovelace (ada@komet.ike.network)}, or the address alone when git gives no name
+     */
+    public static String fullyQualifiedName(Identity author) {
+        String address = author.key().substring(author.key().indexOf(':') + 1);
+        return author.name().equalsIgnoreCase(address) ? author.name() : author.name() + " (" + address + ")";
+    }
+
+    /**
      * Every git-side status is an active version in Tinkar terms: an annotation is a role on
      * lines, recorded by its own STAMP, never a state of the version it annotates.
      *

@@ -15,9 +15,11 @@
  */
 package network.ike.komet.document;
 
+import design.knowledge.stamp.adoc.identity.Identity;
 import dev.ikm.tinkar.common.service.PrimitiveData;
 import dev.ikm.tinkar.entity.EntityHandle;
 import dev.ikm.tinkar.entity.EntityService;
+import dev.ikm.tinkar.common.id.PublicId;
 import dev.ikm.tinkar.common.id.PublicIds;
 import dev.ikm.tinkar.entity.transaction.StampedWriter;
 import dev.ikm.tinkar.terms.EntityFacade;
@@ -25,6 +27,7 @@ import dev.ikm.tinkar.terms.ConceptFacade;
 import dev.ikm.tinkar.terms.EntityProxy;
 import dev.ikm.tinkar.terms.EntityProxy.Concept;
 import dev.ikm.tinkar.terms.KernelConcept;
+import dev.ikm.tinkar.terms.KernelPattern;
 import dev.ikm.komet.terms.KometConcept;
 import dev.ikm.tinkar.terms.State;
 import org.slf4j.Logger;
@@ -45,6 +48,18 @@ public final class GitStampVocabulary {
     private GitStampVocabulary() { }
 
     /**
+     * Seeds what a commit's STAMP refers to, with the author's address in the fully qualified name of its
+     * concept ({@link #seedAuthorIfAbsent(Identity)}).
+     *
+     * @param stamp  the STAMP whose author, module and path concepts must exist
+     * @param author the identity the STAMP's author is made from
+     */
+    public static synchronized void seedIfAbsent(GitStampTerms.GitStamp stamp, Identity author) {
+        seedAuthorIfAbsent(author);
+        seedIfAbsent(stamp);
+    }
+
+    /**
      * @param stamp the STAMP whose author, module and path concepts must exist
      */
     public static synchronized void seedIfAbsent(GitStampTerms.GitStamp stamp) {
@@ -63,6 +78,46 @@ public final class GitStampVocabulary {
      */
     public static synchronized void seedAuthorIfAbsent(ConceptFacade author) {
         seedConceptIfAbsent(author, null);
+    }
+
+    /**
+     * Seeds the author of a commit. Its fully qualified name is the name git gives with the address
+     * ({@link GitStampTerms#fullyQualifiedName}), and its regular name is the name alone, which is what
+     * review shows. A concept that is there already is left as it is, under the name it was given.
+     *
+     * @param author an author's identity from the adapter
+     * @return the author's concept
+     */
+    public static synchronized Concept seedAuthorIfAbsent(Identity author) {
+        Concept concept = GitStampTerms.concept(author);
+        if (entityAbsent(concept)) {
+            String qualified = GitStampTerms.fullyQualifiedName(author);
+            try (StampedWriter writer = seedWriter()) {
+                writer.concept(concept.publicId());
+                writer.fullyQualifiedName(concept.publicId(), qualified);
+                if (!qualified.equals(author.name())) {
+                    regularName(writer, concept, author.name());
+                }
+                writer.commit();
+            }
+            LOG.info("Seeded git STAMP author '{}' ({})", qualified, author.uuid());
+        }
+        return concept;
+    }
+
+    /** Writes a concept's English regular name and its US-dialect acceptability, preferred, under identities derived from the concept. */
+    private static void regularName(StampedWriter writer, ConceptFacade concept, String text) {
+        PublicId description = derived("regular-name:" + concept.publicId().idString());
+        writer.semantic(description, KernelPattern.DESCRIPTION_PATTERN.publicId(), concept.publicId(),
+                KernelConcept.ENGLISH_LANGUAGE, text,
+                KernelConcept.DESCRIPTION_NOT_CASE_SENSITIVE, KernelConcept.REGULAR_NAME_DESCRIPTION_TYPE);
+        writer.semantic(derived("us-dialect:" + description.idString()), KernelPattern.US_DIALECT_PATTERN.publicId(),
+                description, KernelConcept.PREFERRED);
+    }
+
+    private static PublicId derived(String key) {
+        return PublicIds.of(design.knowledge.stamp.adoc.identity.Uuid5.of(
+                design.knowledge.stamp.adoc.identity.GitIdentityAdapter.NAMESPACE, key));
     }
 
     private static void seedConceptIfAbsent(ConceptFacade concept, ConceptFacade parent) {
@@ -92,22 +147,22 @@ public final class GitStampVocabulary {
         LOG.info("Seeded git STAMP concept '{}' ({})", concept.description(), concept.publicId().asUuidArray()[0]);
     }
 
-    private static StampedWriter seedWriter() {
+    /** A writer for what is seeded: {@link KernelConcept#USER}, the development module and path, now. */
+    static StampedWriter seedWriter() {
         return StampedWriter.open("git-stamp-vocabulary-seed", State.ACTIVE, System.currentTimeMillis(),
                 KernelConcept.USER, KometConcept.DEVELOPMENT_MODULE, KernelConcept.DEVELOPMENT_PATH);
     }
 
     /** The identity of a seeded concept's stated axioms: derived from the concept, so it is written once. */
-    private static dev.ikm.tinkar.common.id.PublicId statedAxiomsId(ConceptFacade concept) {
-        return PublicIds.of(design.knowledge.stamp.adoc.identity.Uuid5.of(
-                design.knowledge.stamp.adoc.identity.GitIdentityAdapter.NAMESPACE, "stated-axioms:" + concept.publicId().idString()));
+    private static PublicId statedAxiomsId(ConceptFacade concept) {
+        return derived("stated-axioms:" + concept.publicId().idString());
     }
 
     private static void stateParent(StampedWriter writer, ConceptFacade concept, ConceptFacade parent) {
         dev.ikm.tinkar.entity.graph.adaptor.axiom.LogicalExpressionBuilder leb =
                 new dev.ikm.tinkar.entity.graph.adaptor.axiom.LogicalExpressionBuilder();
         leb.NecessarySet(leb.And(new dev.ikm.tinkar.entity.graph.adaptor.axiom.LogicalAxiom.Atom[] {leb.ConceptAxiom(parent)}));
-        writer.semantic(statedAxiomsId(concept), dev.ikm.tinkar.terms.KernelPattern.EL_PLUS_PLUS_STATED_AXIOMS_PATTERN.publicId(),
+        writer.semantic(statedAxiomsId(concept), KernelPattern.EL_PLUS_PLUS_STATED_AXIOMS_PATTERN.publicId(),
                 concept.publicId(), (dev.ikm.tinkar.entity.graph.DiTreeEntity) leb.build().sourceGraph());
     }
 

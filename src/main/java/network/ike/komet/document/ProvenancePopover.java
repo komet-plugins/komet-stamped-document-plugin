@@ -113,7 +113,7 @@ public final class ProvenancePopover {
 
     /** The row's words, as the popover and the tests read them. */
     public static String annotationText(StoredAnnotation annotation, ViewCalculator view) {
-        String who = annotation.stamp() == null ? "someone" : StampNames.name(view, annotation.stamp().authorNid());
+        String who = annotation.stamp() == null ? "someone" : ResponsiblePersons.authorName(view, annotation.stamp().authorNid());
         String when = annotation.stamp() == null ? "" : " on " + MOMENT.format(Instant.ofEpochMilli(annotation.stamp().time()));
         // any other meaning, such as Not clinical, is named by its concept (decision 9 revised)
         String head = annotation.kind() == null
@@ -126,7 +126,7 @@ public final class ProvenancePopover {
                 };
         String text = annotation.text() == null || annotation.text().isBlank() ? "" : ": " + annotation.text();
         if (annotation.retracted()) {
-            String byWhom = StampNames.name(view, annotation.retractedBy().authorNid());
+            String byWhom = ResponsiblePersons.authorName(view, annotation.retractedBy().authorNid());
             return head + " by " + who + when + ", retracted by " + byWhom + " on "
                     + MOMENT.format(Instant.ofEpochMilli(annotation.retractedBy().time())) + text;
         }
@@ -137,7 +137,8 @@ public final class ProvenancePopover {
         ImageView badge = new ImageView(identicon.apply(stamp));
         badge.setPreserveRatio(true);
         badge.setFitHeight(28);
-        Label author = new Label(StampNames.name(view, stamp.authorNid()));
+        Label author = new Label(ResponsiblePersons.authorName(view, stamp.authorNid()));
+        author.setWrapText(true);
         author.setFont(Font.font("System", FontWeight.BOLD, 12));
         boolean uncommitted = stamp.time() == Long.MAX_VALUE;
         Label when = new Label(role + (uncommitted ? "" : " " + MOMENT.format(Instant.ofEpochMilli(stamp.time())))

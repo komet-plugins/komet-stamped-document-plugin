@@ -19,6 +19,8 @@ import dev.ikm.tinkar.coordinate.view.calculator.ViewCalculator;
 import dev.ikm.tinkar.entity.EntityService;
 import dev.ikm.tinkar.entity.SemanticEntity;
 import dev.ikm.tinkar.entity.SemanticEntityVersion;
+import dev.ikm.tinkar.terms.EntityFacade;
+import dev.ikm.tinkar.terms.KernelConcept;
 import dev.ikm.tinkar.terms.KernelPattern;
 import network.ike.komet.document.ComponentText;
 
@@ -50,20 +52,33 @@ public final class StampNames {
         return recordedName(nid).orElse(viewed);
     }
 
-    /** The text of the component's latest committed description, of any type and on any path. */
+    /**
+     * The text of the component's latest committed regular name, on any path; when it has none, of its latest
+     * committed description of any type.
+     *
+     * @param nid the component's nid in the open store
+     * @return the text, or empty when the store holds no description for the component
+     */
     public static java.util.Optional<String> recordedName(long nid) {
         String best = null;
         long bestTime = Long.MIN_VALUE;
+        boolean bestRegular = false;
         for (SemanticEntity<SemanticEntityVersion> description : EntityService.get()
                 .semanticsForComponentOfPattern(nid, KernelPattern.DESCRIPTION_PATTERN.nid()).toList()) {
             for (SemanticEntityVersion version : description.versions()) {
-                if (version.time() == Long.MAX_VALUE || version.time() <= bestTime) {
+                if (version.time() == Long.MAX_VALUE || version.time() == Long.MIN_VALUE) {
+                    continue;                                    // uncommitted, or cancelled
+                }
+                boolean regular = version.fieldValues().stream().anyMatch(value -> value instanceof EntityFacade type
+                        && type.nid() == KernelConcept.REGULAR_NAME_DESCRIPTION_TYPE.nid());
+                if (regular == bestRegular ? version.time() <= bestTime : bestRegular) {
                     continue;
                 }
                 for (Object value : version.fieldValues()) {
                     if (value instanceof String text && !text.isBlank()) {
                         best = text;
                         bestTime = version.time();
+                        bestRegular = regular;
                         break;
                     }
                 }

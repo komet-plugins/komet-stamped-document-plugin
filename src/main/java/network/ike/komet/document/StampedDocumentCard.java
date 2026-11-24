@@ -1485,7 +1485,7 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
         footerIdentity.setGraphic(mark);
         footerIdentity.setText(name);
         footerIdentity.setCursor(javafx.scene.Cursor.HAND);
-        footerIdentity.setTooltip(new Tooltip(file + "\n" + shortSha + " · " + StampNames.name(view(), stamp.get().authorNid()) + " · "
+        footerIdentity.setTooltip(new Tooltip(file + "\n" + shortSha + " · " + ResponsiblePersons.authorName(view(), stamp.get().authorNid()) + " · "
                 + DateTimeUtil.format(stamp.get().time()) + summaries.summary(stamp.get().nid()).map(s -> "\n" + s).orElse("")
                 + "\nClick to copy the full SHA"));
     }

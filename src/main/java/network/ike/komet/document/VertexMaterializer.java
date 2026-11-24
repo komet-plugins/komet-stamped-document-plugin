@@ -294,7 +294,7 @@ public final class VertexMaterializer {
                     requireSentencesAsDerived(root.publicId(), name, patternId, last);
                 }
                 GitStampTerms.GitStamp stamp = GitStampTerms.GitStamp.of(adapter.coordinatesOf(event, component, branch));
-                GitStampVocabulary.seedIfAbsent(stamp);
+                GitStampVocabulary.seedIfAbsent(stamp, adapter.author(event.commit().author()));
                 Map<String, Written> now = null;
                 List<GitDocumentMaterializer.Narration> narrated = new ArrayList<>();
                 try (StampedWriter writer = stamp.openWriter("git-vertices " + event.commit().sha().substring(0, 7))) {
@@ -386,6 +386,7 @@ public final class VertexMaterializer {
             if (unchecked) {
                 requireSentencesAsDerived(root.publicId(), name, patternId, last);
             }
+            ResponsiblePersons.recordIfAbsent(history.events().stream().map(event -> adapter.author(event.commit().author())).toList());
             LOG.info("Materialized {} as vertices of '{}': {} commit(s) written, {} already recorded, {} line(s), {} block version(s), "
                     + "{} reference version(s), {} sentence version(s), {} annotation(s), {} narration(s)", path, name,
                     history.events().size() - skipped, skipped, lines, blocks, references, sentences, annotations, narrations);
