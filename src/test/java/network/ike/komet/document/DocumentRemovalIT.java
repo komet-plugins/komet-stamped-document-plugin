@@ -128,7 +128,7 @@ class DocumentRemovalIT {
 
         KometActionResult result = remove(under);
         assertTrue(result.completed(), result.message());
-        assertEquals("Removed 2 documents from the knowledge base. Their files stay in git, and opening one reads it back in.",
+        assertEquals("Removed 2 documents from the knowledge base. Their files stay where they are, and opening one reads it back in.",
                 result.message());
         assertFalse(PrimitiveData.get().hasPublicId(intro), "the first document is gone");
         assertFalse(PrimitiveData.get().hasPublicId(detail), "the document in the folder below is gone");
@@ -137,7 +137,7 @@ class DocumentRemovalIT {
         assertFalse(PrimitiveData.get().hasPublicId(introModule), "a document's own module goes with it");
         assertTrue(PrimitiveData.get().hasPublicId(otherModule), "and another document's module stays");
         assertEquals(List.of(), DocumentScopes.storedUnder(dir, dir.resolve("regulatory")));
-        assertTrue(Files.isRegularFile(dir.resolve("regulatory/intro.adoc")), "the file stays in git");
+        assertTrue(Files.isRegularFile(dir.resolve("regulatory/intro.adoc")), "the file stays where it is");
 
         assertEquals(intro, GitDocumentMaterializer.materialize(dir, dir.resolve("regulatory/intro.adoc")).anchor(),
                 "opening the file again reads the document back in under the same identity");

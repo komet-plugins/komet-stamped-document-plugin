@@ -99,10 +99,11 @@ final class DocumentRemoval {
 
     /**
      * Shows the outcome as a toast in the window of a node, when it is still shown, and keeps it as
-     * a line in Warnings and Errors. Call on the JavaFX thread.
+     * a line in Warnings and Errors: a note when it was done, a warning when it was not. Call on the
+     * JavaFX thread.
      */
-    private static void report(Node from, boolean done, String message) {
-        AlertStreams.getRoot().dispatch(AlertObject.makeAdvisory(TITLE, message));
+    static void report(Node from, boolean done, String message) {
+        AlertStreams.getRoot().dispatch(AlertObject.makeOutcome(done, TITLE, message));
         if (from != null && from.getScene() != null && from.getScene().getWindow() != null) {
             new Toast(from).show(done ? Toast.Status.SUCCESS : Toast.Status.FAILURE, message);
         }

@@ -774,7 +774,7 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
                 sharingItem(DocumentSharing.Gesture.SHARE, "stampedDocumentShare"),
                 sharingItem(DocumentSharing.Gesture.MAKE_LOCAL, "stampedDocumentMakeLocal"),
                 sharingItem(DocumentSharing.Gesture.DELETE, "stampedDocumentDelete"),
-                item(DocumentRemoval.TITLE, "stampedDocumentRemove", "Remove this document, with its annotations, from the knowledge base. Its file and commits stay in git, and opening the file reads it back in", this::removeFromKnowledgeBase),
+                item(DocumentRemoval.TITLE, "stampedDocumentRemove", "Remove this document, with its annotations, from the knowledge base. Its file stays where it is, and opening the file reads it back in", this::removeFromKnowledgeBase),
                 item("Remove Superseded Documents", "stampedDocumentRemoveSuperseded", "Delete the prose-element documents that vertex documents of the same working tree and path replace", this::removeSuperseded),
                 new SeparatorMenuItem(),
                 item("Show history", "stampedDocumentHistory", "The STAMPs of the selected lines, or of the whole document, in order", this::showHistory),
@@ -3370,7 +3370,7 @@ public final class StampedDocumentCard extends AbstractHostCard implements Docum
             if (surface != null) {
                 surface.show(DocumentAssembly.single(StoredDocument.nothing(removedAnchor), ""));
             }
-            statusLine.setText(path + " was removed from the knowledge base. Its file stays in git: Open file… reads it back in.");
+            statusLine.setText(path + " was removed from the knowledge base. Its file stays where it is: Open file… reads it back in.");
             if (repositoryPanel != null) {
                 repositoryPanel.refresh();                         // its line says who gets the document, and no one does now
             }

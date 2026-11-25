@@ -83,8 +83,8 @@ public final class RemoveFromKnowledgeBase implements KometAction {
     /** What a removal tells the person. */
     static String message(DocumentScopes.Removed removed) {
         return removed.documents() == 1
-                ? "Removed 1 document from the knowledge base. Its file stays in git, and opening it reads it back in."
-                : "Removed " + removed.documents() + " documents from the knowledge base. Their files stay in git, and"
-                        + " opening one reads it back in.";
+                ? "Removed 1 document from the knowledge base. Its file stays where it is, and opening it reads it back in."
+                : "Removed " + removed.documents() + " documents from the knowledge base. Their files stay where"
+                        + " they are, and opening one reads it back in.";
     }
 }

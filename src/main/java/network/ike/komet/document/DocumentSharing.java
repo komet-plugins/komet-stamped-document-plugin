@@ -45,7 +45,8 @@ import java.util.function.Function;
  * card's menu or the Documents tray (IKE-Network/ike-issues#1313, step 4 of
  * {@code design-2026-11-22-knowledge-shared-local}). Each asks first, naming the documents and saying who
  * gets or loses them, since it acts for everyone who syncs the knowledge base. It runs off the JavaFX
- * thread, and its outcome is shown as a toast and kept as a line in Warnings and Errors.
+ * thread, and its outcome is shown as a toast and kept as a line in Warnings and Errors: a note when it was
+ * done, a warning when it was not.
  */
 public final class DocumentSharing {
 
@@ -234,9 +235,13 @@ public final class DocumentSharing {
         return ask.showAndWait().filter(answer -> answer == yes).isPresent();
     }
 
-    private static void report(Node from, Gesture gesture, boolean done, String message) {
+    /**
+     * Shows the outcome as a toast in the window of a node, when it is still shown, and keeps it as a
+     * line in Warnings and Errors. Call on the JavaFX thread.
+     */
+    static void report(Node from, Gesture gesture, boolean done, String message) {
         LOG.info("{}: {}", gesture.title.replace("…", ""), message);
-        AlertStreams.getRoot().dispatch(AlertObject.makeAdvisory(gesture.title.replace("…", ""), message));
+        AlertStreams.getRoot().dispatch(AlertObject.makeOutcome(done, gesture.title.replace("…", ""), message));
         if (from != null && from.getScene() != null && from.getScene().getWindow() != null) {
             new Toast(from).show(done ? Toast.Status.SUCCESS : Toast.Status.FAILURE, message);
         }

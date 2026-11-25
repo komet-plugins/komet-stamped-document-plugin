@@ -687,7 +687,7 @@ final class DocumentNavigatorTray implements KlSidebarTray {
     /**
      * Removes what the knowledge base holds of a folder, every stored document under it at any
      * depth, or of one file, in one step (IKE-Network/ike-issues#1313). It asks nothing: the files
-     * and their commits stay in git, and opening a file reads its document back in.
+     * stay where they are, and opening a file reads its document back in.
      */
     private void removeFromKnowledgeBase(Path path) {
         String name = path.getFileName() == null ? path.toString() : path.getFileName().toString();
