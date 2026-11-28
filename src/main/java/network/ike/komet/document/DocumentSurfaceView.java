@@ -1267,6 +1267,32 @@ public final class DocumentSurfaceView {
         return null;
     }
 
+    /**
+     * The lines an edit of a heading saves: the heading of a section or of the document as its
+     * file contains it ({@link DocumentEditor#headingLines}), anchor and attribute lines included.
+     * Null when the block has no heading of its own lines before its first block, which is then
+     * edited in git.
+     */
+    private List<StoredLine> headingSource(DocumentAssembly.Member member, StoredBlock block) {
+        StoredDocument whole = member.shown();
+        StoredBlock stored = whole.blocks().get(block.nid());
+        if (stored == null || past) {
+            return null;
+        }
+        List<StoredLine> lines = new ArrayList<>();
+        for (long nid : DocumentEditor.headingLines(whole, stored).orElse(List.of())) {
+            whole.line(nid).ifPresent(lines::add);
+        }
+        return lines.isEmpty() ? null : lines;
+    }
+
+    /** Has a heading's area save its heading's source, which may have more lines than the area draws. */
+    private static void editsAsHeading(Area area, List<StoredLine> source) {
+        if (area != null && area.editable && source != null) {
+            area.source = source;
+        }
+    }
+
     private static List<StoredLine> own(StoredDocument document, StoredBlock block) {
         List<StoredLine> own = new ArrayList<>();
         for (long nid : block.members()) {
@@ -1788,8 +1814,10 @@ public final class DocumentSurfaceView {
                             byline(member, block, heading, depth, under);
                         }
                     } else {
-                        addProse(member, block, heading, paragraphs(heading, " ", st.title(),
-                                t -> captions.heading(block, t.startsWith("= ") ? t.substring(2) : t)), depth, false, under);
+                        // the title is edited as the document's heading, its header: the author line and attribute entries with it
+                        List<StoredLine> source = headingSource(member, block);
+                        editsAsHeading(addProse(member, block, heading, paragraphs(heading, " ", st.title(),
+                                t -> captions.heading(block, t.startsWith("= ") ? t.substring(2) : t)), depth, source != null, under), source);
                         if (member.host()) {
                             byline(member, block, heading, depth, under);  // the author and the date beneath the title, as the pages set them
                         }
@@ -1832,8 +1860,10 @@ public final class DocumentSurfaceView {
                 if (print && nesting == 0) {
                     modelOrdinal++;
                 }
+                List<StoredLine> source = print ? null : headingSource(member, block);
                 Area area = addProse(member, block, heading.isEmpty() ? own : heading, paragraphs(heading.isEmpty() ? own : heading, " ", style,
-                        t -> captions.heading(block, t.replaceFirst("^=+\\s*", ""))), depth, false, block.title());
+                        t -> captions.heading(block, t.replaceFirst("^=+\\s*", ""))), depth, source != null, block.title());
+                editsAsHeading(area, source);
                 if (print && area != null) {
                     area.chapter = block.level() + offsetOf(member) <= 1;     // a part or a top-level section, as the writer's level 1
                 }

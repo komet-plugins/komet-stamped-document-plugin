@@ -93,6 +93,8 @@ _Link_ opens the block's source in the Reading view with the address selected, f
 Marks are written in a paragraph, a list item or an admonition.
 
 To change the words themselves, right-click a block in the Reading view and choose _Edit block_.
+A heading is edited the same way, and opens with the lines that belong to it: a section's anchor and attribute lines with its heading, and the document's title with the rest of its header, the author line and the attribute entries.
+The blocks under a heading stay as they are, so a heading keeps its level: a section added, removed or given another level is a change you commit in git.
 A mark or an edit is kept in the knowledge base at once, and is pending until you commit it.
 
 == Committing your edits

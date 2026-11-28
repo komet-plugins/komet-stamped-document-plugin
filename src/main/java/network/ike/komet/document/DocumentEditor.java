@@ -98,15 +98,19 @@ public final class DocumentEditor {
     }
 
     /**
-     * Replaces the lines of one block with new text.
+     * Replaces the lines of one block with new text. A block that contains other blocks, a section
+     * or the document, is edited as its heading ({@link #headingLines}): the text replaces the
+     * heading's lines, and the blocks it contains stay as they are.
      *
      * @param anchor the document anchor's id
-     * @param block  the nid of a block whose members are all lines (a paragraph, a listing)
-     * @param text   the block's new text; one line per line
+     * @param block  the nid of a block: one whose members are all lines (a paragraph, a listing), or
+     *               one that contains other blocks, whose heading is edited
+     * @param text   the block's new text, or its heading's; one line per line
      * @param edit   the edit coordinate whose author and path the edit is written under
      * @return what the edit did
-     * @throws IllegalArgumentException when the block is not one of the document's, holds child
-     *                                  blocks, or the new text is empty
+     * @throws IllegalArgumentException when the block is not one of the document's, contains child
+     *                                  blocks and has no heading, the new text is empty, or a new
+     *                                  heading would change the document's blocks
      */
     public static synchronized Edit editBlock(PublicId anchor, long block, String text, EditCoordinate edit) {
         SharedDocuments.requireEditable(anchor);
@@ -508,6 +512,80 @@ public final class DocumentEditor {
     }
 
     /**
+     * The heading of a block that contains other blocks: its own lines before its first child block,
+     * from the first that is not blank to the last, with any blank line between them. A section's
+     * are its anchor, title and attribute lines and its heading line; the document's are its
+     * header, the attribute entries and the title, author and revision lines. The blank lines
+     * before the first child stay as they are.
+     *
+     * @param document the stored document
+     * @param block    one of its blocks
+     * @return the heading's line nids in order; empty when the block contains no other block, or has
+     *         no line of its own before the first that is not blank
+     */
+    static Optional<List<Long>> headingLines(GitDocumentMaterializer.StoredDocument document, GitDocumentMaterializer.StoredBlock block) {
+        List<Long> before = new ArrayList<>();
+        for (long member : block.tree()) {                       // blank lines included, which a vertex block's members leave out
+            Optional<GitDocumentMaterializer.StoredLine> line = document.line(member);
+            if (line.isPresent()) {
+                before.add(member);
+                continue;
+            }
+            if (!document.blocks().containsKey(member)) {
+                return Optional.empty();
+            }
+            int first = 0;
+            int last = before.size() - 1;
+            while (first <= last && document.line(before.get(first)).orElseThrow().text().isBlank()) {
+                first++;
+            }
+            while (last >= first && document.line(before.get(last)).orElseThrow().text().isBlank()) {
+                last--;
+            }
+            return first > last ? Optional.empty() : Optional.of(List.copyOf(before.subList(first, last + 1)));
+        }
+        return Optional.empty();
+    }
+
+    /** The edited text of a heading: the whole file parsed, and the edited block in it. */
+    private record HeadingParse(Document document, Block block) { }
+
+    /**
+     * Checks that a heading's new lines leave the document's blocks as they were, each of the same
+     * kind and level, so the edit is of the heading's words and not of what it contains.
+     *
+     * @return the edited file parsed, with the block the heading belongs to
+     * @throws IllegalArgumentException when the new lines would add, remove or move a block, or
+     *                                  change a section's level
+     */
+    private static HeadingParse sameStructure(GitDocumentMaterializer.StoredDocument document, GitDocumentMaterializer.StoredBlock block,
+                                              int start, int count, List<String> newLines) {
+        List<String> file = document.lines().stream().map(GitDocumentMaterializer.StoredLine::text).toList();
+        List<String> edited = new ArrayList<>(file.subList(0, start));
+        edited.addAll(newLines);
+        edited.addAll(file.subList(start + count, file.size()));
+        List<Block> before = structural(IkeDialectParser.parse(file));
+        Document parsed = IkeDialectParser.parse(edited);
+        List<Block> after = structural(parsed);
+        List<GitDocumentMaterializer.StoredBlock> stored = new DocumentOutline(document).nodes().stream().map(DocumentOutline.Node::block).toList();
+        int index = -1;
+        for (int i = 0; i < stored.size(); i++) {
+            if (stored.get(i).nid() == block.nid()) {
+                index = i;
+            }
+        }
+        boolean same = index >= 0 && before.size() == stored.size() && before.size() == after.size();
+        for (int i = 0; same && i < before.size(); i++) {
+            same = before.get(i).kind() == after.get(i).kind() && before.get(i).level() == after.get(i).level();
+        }
+        if (!same) {
+            throw new IllegalArgumentException("The new heading would change the document's sections, such as a section's level."
+                    + " Commit a change like that in git");
+        }
+        return new HeadingParse(parsed, after.get(index));
+    }
+
+    /**
      * The parsed blocks as the stored outline counts them: a structured open block is one block,
      * whose text AsciiDoc reads into child blocks and an edit holds as lines, so the two agree
      * whichever it stands as.
@@ -612,8 +690,15 @@ public final class DocumentEditor {
         List<Long> manifest = new ArrayList<>(document.lines().stream().map(GitDocumentMaterializer.StoredLine::nid).toList());
         boolean vertices = VertexReader.isVertexDocument(anchor);
         List<Long> oldNids = textLines(document, stored, manifest);
+        boolean heading = false;
         if (oldNids == null || oldNids.isEmpty()) {
-            throw new IllegalArgumentException("A " + stored.kind() + " block holding other blocks is not edited as text");
+            // A block that contains other blocks, a section or the document, is edited as its heading.
+            oldNids = headingLines(document, stored).orElseThrow(() -> new IllegalArgumentException("This " + stored.kind().name().toLowerCase()
+                    + " contains other blocks and has no heading before them, so it is changed in git"));
+            if (!vertices) {
+                throw new IllegalArgumentException("This document was read in by an older version of Komet. Open it again to edit its headings");
+            }
+            heading = true;
         }
         int start = manifest.indexOf(oldNids.getFirst());
         for (int i = 0; i < oldNids.size(); i++) {
@@ -630,6 +715,7 @@ public final class DocumentEditor {
         if (steps.stream().allMatch(step -> step.kind == Kind.KEEP)) {
             return new Edit(block, 0, 0, 0);
         }
+        HeadingParse parsed = heading ? sameStructure(document, stored, start, oldNids.size(), newLines) : null;
 
         Transaction transaction = pending(anchor).orElseGet(() -> {
             Transaction made = Transaction.make("Edit document " + anchor.idString());
@@ -642,7 +728,7 @@ public final class DocumentEditor {
         SemanticEntityVersion head = GitDocumentMaterializer.latest(semantic(vertices ? anchorNid : manifestNid), true);
         StampEntity<?> stamp = transaction.getStamp(State.ACTIVE, Long.MAX_VALUE, authorNid, head.moduleNid(), pathNid);
         if (vertices) {
-            return editVertices(transaction, stamp, document, block, oldNids, start, steps, newLines, anchorNid);
+            return editVertices(transaction, stamp, document, block, oldNids, start, steps, newLines, anchorNid, parsed);
         }
         List<Long> newNids = new ArrayList<>();
         int changed = 0;
@@ -684,9 +770,15 @@ public final class DocumentEditor {
      * retires it. Each written line's meaning and properties are those its text has in the edited
      * file, classified as the materializer classifies them; a revised line keeps the references
      * hanging from it, which stay as committed, as they do in the prose-element model.
+     *
+     * <p>A heading's edit, when {@code heading} is the block as the edited text parses it, keeps the
+     * block's other Members, its child blocks and the lines after the heading, and writes the
+     * properties the heading gives the block again ({@link VertexMaterializer#ownProperties}): a
+     * section's title, the document's title and topic attributes.
      */
     private static Edit editVertices(Transaction transaction, StampEntity<?> stamp, GitDocumentMaterializer.StoredDocument document,
-                                     long block, List<Long> oldNids, int start, List<Step> steps, List<String> newLines, long anchorNid) {
+                                     long block, List<Long> oldNids, int start, List<Step> steps, List<String> newLines, long anchorNid,
+                                     HeadingParse heading) {
         List<String> file = new ArrayList<>(document.lines().stream().map(GitDocumentMaterializer.StoredLine::text).toList());
         List<String> edited = new ArrayList<>(file.subList(0, start));
         edited.addAll(newLines);
@@ -727,7 +819,20 @@ public final class DocumentEditor {
         EntityVertex blockVertex = vertexOf(GitDocumentMaterializer.latest(semantic(block), true));
         Map<ConceptFacade, Object> properties = new java.util.LinkedHashMap<>();
         blockVertex.properties().forEachKeyValue((key, value) -> properties.put(EntityProxy.Concept.make(key), value));
-        properties.put(IkeConcept.DOCUMENT_ELEMENT_MEMBERS, LongIds.list.of(newNids.stream().mapToLong(Long::longValue).toArray()));
+        List<Long> members = newNids;
+        if (heading != null) {
+            // the heading's lines in place of the old ones, among the block's other members as its tree lists them:
+            // its child blocks, and the blank lines that the views leave out of a block's members
+            List<Long> kept = document.blocks().get(block).tree();
+            int at = kept.indexOf(oldNids.getFirst());
+            members = new ArrayList<>(kept.subList(0, at));
+            members.addAll(newNids);
+            members.addAll(kept.subList(at + oldNids.size(), kept.size()));
+            java.util.Set<Long> own = VertexMaterializer.ownPropertyMeanings(heading.block().kind());
+            properties.keySet().removeIf(key -> own.contains(key.nid()));
+            properties.putAll(VertexMaterializer.ownProperties(heading.document(), heading.block()));
+        }
+        properties.put(IkeConcept.DOCUMENT_ELEMENT_MEMBERS, LongIds.list.of(members.stream().mapToLong(Long::longValue).toArray()));
         if (VertexMaterializer.segmentsAvailable()) {
             long[] content = editSentences(transaction, stamp, document.sentences().getOrDefault(block, List.of()), edited, start,
                     newLines.size(), pattern, anchorNid);

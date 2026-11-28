@@ -6,7 +6,7 @@ Opening a file in git materializes its history: each commit that touched the fil
 == Before you start
 
 * Komet has a store open. A memory-only store works, but forgets the document when Komet quits; see xref:stores.adoc[Persistent and memory-only stores].
-* The file is an `.adoc` file. In a git working tree it is committed, and the card reads the file as it is. Changes saved in the file and not yet committed show as an edit that is not committed, written by you, which the bar at the bottom of the card offers to commit. A change to the document's title, its attributes or a section heading is not shown that way: the card then shows the last commit and says why.
+* The file is an `.adoc` file. In a git working tree it is committed, and the card reads the file as it is. Changes saved in the file and not yet committed show as an edit that is not committed, written by you, which the bar at the bottom of the card offers to commit. That includes a change to the document's title or its attributes, and to a section's heading. A section added or removed, or a heading given another level, is not shown that way, because the blocks after it would move into another section: the card then shows the last commit and says why.
 * A file in a folder without git is read as one version, because an ordinary file has no history. Every line has the same STAMP: the time the file was last changed, and you as its author. Such a file has no history and no narration, and Save keeps your edits, since there is nothing to commit them to. *More › Start Git History* makes the folder a git repository, with the file as its first commit, and reads the document in again from git.
 
 == Open the file

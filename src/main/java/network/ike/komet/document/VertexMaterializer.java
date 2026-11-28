@@ -612,29 +612,7 @@ public final class VertexMaterializer {
         // The root, then the blocks, then the lines and their references: parents before children.
         for (Block block : doc.blocks()) {
             String key = blockKeys.get(block);
-            Map<ConceptFacade, Object> properties = new LinkedHashMap<>();
-            if (block.kind() == Block.Kind.DOCUMENT) {
-                if (doc.title() != null && !doc.title().isBlank()) {
-                    properties.put(IkeConcept.DOCUMENT_ELEMENT_TITLE, doc.title());
-                }
-                long[] meanings = fieldMeanings(IkePattern.ASCIIDOC_DOCUMENT_ATTRIBUTES_PATTERN);
-                for (int i = 0; i < AsciiDocModelTerms.TOPIC_ATTRIBUTES.size() && i + 1 < meanings.length; i++) {
-                    String value = doc.attribute(AsciiDocModelTerms.TOPIC_ATTRIBUTES.get(i)).orElse("");
-                    if (!value.isEmpty()) {
-                        properties.put(EntityProxy.Concept.make(meanings[i + 1]), value);
-                    }
-                }
-            } else {
-                if (block.kind() == Block.Kind.SECTION || block.kind() == Block.Kind.LIST || block.level() != 0) {
-                    properties.put(IkeConcept.DOCUMENT_ELEMENT_LEVEL, block.level());
-                }
-                if (!block.title().isEmpty()) {
-                    properties.put(IkeConcept.DOCUMENT_ELEMENT_TITLE, block.title());
-                }
-                if (!block.parameters().isEmpty()) {
-                    properties.put(IkeConcept.DOCUMENT_ELEMENT_PARAMETERS, block.parameters());
-                }
-            }
+            Map<ConceptFacade, Object> properties = ownProperties(doc, block);
             properties.put(IkeConcept.DOCUMENT_ELEMENT_MEMBERS, ordered(members.get(block)));
             if (plan != null && plan.content().containsKey(block)) {
                 properties.put(IkeConcept.BLOCK_CONTENT, ordered(plan.content().get(block)));
@@ -895,6 +873,65 @@ public final class VertexMaterializer {
 
     private static Semantic lineProxy(LineId id) {
         return semantic("vertex:" + id.key());
+    }
+
+    /**
+     * The properties a block's own lines give its vertex, beside its Members and Content: the
+     * document's title and topic attributes, from its header; another block's level, title and
+     * parameters. An edit of a heading writes them again from the edited text
+     * ({@link DocumentEditor#editBlock}).
+     *
+     * @param doc   the parsed document
+     * @param block one of its blocks
+     * @return the properties, in the order the vertex lists them
+     */
+    static Map<ConceptFacade, Object> ownProperties(Document doc, Block block) {
+        Map<ConceptFacade, Object> properties = new LinkedHashMap<>();
+        if (block.kind() == Block.Kind.DOCUMENT) {
+            if (doc.title() != null && !doc.title().isBlank()) {
+                properties.put(IkeConcept.DOCUMENT_ELEMENT_TITLE, doc.title());
+            }
+            long[] meanings = fieldMeanings(IkePattern.ASCIIDOC_DOCUMENT_ATTRIBUTES_PATTERN);
+            for (int i = 0; i < AsciiDocModelTerms.TOPIC_ATTRIBUTES.size() && i + 1 < meanings.length; i++) {
+                String value = doc.attribute(AsciiDocModelTerms.TOPIC_ATTRIBUTES.get(i)).orElse("");
+                if (!value.isEmpty()) {
+                    properties.put(EntityProxy.Concept.make(meanings[i + 1]), value);
+                }
+            }
+            return properties;
+        }
+        if (block.kind() == Block.Kind.SECTION || block.kind() == Block.Kind.LIST || block.level() != 0) {
+            properties.put(IkeConcept.DOCUMENT_ELEMENT_LEVEL, block.level());
+        }
+        if (!block.title().isEmpty()) {
+            properties.put(IkeConcept.DOCUMENT_ELEMENT_TITLE, block.title());
+        }
+        if (!block.parameters().isEmpty()) {
+            properties.put(IkeConcept.DOCUMENT_ELEMENT_PARAMETERS, block.parameters());
+        }
+        return properties;
+    }
+
+    /**
+     * The meanings of every property {@link #ownProperties} may give a block of a kind, set or
+     * not: what an edit of the block's heading replaces.
+     *
+     * @param kind the block's kind
+     * @return the properties' meaning nids
+     */
+    static java.util.Set<Long> ownPropertyMeanings(Block.Kind kind) {
+        java.util.Set<Long> meanings = new java.util.HashSet<>();
+        meanings.add(IkeConcept.DOCUMENT_ELEMENT_TITLE.nid());
+        if (kind == Block.Kind.DOCUMENT) {
+            long[] fields = fieldMeanings(IkePattern.ASCIIDOC_DOCUMENT_ATTRIBUTES_PATTERN);
+            for (int i = 1; i < fields.length; i++) {
+                meanings.add(fields[i]);
+            }
+        } else {
+            meanings.add(IkeConcept.DOCUMENT_ELEMENT_LEVEL.nid());
+            meanings.add(IkeConcept.DOCUMENT_ELEMENT_PARAMETERS.nid());
+        }
+        return meanings;
     }
 
     // ── the store ─────────────────────────────────────────────────────────────

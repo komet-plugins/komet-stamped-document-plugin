@@ -36,8 +36,12 @@ import java.util.Optional;
  * <p>The difference is read as the edits Komet itself makes: a block whose text changed is edited
  * ({@link DocumentEditor#editBlock}), a new block is added after the one before it
  * ({@link DocumentEditor#addBlock}), and a block that is gone is deleted
- * ({@link DocumentEditor#deleteBlock}). The blocks are matched in order on their kind and text, and
- * a change to a block that holds other blocks, such as a section's heading, is not read this way.
+ * ({@link DocumentEditor#deleteBlock}). The blocks are matched in order on their kind and text. A
+ * block that contains other blocks, a section or the document, is read as an edit of its heading
+ * when it stands where it stood, of the same kind and level: a section's heading and the
+ * document's title, author line and attribute entries are read so. A section added, removed or
+ * given another level is not read this way, since the blocks after it would move into another
+ * section.
  * The result is then compared with the file line for line; when they differ, or an edit is refused,
  * nothing is left pending and the document shows its last commit, with the reason.
  *
@@ -169,16 +173,16 @@ final class WorkingTreeEdit {
             return Read.unread("its stored structure disagrees with its last commit");
         }
         List<Block> newBlocks = DocumentEditor.structural(IkeDialectParser.parse(file));
-        Optional<List<Step>> planned = plan(oldBlocks, head, stored, newBlocks, file);
-        if (planned.isEmpty()) {
-            return Read.unread("a change touches a block that holds other blocks, such as a section's heading");
+        Planned planned = plan(oldBlocks, head, stored, newBlocks, file);
+        if (planned.steps() == null) {
+            return Read.unread(planned.unread());
         }
         int edited = 0;
         int added = 0;
         int deleted = 0;
         try {
             List<Long> made = new ArrayList<>();
-            List<Step> steps = planned.get();
+            List<Step> steps = planned.steps();
             for (Step step : steps) {
                 if (step instanceof Edit e) {
                     DocumentEditor.editBlock(anchor, e.block(), e.text(), edit);
@@ -218,12 +222,19 @@ final class WorkingTreeEdit {
     }
 
     /**
-     * The steps from the old blocks to the new, or empty when a change touches a block that holds
-     * other blocks. The blocks are paired in order on their kind and text; between two pairs, the
-     * old and new blocks left are paired by position while their kinds agree (an edit), and the
-     * rest are added and deleted.
+     * The steps from the old blocks to the new, or the reason there are none: a block that contains
+     * other blocks is added, removed, or changed beyond its heading, or a block is added where
+     * Komet cannot add one. The blocks are paired in order on their kind
+     * and text; between two pairs, the old and new blocks left are paired by position while their
+     * kinds agree (an edit, of a heading for a block that contains others), and the rest are added
+     * and deleted.
      */
-    private static Optional<List<Step>> plan(List<Block> oldBlocks, List<String> head, List<GitDocumentMaterializer.StoredBlock> stored,
+    /** The steps, or null with the reason they cannot be made. */
+    private record Planned(List<Step> steps, String unread) { }
+
+    private static final Planned SECTIONS_CHANGED = new Planned(null, "a section is added or removed, or a heading has another level");
+
+    private static Planned plan(List<Block> oldBlocks, List<String> head, List<GitDocumentMaterializer.StoredBlock> stored,
                                              List<Block> newBlocks, List<String> file) {
         List<String> oldKeys = oldBlocks.stream().map(b -> key(b, head)).toList();
         List<String> newKeys = newBlocks.stream().map(b -> key(b, file)).toList();
@@ -251,19 +262,27 @@ final class WorkingTreeEdit {
             while (j < newBlocks.size() && !matched[1][j]) {
                 j++;
             }
-            for (int k = oldFrom; k < i; k++) {
-                if (!leaf(oldBlocks.get(k))) {
-                    return Optional.empty();
-                }
-            }
-            for (int k = newFrom; k < j; k++) {
-                if (!leaf(newBlocks.get(k))) {
-                    return Optional.empty();
-                }
-            }
             int paired = Math.min(i - oldFrom, j - newFrom);
+            // A block that contains others is read only as an edit of its heading: paired by position with one of its kind and level.
+            for (int k = 0; k < i - oldFrom; k++) {
+                if (!leaf(oldBlocks.get(oldFrom + k)) && (k >= paired || !sameHolder(oldBlocks.get(oldFrom + k), head, newBlocks.get(newFrom + k), file))) {
+                    return SECTIONS_CHANGED;
+                }
+            }
+            for (int k = 0; k < j - newFrom; k++) {
+                if (!leaf(newBlocks.get(newFrom + k)) && (k >= paired || !sameHolder(oldBlocks.get(oldFrom + k), head, newBlocks.get(newFrom + k), file))) {
+                    return SECTIONS_CHANGED;
+                }
+            }
             for (int k = 0; k < j - newFrom; k++) {
                 Block made = newBlocks.get(newFrom + k);
+                if (!leaf(made)) {
+                    steps.add(new Edit(stored.get(oldFrom + k).nid(), String.join("\n", own(made, file, true))));
+                    previous = stored.get(oldFrom + k).nid();
+                    previousStep = -1;
+                    previousLeaf = false;
+                    continue;
+                }
                 String text = text(made, file);
                 if (k < paired && oldBlocks.get(oldFrom + k).kind() == made.kind()) {
                     steps.add(new Edit(stored.get(oldFrom + k).nid(), text));
@@ -273,7 +292,7 @@ final class WorkingTreeEdit {
                     continue;
                 }
                 if (!DocumentEditor.isLeafKind(made.kind()) || !previousLeaf || (previous == 0 && previousStep < 0)) {
-                    return Optional.empty();                      // a block Komet cannot add there
+                    return new Planned(null, "a block is added where Komet cannot add one, such as a list, a table, or the first block under a heading");
                 }
                 if (k < paired) {
                     steps.add(new Delete(stored.get(oldFrom + k).nid()));
@@ -286,7 +305,40 @@ final class WorkingTreeEdit {
                 steps.add(new Delete(stored.get(k).nid()));
             }
         }
-        return Optional.of(steps);
+        return new Planned(steps, "");
+    }
+
+    /**
+     * Whether two blocks that contain others are one block whose heading alone may have changed: of
+     * one kind and level, each containing blocks, with the same own lines after the heading, such as
+     * a closing delimiter.
+     */
+    private static boolean sameHolder(Block old, List<String> head, Block made, List<String> file) {
+        return !leaf(old) && !leaf(made) && old.kind() == made.kind() && old.level() == made.level()
+                && own(old, head, false).equals(own(made, file, false));
+    }
+
+    /**
+     * The own lines of a block that contains others: its heading, every line from its first own line
+     * before its first child to its last, blank ones between them included, as
+     * {@link DocumentEditor#headingLines} reads the stored block; or the rest, its own lines after.
+     */
+    private static List<String> own(Block block, List<String> lines, boolean heading) {
+        int child = block.children().getFirst().firstLine();
+        List<String> own = new ArrayList<>();
+        if (heading) {
+            List<Integer> before = block.lines().stream().filter(line -> line < child).toList();
+            if (!before.isEmpty()) {
+                own.addAll(lines.subList(before.getFirst() - 1, before.getLast()));
+            }
+            return own;
+        }
+        for (int line : block.lines()) {
+            if (line >= child) {
+                own.add(lines.get(line - 1));
+            }
+        }
+        return own;
     }
 
     /** Whether a block is edited as its text: it holds no other blocks, or it is a structured open block. */

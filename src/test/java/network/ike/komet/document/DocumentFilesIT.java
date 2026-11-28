@@ -65,6 +65,21 @@ class DocumentFilesIT {
 
             The third paragraph.
             """;
+    private static final String SECTIONS = """
+            :topic-id: dev-files-%s
+
+            = note
+
+            The first paragraph.
+
+            == First section
+
+            Inside the first.
+
+            == Second section
+
+            Inside the second.
+            """;
 
     @TempDir
     Path root;
@@ -132,18 +147,80 @@ class DocumentFilesIT {
     }
 
     @Test
-    void aChangeToTheTitleIsNotReadAndTheDocumentShowsItsLastCommit() throws Exception {
+    void aChangeToTheTitleAndTheAttributesIsReadAsAnEditOfTheDocumentsHeading() throws Exception {
         Path dir = repository("title", "note.adoc");
         PublicId anchor = GitDocumentMaterializer.materialize(dir, dir.resolve("note.adoc")).anchor();
-        List<String> file = new ArrayList<>(lines(anchor, false));
+        List<String> committed = lines(anchor, false);
+        List<String> file = new ArrayList<>(committed);
         file.set(file.indexOf("= note"), "= A renamed note");
+        file.add(file.indexOf("= A renamed note") + 1, ":description: A note with a new title.");
+        file.set(file.indexOf(":topic-id: dev-files-title-note"), ":topic-id: dev-files-title-renamed");
         Files.write(dir.resolve("note.adoc"), file);
 
         WorkingTreeEdit.Read read = WorkingTreeEdit.readFile(anchor, dir, "note.adoc", edit);
 
-        assertEquals(WorkingTreeEdit.Outcome.UNREAD, read.outcome());
+        assertEquals(WorkingTreeEdit.Outcome.READ, read.outcome(), read.reason());
+        assertEquals(List.of(1, 0, 0), List.of(read.edited(), read.added(), read.deleted()), "the document's heading is edited");
+        assertEquals(file, lines(anchor, true), "the pending edit is the file, line for line");
+        assertEquals(committed, lines(anchor, false), "the committed document is as git has it");
+        GitDocumentMaterializer.StoredDocument pending = GitDocumentMaterializer.load(anchor, true).orElseThrow();
+        assertEquals("A renamed note", pending.root().title(), "the document's title is the new one while the edit is pending");
+        assertEquals("note", GitDocumentMaterializer.load(anchor, false).orElseThrow().root().title(), "and the last commit's still");
+        DocumentEditor.cancel(anchor);
+    }
+
+    @Test
+    void aSectionHeadingChangedIsReadAsAnEditAndOneGivenAnotherLevelIsNot() throws Exception {
+        Path dir = repositoryWith("sections", "note.adoc", SECTIONS.formatted("sections"));
+        PublicId anchor = GitDocumentMaterializer.materialize(dir, dir.resolve("note.adoc")).anchor();
+        List<String> committed = lines(anchor, false);
+        List<String> file = new ArrayList<>(committed);
+        file.set(file.indexOf("== First section"), "== The first section");
+        file.set(file.indexOf("Inside the second."), "Inside the second, edited.");
+        Files.write(dir.resolve("note.adoc"), file);
+
+        WorkingTreeEdit.Read read = WorkingTreeEdit.readFile(anchor, dir, "note.adoc", edit);
+
+        assertEquals(WorkingTreeEdit.Outcome.READ, read.outcome(), read.reason());
+        assertEquals(List.of(2, 0, 0), List.of(read.edited(), read.added(), read.deleted()), "the heading and the paragraph are edited");
+        assertEquals(file, lines(anchor, true));
+        assertTrue(GitDocumentMaterializer.load(anchor, true).orElseThrow().blocks().values().stream()
+                .anyMatch(b -> b.kind() == Block.Kind.SECTION && b.title().equals("The first section")), "the section has its new title");
+        DocumentEditor.cancel(anchor);
+
+        List<String> relevelled = new ArrayList<>(committed);
+        relevelled.set(relevelled.indexOf("== Second section"), "=== Second section");
+        Files.write(dir.resolve("note.adoc"), relevelled);
+
+        WorkingTreeEdit.Read unread = WorkingTreeEdit.readFile(anchor, dir, "note.adoc", edit);
+
+        assertEquals(WorkingTreeEdit.Outcome.UNREAD, unread.outcome());
+        assertTrue(unread.reason().contains("another level"), unread.reason());
         assertTrue(DocumentEditor.pending(anchor).isEmpty(), "nothing is left pending");
-        assertTrue(read.report("note.adoc").contains("commit the changes in git to see them here"), read.report("note.adoc"));
+    }
+
+    @Test
+    void aHeadingEditedInKometKeepsTheBlocksItContainsAndRefusesAnotherLevel() throws Exception {
+        Path dir = repositoryWith("heading", "note.adoc", SECTIONS.formatted("heading"));
+        PublicId anchor = GitDocumentMaterializer.materialize(dir, dir.resolve("note.adoc")).anchor();
+        List<String> committed = lines(anchor, false);
+        long section = section(anchor, "First section");
+
+        DocumentEditor.Edit done = DocumentEditor.editBlock(anchor, section, "[[first]]\n== First section, renamed", edit);
+
+        assertTrue(done.changedAnything());
+        List<String> expected = new ArrayList<>(committed);
+        int at = expected.indexOf("== First section");
+        expected.set(at, "== First section, renamed");
+        expected.add(at, "[[first]]");
+        assertEquals(expected, lines(anchor, true), "the heading has its new lines, and the section still contains its paragraph");
+        assertEquals(edit.getAuthorNidForChanges(), DocumentEditor.pendingAuthor(anchor).orElseThrow());
+
+        IllegalArgumentException refused = org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                () -> DocumentEditor.editBlock(anchor, section(anchor, "Second section"), "=== Second section", edit));
+        assertTrue(refused.getMessage().contains("change the document's sections"), refused.getMessage());
+        assertEquals(expected, lines(anchor, true), "a refused heading leaves the edit as it was");
+        DocumentEditor.cancel(anchor);
     }
 
     @Test
@@ -401,16 +478,35 @@ class DocumentFilesIT {
                 .findFirst().orElseThrow().nid();
     }
 
+    /** The section whose title is the given text. */
+    private static long section(PublicId anchor, String title) {
+        return GitDocumentMaterializer.load(anchor, true).orElseThrow().blocks().values().stream()
+                .filter(b -> b.kind() == Block.Kind.SECTION && b.title().equals(title)).findFirst().orElseThrow().nid();
+    }
+
     private Path repository(String name, String... files) throws Exception {
+        List<String> texts = new ArrayList<>();
+        for (String file : files) {
+            String title = file.replace(".adoc", "");
+            texts.add(NOTE.formatted(name + "-" + title, title));
+        }
+        return repository(name, List.of(files), texts);
+    }
+
+    /** A repository containing one file with the given text, committed. */
+    private Path repositoryWith(String name, String file, String text) throws Exception {
+        return repository(name, List.of(file), List.of(text));
+    }
+
+    private Path repository(String name, List<String> files, List<String> texts) throws Exception {
         Path dir = Files.createDirectories(root.resolve(name));
         git(dir, "init", "-q", "-b", "main");
         git(dir, "config", "user.name", "Rita Reviewer");
         git(dir, "config", "user.email", "rita@example.test");
         git(dir, "config", "commit.gpgsign", "false");
-        for (String file : files) {
-            String title = file.replace(".adoc", "");
-            Files.writeString(dir.resolve(file), NOTE.formatted(name + "-" + title, title));
-            git(dir, "add", file);
+        for (int i = 0; i < files.size(); i++) {
+            Files.writeString(dir.resolve(files.get(i)), texts.get(i));
+            git(dir, "add", files.get(i));
         }
         ProcessBuilder commit = new ProcessBuilder("git", "commit", "-q", "-m", "Write " + String.join(", ", files),
                 "--date", "2026-11-22T10:00:00Z").directory(dir.toFile()).redirectErrorStream(true);
